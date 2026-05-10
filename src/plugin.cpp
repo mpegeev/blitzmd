@@ -1,14 +1,17 @@
-// MD Viewer for Total Commander — Stage 3
-// Parses markdown via md4c and streams RTF into RichEdit.
-// Supported: H1-H6, paragraphs, **bold**, *italic*, ~~strike~~, `code`,
-// ```code blocks```, [links], > quotes, lists (ul/ol, nested), --- HRs.
+// MD Viewer for Total Commander — Stage 4 v2
 //
-// UNICODE / _UNICODE / WIN32_LEAN_AND_MEAN / NOMINMAX are defined via CMake
-// (target_compile_definitions in CMakeLists.txt), не дублируем здесь.
+// Hyperlink approach: emit \field HYPERLINK in RTF (RichEdit handles
+// styling and CFE_LINK automatically), then on EN_LINK click extract the
+// real URL via ITextRange2::GetURL (Text Object Model interface).
+//
+// No manual position tracking — that was an over-engineered detour.
 
 #include <windows.h>
 #include <richedit.h>
+#include <richole.h>        // IRichEditOle (separate header from richedit.h)
 #include <commctrl.h>
+#include <shellapi.h>
+#include <tom.h>            // ITextDocument2, ITextRange2
 
 #include <array>
 #include <cstdint>
@@ -24,11 +27,19 @@
 #include "md4c.h"
 
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
 
 inline constexpr std::string_view kDetectString =
 R"(EXT="MD" | EXT="MARKDOWN" | EXT="MDOWN" | EXT="MKD")";
 
 inline constexpr uint64_t kMaxFileBytes = 50ull * 1024 * 1024;
+
+inline constexpr LONG kPadLeft = 16;
+inline constexpr LONG kPadRight = 16;
+inline constexpr LONG kPadTop = 12;
+inline constexpr LONG kPadBottom = 12;
 
 namespace {
     HINSTANCE g_hInstance = nullptr;
@@ -52,7 +63,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
 }
 
 // ============================================================================
-// File reading: bytes → UTF-8 (md4c expects UTF-8)
+// File reading: bytes → UTF-8
 // ============================================================================
 namespace {
 
@@ -90,7 +101,6 @@ namespace {
         }
         std::string utf8(reinterpret_cast<const char*>(bytes.data() + offset),
             bytes.size() - offset);
-
         if (!utf8.empty() && MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
             utf8.data(), static_cast<int>(utf8.size()),
             nullptr, 0) == 0) {
@@ -121,7 +131,6 @@ namespace {
             CloseHandle(h);
             return std::unexpected(ReadError::TooLarge);
         }
-
         std::vector<uint8_t> buffer(static_cast<size_t>(size.QuadPart));
         DWORD bytesRead = 0;
         BOOL ok = ReadFile(h, buffer.data(), static_cast<DWORD>(buffer.size()),
@@ -146,7 +155,7 @@ namespace {
 } // namespace
 
 // ============================================================================
-// Markdown → RTF conversion via md4c callbacks
+// Markdown → RTF
 // ============================================================================
 namespace md_render {
 
@@ -158,6 +167,10 @@ namespace md_render {
     struct RtfBuilder {
         std::string out;
         std::vector<ListContext> list_stack;
+
+        // Whether we've already emitted any block-level content. Used to suppress
+        // \sb (space-before) on the very first heading at the top of the document.
+        bool first_block_emitted = false;
 
         void append_raw(std::string_view s) { out.append(s); }
 
@@ -191,21 +204,34 @@ namespace md_render {
 
     int OnEnterBlock(MD_BLOCKTYPE type, void* detail, void* ud) {
         auto& b = *static_cast<RtfBuilder*>(ud);
+
+        const bool is_first = !b.first_block_emitted;
+        if (type != MD_BLOCK_DOC) b.first_block_emitted = true;
+
         switch (type) {
         case MD_BLOCK_DOC: break;
         case MD_BLOCK_H: {
             auto* d = static_cast<MD_BLOCK_H_DETAIL*>(detail);
             constexpr int sizes[] = { 0, 36, 32, 28, 26, 24, 22 };
+            constexpr int sb_vals[] = { 0, 360, 320, 280, 240, 240, 240 };
+            constexpr int sa_vals[] = { 0, 180, 160, 140, 120, 120, 120 };
             const unsigned level = (d->level >= 1 && d->level <= 6)
                 ? static_cast<unsigned>(d->level) : 1u;
-            char buf[64];
-            std::snprintf(buf, sizeof(buf), "{\\fs%d\\b\\sa180 ", sizes[level]);
+            // Suppress space-before for the very first block — otherwise the
+            // first heading of a document floats too far from the top edge.
+            const int sb = is_first ? 0 : sb_vals[level];
+            char buf[96];
+            std::snprintf(buf, sizeof(buf),
+                "\\pard\\sb%d\\sa%d {\\fs%d\\b ",
+                sb, sa_vals[level], sizes[level]);
             b.append_raw(buf);
             break;
         }
-        case MD_BLOCK_P: break;
+        case MD_BLOCK_P:
+            b.append_raw("\\pard\\sa120 ");
+            break;
         case MD_BLOCK_QUOTE:
-            b.append_raw("{\\li360\\cf3\\i ");
+            b.append_raw("\\pard\\li360\\sa120\\sb120 {\\cf3\\i ");
             break;
         case MD_BLOCK_UL:
             b.list_stack.push_back({ false, 0 });
@@ -217,27 +243,31 @@ namespace md_render {
         }
         case MD_BLOCK_LI: {
             const int level = static_cast<int>(b.list_stack.size());
-            const int indent = level * 360;
-            char buf[80];
+            const int text_indent = level * 720;
+            char buf[96];
+            std::snprintf(buf, sizeof(buf),
+                "\\pard\\li%d\\fi-360\\tx%d ",
+                text_indent, text_indent);
+            b.append_raw(buf);
             if (!b.list_stack.empty() && b.list_stack.back().ordered) {
                 const int n = b.list_stack.back().next_number++;
-                std::snprintf(buf, sizeof(buf),
-                    "{\\li%d\\fi-360 %d.\\tab ", indent, n);
+                char num[16];
+                std::snprintf(num, sizeof(num), "%d.\\tab ", n);
+                b.append_raw(num);
             }
             else {
-                std::snprintf(buf, sizeof(buf),
-                    "{\\li%d\\fi-180\\bullet\\tab ", indent);
+                b.append_raw("\\bullet\\tab ");
             }
-            b.append_raw(buf);
             break;
         }
         case MD_BLOCK_HR:
-            b.append_raw("{\\pard\\brdrb\\brdrs\\brdrw10\\par}");
+            b.append_raw("\\pard\\brdrb\\brdrs\\brdrw10\\sa180\\sb180\\par ");
             break;
         case MD_BLOCK_CODE:
-            b.append_raw("{\\f1\\fs18\\cf4\\sa60\\sb60 ");
+            b.append_raw("\\pard\\sa120\\sb120 {\\f1\\fs18\\cf4 ");
             break;
-        case MD_BLOCK_HTML:    break;
+        case MD_BLOCK_HTML:
+            break;
         default: break;
         }
         return 0;
@@ -253,7 +283,7 @@ namespace md_render {
         case MD_BLOCK_OL:
             if (!b.list_stack.empty()) b.list_stack.pop_back();
             break;
-        case MD_BLOCK_LI:    b.append_raw("\\par}\n"); break;
+        case MD_BLOCK_LI:    b.append_raw("\\par\n"); break;
         case MD_BLOCK_CODE:  b.append_raw("}\\par\n"); break;
         default: break;
         }
@@ -268,6 +298,9 @@ namespace md_render {
         case MD_SPAN_DEL:    b.append_raw("{\\strike ");     break;
         case MD_SPAN_CODE:   b.append_raw("{\\f1\\cf4 ");    break;
         case MD_SPAN_A: {
+            // \field HYPERLINK syntax — RichEdit applies CFE_LINK to the
+            // \fldrslt content automatically and fires EN_LINK on click.
+            // We extract the real URL on click via ITextRange2::GetURL.
             auto* d = static_cast<MD_SPAN_A_DETAIL*>(detail);
             b.append_raw("{\\field{\\*\\fldinst HYPERLINK \"");
             for (MD_SIZE i = 0; i < d->href.size; ++i) {
@@ -280,6 +313,9 @@ namespace md_render {
             b.append_raw("\"}{\\fldrslt{\\cf2\\ul ");
             break;
         }
+        case MD_SPAN_IMG:
+            b.append_raw("{\\cf3\\i [image: ");
+            break;
         default: break;
         }
         return 0;
@@ -295,7 +331,10 @@ namespace md_render {
             b.append_raw("}");
             break;
         case MD_SPAN_A:
-            b.append_raw("}}}");
+            b.append_raw("}}}");  // close \cf2\ul, fldrslt, field
+            break;
+        case MD_SPAN_IMG:
+            b.append_raw("]}");
             break;
         default: break;
         }
@@ -351,7 +390,7 @@ namespace md_render {
 } // namespace md_render
 
 // ============================================================================
-// Lister key forwarding (subclass)
+// Lister key forwarding
 // ============================================================================
 namespace {
 
@@ -386,7 +425,7 @@ namespace {
 } // namespace
 
 // ============================================================================
-// RichEdit content loaders
+// RichEdit content loaders + helpers
 // ============================================================================
 namespace {
 
@@ -437,6 +476,70 @@ namespace {
             reinterpret_cast<LPARAM>(&cf));
     }
 
+    void ApplyEditorPadding(HWND richEdit) {
+        RECT r;
+        GetClientRect(richEdit, &r);
+        r.left += kPadLeft;
+        r.top += kPadTop;
+        r.right -= kPadRight;
+        r.bottom -= kPadBottom;
+        if (r.right < r.left)  r.right = r.left;
+        if (r.bottom < r.top)  r.bottom = r.top;
+        SendMessageW(richEdit, EM_SETRECT, 0, reinterpret_cast<LPARAM>(&r));
+    }
+
+    // Open the URL of the link at the given character range.
+    // Uses ITextRange2::GetURL to extract the real URL from \field HYPERLINK.
+    // Falls back to the visible text for autodetected URLs (where text == URL).
+    void OpenLinkAtRange(HWND richEdit, CHARRANGE chrg) {
+        IRichEditOle* pOle = nullptr;
+        SendMessageW(richEdit, EM_GETOLEINTERFACE, 0,
+            reinterpret_cast<LPARAM>(&pOle));
+        if (!pOle) return;
+
+        ITextDocument2* pDoc = nullptr;
+        HRESULT hr = pOle->QueryInterface(__uuidof(ITextDocument2),
+            reinterpret_cast<void**>(&pDoc));
+        pOle->Release();
+
+        bool opened = false;
+
+        if (SUCCEEDED(hr) && pDoc) {
+            ITextRange* pRange = nullptr;
+            if (SUCCEEDED(pDoc->Range(chrg.cpMin, chrg.cpMax, &pRange)) && pRange) {
+                ITextRange2* pRange2 = nullptr;
+                if (SUCCEEDED(pRange->QueryInterface(__uuidof(ITextRange2),
+                    reinterpret_cast<void**>(&pRange2)))) {
+                    BSTR url = nullptr;
+                    if (SUCCEEDED(pRange2->GetURL(&url)) && url && SysStringLen(url) > 0) {
+                        ShellExecuteW(nullptr, L"open", url,
+                            nullptr, nullptr, SW_SHOWNORMAL);
+                        opened = true;
+                    }
+                    if (url) SysFreeString(url);
+                    pRange2->Release();
+                }
+                pRange->Release();
+            }
+            pDoc->Release();
+        }
+
+        if (opened) return;
+
+        // Fallback: extract visible text via EM_GETTEXTRANGE and use it as URL
+        // (works for autodetected URLs where text IS the URL).
+        const LONG len = chrg.cpMax - chrg.cpMin;
+        if (len <= 0 || len > 4096) return;
+        std::vector<wchar_t> buf(static_cast<size_t>(len) + 1);
+        TEXTRANGEW tr{ chrg, buf.data() };
+        SendMessageW(richEdit, EM_GETTEXTRANGE, 0,
+            reinterpret_cast<LPARAM>(&tr));
+        if (buf[0] != L'\0') {
+            ShellExecuteW(nullptr, L"open", buf.data(),
+                nullptr, nullptr, SW_SHOWNORMAL);
+        }
+    }
+
 } // namespace
 
 // ============================================================================
@@ -445,11 +548,27 @@ namespace {
 namespace {
 
     LRESULT CALLBACK HostWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) noexcept {
-        if (msg == WM_SIZE) {
-            if (HWND child = GetWindow(hwnd, GW_CHILD); child) {
+        switch (msg) {
+        case WM_SIZE: {
+            HWND child = GetWindow(hwnd, GW_CHILD);
+            if (child) {
                 MoveWindow(child, 0, 0, LOWORD(lp), HIWORD(lp), TRUE);
+                ApplyEditorPadding(child);
             }
             return 0;
+        }
+        case WM_NOTIFY: {
+            auto* nmh = reinterpret_cast<NMHDR*>(lp);
+            if (nmh->code == EN_LINK) {
+                auto* enl = reinterpret_cast<ENLINK*>(lp);
+                if (enl->msg == WM_LBUTTONUP) {
+                    HWND rich = GetWindow(hwnd, GW_CHILD);
+                    if (rich) OpenLinkAtRange(rich, enl->chrg);
+                    return 1;
+                }
+            }
+            break;
+        }
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
@@ -511,7 +630,6 @@ HWND __stdcall ListLoadW(HWND ParentWin, wchar_t* FileToLoad, int /*ShowFlags*/)
     SendMessageW(richEdit, EM_EXLIMITTEXT, 0, 0x7FFFFFFE);
 
     SetWindowSubclass(richEdit, RichEditSubclassProc, kSubclassId, 0);
-
     ApplyDefaultFont(richEdit);
 
     auto content = ReadFileToUtf8(FileToLoad);
@@ -523,6 +641,7 @@ HWND __stdcall ListLoadW(HWND ParentWin, wchar_t* FileToLoad, int /*ShowFlags*/)
         LoadPlainTextWide(richEdit, DescribeError(content.error(), FileToLoad));
     }
 
+    ApplyEditorPadding(richEdit);
     return host;
 }
 
