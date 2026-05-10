@@ -1,10 +1,15 @@
 cmake_minimum_required(VERSION 3.28)
 project(mdview-wlx LANGUAGES CXX)
 
-# C++26 — VS 2026 / MSVC 14.50 supports a subset via /std:c++latest.
-# CMake 3.28 знает про cxx_std_26; для более ранних версий упадёт сюда же
-# через /std:c++latest по фоллбэку.
-set(CMAKE_CXX_STANDARD 26)
+# C++26 в MSVC 14.50 включается флагом /std:c++latest, но CMake 4.1.1 ещё
+# не имеет внутреннего маппинга cxx_std_26 -> /std:??? для MSVC, поэтому
+# set(CMAKE_CXX_STANDARD 26) валится с ошибкой "compiler does not support".
+# Поэтому НЕ выставляем CMAKE_CXX_STANDARD, а пробрасываем флаг напрямую.
+#
+# Базовый стандарт оставляем C++23 на случай если кто-то соберёт проект
+# clang'ом или gcc'шкой — у них cxx_std_23 уже стабильно поддерживается.
+
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -26,12 +31,11 @@ target_link_libraries(mdview PRIVATE comctl32)
 
 if(MSVC)
     # /std:c++latest даёт C++26 draft фичи в MSVC 14.50.
-    # CMake обычно сам подставляет /std:c++26 для cxx_std_26, но MSVC
-    # пока маппит "26" на /std:c++latest — оставим явно для надёжности.
+    # Будет предупреждение об override C++23 -> latest, это ожидаемо.
     target_compile_options(mdview PRIVATE
         /W4 /permissive-
         /std:c++latest
-        /Zc:preprocessor      # conformant препроцессор, нужен некоторым STL фичам
+        /Zc:preprocessor      # conformant препроцессор
         /utf-8                # исходники и runtime строки в UTF-8
     )
     target_compile_definitions(mdview PRIVATE
@@ -41,8 +45,7 @@ if(MSVC)
         _CRT_SECURE_NO_WARNINGS
     )
 
-    # Статическая CRT — плагин работает на любой машине без VC++ Redist.
-    # Для DLL это безопасно, т.к. мы не передаём CRT-объекты через границу.
+    # Статическая CRT — плагин работает без VC++ Redist на машине пользователя.
     set_property(TARGET mdview PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
