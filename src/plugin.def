@@ -1,0 +1,8 @@
+; Force clean exported names. Without this, MSVC may emit decorated
+; names like _ListLoad@12 (x86) which TC won't find.
+LIBRARY mdview
+EXPORTS
+    ListGetDetectString
+    ListLoad
+    ListLoadW
+    ListCloseWindow
