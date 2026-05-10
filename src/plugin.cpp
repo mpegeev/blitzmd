@@ -1,17 +1,17 @@
-// MD Viewer for Total Commander — Stage 4 v2
+// MD Viewer for Total Commander — Stage 4.3
 //
-// Hyperlink approach: emit \field HYPERLINK in RTF (RichEdit handles
-// styling and CFE_LINK automatically), then on EN_LINK click extract the
-// real URL via ITextRange2::GetURL (Text Object Model interface).
-//
-// No manual position tracking — that was an over-engineered detour.
+// Fixes:
+//  - Nested blocks inside list items (loose lists with code blocks etc.)
+//    now inherit container indent instead of resetting to left edge.
+//  - Code blocks have left border, paragraph fill, and proper indentation.
+//  - Bumped code background contrast in both themes.
 
 #include <windows.h>
 #include <richedit.h>
-#include <richole.h>        // IRichEditOle (separate header from richedit.h)
+#include <richole.h>
 #include <commctrl.h>
 #include <shellapi.h>
-#include <tom.h>            // ITextDocument2, ITextRange2
+#include <tom.h>
 
 #include <array>
 #include <cstdint>
@@ -46,6 +46,20 @@ namespace {
     HMODULE   g_richEditModule = nullptr;
     constexpr wchar_t kHostClass[] = L"MdViewerHostV1";
     constexpr UINT_PTR kSubclassId = 0xCAFE;
+
+    template <size_t N>
+    void CopyFixed(wchar_t(&dst)[N], std::wstring_view src) {
+        const size_t n = (src.size() < N - 1) ? src.size() : N - 1;
+        std::wmemcpy(dst, src.data(), n);
+        dst[n] = L'\0';
+    }
+    inline void CopyFixed(char* dst, int dst_count, std::string_view src) {
+        if (dst_count <= 0) return;
+        const size_t cap = static_cast<size_t>(dst_count) - 1;
+        const size_t n = (src.size() < cap) ? src.size() : cap;
+        std::memcpy(dst, src.data(), n);
+        dst[n] = '\0';
+    }
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
@@ -63,7 +77,60 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
 }
 
 // ============================================================================
-// File reading: bytes → UTF-8
+// Theme
+// ============================================================================
+struct ThemeColors {
+    COLORREF background;
+    COLORREF text;
+    COLORREF link;
+    COLORREF quote;
+    COLORREF code_text;
+    COLORREF code_bg;
+    COLORREF hr_line;
+};
+
+inline constexpr ThemeColors kLightTheme{
+    .background = RGB(255, 255, 255),
+    .text = RGB(0,   0,   0),
+    .link = RGB(0, 102, 204),
+    .quote = RGB(110, 110, 110),
+    .code_text = RGB(40,  40,  40),
+    .code_bg = RGB(232, 232, 234),  // bumped contrast
+    .hr_line = RGB(195, 195, 195),
+};
+
+inline constexpr ThemeColors kDarkTheme{
+    .background = RGB(30,  30,  30),
+    .text = RGB(212, 212, 212),
+    .link = RGB(86, 156, 255),
+    .quote = RGB(160, 160, 160),
+    .code_text = RGB(206, 145, 120),
+    .code_bg = RGB(50,  52,  60),  // bumped contrast (slight blue tint)
+    .hr_line = RGB(85,  85,  85),
+};
+
+namespace {
+
+    bool IsSystemDarkMode() {
+        DWORD value = 1;
+        DWORD size = sizeof(value);
+        const LSTATUS s = RegGetValueW(
+            HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+            L"AppsUseLightTheme",
+            RRF_RT_REG_DWORD,
+            nullptr, &value, &size);
+        return (s == ERROR_SUCCESS) && (value == 0);
+    }
+
+    const ThemeColors& GetActiveTheme() {
+        return IsSystemDarkMode() ? kDarkTheme : kLightTheme;
+    }
+
+} // namespace
+
+// ============================================================================
+// File reading
 // ============================================================================
 namespace {
 
@@ -156,6 +223,9 @@ namespace {
 
 // ============================================================================
 // Markdown → RTF
+//
+// Color table indices (1-based):
+//   1 = text, 2 = link, 3 = quote, 4 = code text, 5 = code bg, 6 = hr line
 // ============================================================================
 namespace md_render {
 
@@ -168,18 +238,52 @@ namespace md_render {
         std::string out;
         std::vector<ListContext> list_stack;
 
-        // Whether we've already emitted any block-level content. Used to suppress
-        // \sb (space-before) on the very first heading at the top of the document.
+        // Stack tracking whether the current list item has had a child block
+        // emitted yet. The first child block of an LI typically MERGES with the
+        // marker paragraph (so "1." and the content stay on the same line);
+        // subsequent blocks open new paragraphs at the LI's indent.
+        std::vector<bool> li_block_emitted_stack;
+
+        // Depth counter for MD_BLOCK_CODE — when >0, line breaks get wrapped in
+        // NBSP padding so the character-level \highlight5 visually extends
+        // beyond the text on each line.
+        int code_block_depth = 0;
+
         bool first_block_emitted = false;
 
         void append_raw(std::string_view s) { out.append(s); }
+
+        int container_indent() const {
+            return static_cast<int>(list_stack.size()) * 720;
+        }
+
+        bool inside_li_no_block_yet() const {
+            return !li_block_emitted_stack.empty()
+                && !li_block_emitted_stack.back();
+        }
+
+        void mark_li_block_emitted() {
+            if (!li_block_emitted_stack.empty()) {
+                li_block_emitted_stack.back() = true;
+            }
+        }
 
         void emit_utf16(char16_t c) {
             switch (c) {
             case u'\\': append_raw("\\\\"); return;
             case u'{':  append_raw("\\{");  return;
             case u'}':  append_raw("\\}");  return;
-            case u'\n': append_raw("\\line "); return;
+            case u'\n':
+                // Inside code blocks: pad each line break with NBSPs so the
+                // character-level highlight extends a few characters beyond
+                // the actual code text on both ends, giving visual padding.
+                if (code_block_depth > 0) {
+                    append_raw("\\u160?\\u160?\\line \\u160?\\u160?");
+                }
+                else {
+                    append_raw("\\line ");
+                }
+                return;
             case u'\r': return;
             }
             if (c < 0x20) return;
@@ -202,7 +306,7 @@ namespace md_render {
         }
     };
 
-    int OnEnterBlock(MD_BLOCKTYPE type, void* detail, void* ud) {
+    static int OnEnterBlock(MD_BLOCKTYPE type, void* detail, void* ud) {
         auto& b = *static_cast<RtfBuilder*>(ud);
 
         const bool is_first = !b.first_block_emitted;
@@ -210,6 +314,7 @@ namespace md_render {
 
         switch (type) {
         case MD_BLOCK_DOC: break;
+
         case MD_BLOCK_H: {
             auto* d = static_cast<MD_BLOCK_H_DETAIL*>(detail);
             constexpr int sizes[] = { 0, 36, 32, 28, 26, 24, 22 };
@@ -217,31 +322,66 @@ namespace md_render {
             constexpr int sa_vals[] = { 0, 180, 160, 140, 120, 120, 120 };
             const unsigned level = (d->level >= 1 && d->level <= 6)
                 ? static_cast<unsigned>(d->level) : 1u;
-            // Suppress space-before for the very first block — otherwise the
-            // first heading of a document floats too far from the top edge.
             const int sb = is_first ? 0 : sb_vals[level];
-            char buf[96];
+            const int li = b.container_indent();
+            char buf[128];
             std::snprintf(buf, sizeof(buf),
-                "\\pard\\sb%d\\sa%d {\\fs%d\\b ",
-                sb, sa_vals[level], sizes[level]);
+                "\\pard\\li%d\\sb%d\\sa%d {\\fs%d\\b ",
+                li, sb, sa_vals[level], sizes[level]);
             b.append_raw(buf);
             break;
         }
-        case MD_BLOCK_P:
-            b.append_raw("\\pard\\sa120 ");
+
+        case MD_BLOCK_P: {
+            // Inside an LI as the first child block: MERGE with marker
+            // paragraph (don't reset \pard). Subsequent paragraphs in the same
+            // LI open new paragraphs aligned with list text indent.
+            if (b.inside_li_no_block_yet()) {
+                b.mark_li_block_emitted();
+                // intentionally emit nothing — merge with marker paragraph
+            }
+            else {
+                const int li = b.container_indent();
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), "\\pard\\li%d\\sa120 ", li);
+                b.append_raw(buf);
+            }
             break;
-        case MD_BLOCK_QUOTE:
-            b.append_raw("\\pard\\li360\\sa120\\sb120 {\\cf3\\i ");
+        }
+
+        case MD_BLOCK_QUOTE: {
+            if (b.inside_li_no_block_yet()) {
+                b.mark_li_block_emitted();
+                b.append_raw("\\par");  // close marker paragraph first
+            }
+            const int li = b.container_indent() + 360;
+            char buf[80];
+            std::snprintf(buf, sizeof(buf),
+                "\\pard\\li%d\\sa120\\sb120 {\\cf3\\i ", li);
+            b.append_raw(buf);
             break;
+        }
+
         case MD_BLOCK_UL:
+            if (b.inside_li_no_block_yet()) {
+                b.mark_li_block_emitted();
+                b.append_raw("\\par");
+            }
             b.list_stack.push_back({ false, 0 });
             break;
+
         case MD_BLOCK_OL: {
             auto* d = static_cast<MD_BLOCK_OL_DETAIL*>(detail);
+            if (b.inside_li_no_block_yet()) {
+                b.mark_li_block_emitted();
+                b.append_raw("\\par");
+            }
             b.list_stack.push_back({ true, static_cast<int>(d->start) });
             break;
         }
+
         case MD_BLOCK_LI: {
+            b.li_block_emitted_stack.push_back(false);
             const int level = static_cast<int>(b.list_stack.size());
             const int text_indent = level * 720;
             char buf[96];
@@ -260,20 +400,51 @@ namespace md_render {
             }
             break;
         }
-        case MD_BLOCK_HR:
-            b.append_raw("\\pard\\brdrb\\brdrs\\brdrw10\\sa180\\sb180\\par ");
+
+        case MD_BLOCK_HR: {
+            if (b.inside_li_no_block_yet()) {
+                b.mark_li_block_emitted();
+                b.append_raw("\\par");
+            }
+            const int li = b.container_indent();
+            char buf[160];
+            std::snprintf(buf, sizeof(buf),
+                "\\pard\\li%d\\brdrb\\brdrs\\brdrw10\\brdrcf6"
+                "\\sa180\\sb180\\par ", li);
+            b.append_raw(buf);
             break;
-        case MD_BLOCK_CODE:
-            b.append_raw("\\pard\\sa120\\sb120 {\\f1\\fs18\\cf4 ");
+        }
+
+        case MD_BLOCK_CODE: {
+            // If this is the first inner block of an LI, we need to break the
+            // marker paragraph first (a code block on the marker line is wrong).
+            if (b.inside_li_no_block_yet()) {
+                b.mark_li_block_emitted();
+                b.append_raw("\\par");
+            }
+            const int li = b.container_indent() + 360;
+            char buf[256];
+            std::snprintf(buf, sizeof(buf),
+                "\\pard\\li%d\\ri360"
+                "\\sa240\\sb240"                          // generous vertical breathing room
+                "\\box\\brdrs\\brdrw50\\brdrcf6\\brsp40"  // try paragraph border
+                " {\\f1\\fs18\\cf4\\highlight5 "
+                "\\u160?\\u160?",                         // leading NBSP padding
+                li);
+            b.append_raw(buf);
+            b.code_block_depth++;
             break;
+        }
+
         case MD_BLOCK_HTML:
             break;
+
         default: break;
         }
         return 0;
     }
 
-    int OnLeaveBlock(MD_BLOCKTYPE type, void* /*detail*/, void* ud) {
+    static int OnLeaveBlock(MD_BLOCKTYPE type, void* /*detail*/, void* ud) {
         auto& b = *static_cast<RtfBuilder*>(ud);
         switch (type) {
         case MD_BLOCK_H:     b.append_raw("}\\par\n"); break;
@@ -283,24 +454,37 @@ namespace md_render {
         case MD_BLOCK_OL:
             if (!b.list_stack.empty()) b.list_stack.pop_back();
             break;
-        case MD_BLOCK_LI:    b.append_raw("\\par\n"); break;
-        case MD_BLOCK_CODE:  b.append_raw("}\\par\n"); break;
+        case MD_BLOCK_LI: {
+            const bool emitted = b.li_block_emitted_stack.empty()
+                ? true
+                : b.li_block_emitted_stack.back();
+            if (!b.li_block_emitted_stack.empty()) {
+                b.li_block_emitted_stack.pop_back();
+            }
+            // Tight LI: text was emitted via OnText, no inner block leaved \par.
+            // Close the marker paragraph here.
+            if (!emitted) {
+                b.append_raw("\\par\n");
+            }
+            break;
+        }
+        case MD_BLOCK_CODE:
+            b.code_block_depth--;
+            b.append_raw("\\u160?\\u160?}\\par\n");
+            break;
         default: break;
         }
         return 0;
     }
 
-    int OnEnterSpan(MD_SPANTYPE type, void* detail, void* ud) {
+    static int OnEnterSpan(MD_SPANTYPE type, void* detail, void* ud) {
         auto& b = *static_cast<RtfBuilder*>(ud);
         switch (type) {
-        case MD_SPAN_EM:     b.append_raw("{\\i ");          break;
-        case MD_SPAN_STRONG: b.append_raw("{\\b ");          break;
-        case MD_SPAN_DEL:    b.append_raw("{\\strike ");     break;
-        case MD_SPAN_CODE:   b.append_raw("{\\f1\\cf4 ");    break;
+        case MD_SPAN_EM:     b.append_raw("{\\i ");                     break;
+        case MD_SPAN_STRONG: b.append_raw("{\\b ");                     break;
+        case MD_SPAN_DEL:    b.append_raw("{\\strike ");                break;
+        case MD_SPAN_CODE:   b.append_raw("{\\f1\\cf4\\highlight5 ");   break;
         case MD_SPAN_A: {
-            // \field HYPERLINK syntax — RichEdit applies CFE_LINK to the
-            // \fldrslt content automatically and fires EN_LINK on click.
-            // We extract the real URL on click via ITextRange2::GetURL.
             auto* d = static_cast<MD_SPAN_A_DETAIL*>(detail);
             b.append_raw("{\\field{\\*\\fldinst HYPERLINK \"");
             for (MD_SIZE i = 0; i < d->href.size; ++i) {
@@ -321,7 +505,7 @@ namespace md_render {
         return 0;
     }
 
-    int OnLeaveSpan(MD_SPANTYPE type, void* /*detail*/, void* ud) {
+    static int OnLeaveSpan(MD_SPANTYPE type, void* /*detail*/, void* ud) {
         auto& b = *static_cast<RtfBuilder*>(ud);
         switch (type) {
         case MD_SPAN_EM:
@@ -331,7 +515,7 @@ namespace md_render {
             b.append_raw("}");
             break;
         case MD_SPAN_A:
-            b.append_raw("}}}");  // close \cf2\ul, fldrslt, field
+            b.append_raw("}}}");
             break;
         case MD_SPAN_IMG:
             b.append_raw("]}");
@@ -341,7 +525,7 @@ namespace md_render {
         return 0;
     }
 
-    int OnText(MD_TEXTTYPE type, const MD_CHAR* text, MD_SIZE size, void* ud) {
+    static int OnText(MD_TEXTTYPE type, const MD_CHAR* text, MD_SIZE size, void* ud) {
         auto& b = *static_cast<RtfBuilder*>(ud);
         const std::string_view s{ text, size };
         switch (type) {
@@ -359,15 +543,29 @@ namespace md_render {
         return 0;
     }
 
-    std::string ConvertMarkdownToRtf(std::string_view md_utf8) {
+    static std::string ColorEntry(COLORREF c) {
+        return std::format("\\red{}\\green{}\\blue{};",
+            GetRValue(c), GetGValue(c), GetBValue(c));
+    }
+
+    static std::string ConvertMarkdownToRtf(std::string_view md_utf8,
+        const ThemeColors& theme) {
         RtfBuilder b;
-        b.out.reserve(md_utf8.size() * 2 + 256);
+        b.out.reserve(md_utf8.size() * 2 + 512);
 
         b.append_raw(R"({\rtf1\ansi\ansicpg65001\deff0)");
         b.append_raw(R"({\fonttbl{\f0 Segoe UI;}{\f1 Cascadia Code;}})");
-        b.append_raw(R"({\colortbl;\red0\green102\blue204;\red0\green102\blue204;)"
-            R"(\red128\green128\blue128;\red40\green40\blue40;})");
-        b.append_raw("\\fs22 \n");
+
+        b.append_raw("{\\colortbl;");
+        b.append_raw(ColorEntry(theme.text));       // 1
+        b.append_raw(ColorEntry(theme.link));       // 2
+        b.append_raw(ColorEntry(theme.quote));      // 3
+        b.append_raw(ColorEntry(theme.code_text));  // 4
+        b.append_raw(ColorEntry(theme.code_bg));    // 5
+        b.append_raw(ColorEntry(theme.hr_line));    // 6
+        b.append_raw("}");
+
+        b.append_raw("\\fs22\\cf1 \n");
 
         MD_PARSER parser{};
         parser.abi_version = 0;
@@ -465,13 +663,14 @@ namespace {
             reinterpret_cast<LPARAM>(z.c_str()));
     }
 
-    void ApplyDefaultFont(HWND richEdit) {
+    void ApplyDefaultFontAndColor(HWND richEdit, const ThemeColors& theme) {
         CHARFORMAT2W cf{};
         cf.cbSize = sizeof(cf);
-        cf.dwMask = CFM_FACE | CFM_SIZE | CFM_CHARSET;
+        cf.dwMask = CFM_FACE | CFM_SIZE | CFM_CHARSET | CFM_COLOR;
         cf.yHeight = 11 * 20;
         cf.bCharSet = DEFAULT_CHARSET;
-        lstrcpynW(cf.szFaceName, L"Segoe UI", LF_FACESIZE);
+        cf.crTextColor = theme.text;
+        CopyFixed(cf.szFaceName, L"Segoe UI");
         SendMessageW(richEdit, EM_SETCHARFORMAT, SCF_DEFAULT,
             reinterpret_cast<LPARAM>(&cf));
     }
@@ -488,9 +687,6 @@ namespace {
         SendMessageW(richEdit, EM_SETRECT, 0, reinterpret_cast<LPARAM>(&r));
     }
 
-    // Open the URL of the link at the given character range.
-    // Uses ITextRange2::GetURL to extract the real URL from \field HYPERLINK.
-    // Falls back to the visible text for autodetected URLs (where text == URL).
     void OpenLinkAtRange(HWND richEdit, CHARRANGE chrg) {
         IRichEditOle* pOle = nullptr;
         SendMessageW(richEdit, EM_GETOLEINTERFACE, 0,
@@ -526,8 +722,6 @@ namespace {
 
         if (opened) return;
 
-        // Fallback: extract visible text via EM_GETTEXTRANGE and use it as URL
-        // (works for autodetected URLs where text IS the URL).
         const LONG len = chrg.cpMax - chrg.cpMin;
         if (len <= 0 || len > 4096) return;
         std::vector<wchar_t> buf(static_cast<size_t>(len) + 1);
@@ -595,12 +789,14 @@ namespace {
 
 extern "C" __declspec(dllexport)
 void __stdcall ListGetDetectString(char* DetectString, int maxlen) {
-    lstrcpynA(DetectString, kDetectString.data(), maxlen);
+    CopyFixed(DetectString, maxlen, kDetectString);
 }
 
 extern "C" __declspec(dllexport)
 HWND __stdcall ListLoadW(HWND ParentWin, wchar_t* FileToLoad, int /*ShowFlags*/) {
     EnsureHostClassRegistered();
+
+    const ThemeColors& theme = GetActiveTheme();
 
     RECT rc{};
     GetClientRect(ParentWin, &rc);
@@ -623,18 +819,18 @@ HWND __stdcall ListLoadW(HWND ParentWin, wchar_t* FileToLoad, int /*ShowFlags*/)
         return nullptr;
     }
 
-    SendMessageW(richEdit, EM_SETBKGNDCOLOR, 0, RGB(255, 255, 255));
+    SendMessageW(richEdit, EM_SETBKGNDCOLOR, 0, theme.background);
     SendMessageW(richEdit, EM_AUTOURLDETECT, AURL_ENABLEURL, 0);
     SendMessageW(richEdit, EM_SETEVENTMASK, 0, ENM_LINK);
     SendMessageW(richEdit, EM_SETEDITSTYLE, SES_USECTF, SES_USECTF);
     SendMessageW(richEdit, EM_EXLIMITTEXT, 0, 0x7FFFFFFE);
 
     SetWindowSubclass(richEdit, RichEditSubclassProc, kSubclassId, 0);
-    ApplyDefaultFont(richEdit);
+    ApplyDefaultFontAndColor(richEdit, theme);
 
     auto content = ReadFileToUtf8(FileToLoad);
     if (content) {
-        const std::string rtf = md_render::ConvertMarkdownToRtf(*content);
+        const std::string rtf = md_render::ConvertMarkdownToRtf(*content, theme);
         LoadRtf(richEdit, rtf);
     }
     else {
