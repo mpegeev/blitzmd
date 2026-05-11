@@ -93,9 +93,10 @@ struct ThemeColors {
     COLORREF text;
     COLORREF link;
     COLORREF quote;
-    COLORREF code_text;
-    COLORREF code_bg;
-    COLORREF hr_line;
+    COLORREF code_text;        // text color in code BLOCKS
+    COLORREF code_bg;          // background color in code BLOCKS
+    COLORREF hr_line;          // horizontal rule color
+    COLORREF inline_code_text; // text color for inline `code`
 };
 
 inline constexpr ThemeColors kLightTheme{
@@ -106,6 +107,7 @@ inline constexpr ThemeColors kLightTheme{
     .code_text = RGB(40,  40,  40),
     .code_bg = RGB(232, 232, 234),
     .hr_line = RGB(195, 195, 195),
+    .inline_code_text = RGB(199,  37,  78),  // brick red, GitHub-ish
 };
 
 inline constexpr ThemeColors kDarkTheme{
@@ -116,6 +118,7 @@ inline constexpr ThemeColors kDarkTheme{
     .code_text = RGB(206, 145, 120),
     .code_bg = RGB(50,  52,  60),
     .hr_line = RGB(85,  85,  85),
+    .inline_code_text = RGB(236, 118, 137),  // softer for dark theme
 };
 
 namespace {
@@ -408,8 +411,9 @@ namespace md_render {
             }
             else {
                 const int li = b.container_indent();
-                char buf[64];
-                std::snprintf(buf, sizeof(buf), "\\pard\\li%d\\sa120 ", li);
+                char buf[80];
+                std::snprintf(buf, sizeof(buf),
+                    "\\pard\\li%d\\sa120\\sl276\\slmult1 ", li);
                 b.append_raw(buf);
             }
             break;
@@ -421,9 +425,9 @@ namespace md_render {
                 b.append_raw("\\par");
             }
             const int li = b.container_indent() + 360;
-            char buf[80];
+            char buf[96];
             std::snprintf(buf, sizeof(buf),
-                "\\pard\\li%d\\sa120\\sb120 {\\cf3\\i ", li);
+                "\\pard\\li%d\\sa120\\sb120\\sl276\\slmult1 {\\cf3\\i ", li);
             b.append_raw(buf);
             break;
         }
@@ -450,9 +454,9 @@ namespace md_render {
             b.li_block_emitted_stack.push_back(false);
             const int level = static_cast<int>(b.list_stack.size());
             const int text_indent = level * kListLevelIndent;
-            char buf[96];
+            char buf[128];
             std::snprintf(buf, sizeof(buf),
-                "\\pard\\li%d\\fi-360\\tx%d ",
+                "\\pard\\li%d\\fi-360\\tx%d\\sl276\\slmult1 ",
                 text_indent, text_indent);
             b.append_raw(buf);
             if (!b.list_stack.empty() && b.list_stack.back().ordered) {
@@ -547,9 +551,12 @@ namespace md_render {
         case MD_SPAN_STRONG: b.append_raw("{\\b ");          break;
         case MD_SPAN_DEL:    b.append_raw("{\\strike ");     break;
         case MD_SPAN_CODE:
-            // Inline code: NBSP padding works well — \highlight5 visually
-            // extends 1 char beyond the actual code on each side.
-            b.append_raw("{\\f1\\cf4\\highlight5 \\u160?");
+            // Inline code: monospaced font + brick-red color.
+            // No border (RichEdit doesn't render \chbrdr) and no highlight
+            // (it follows line height and visually merges on adjacent lines).
+            // Font shift + accent color is enough to make inline code stand
+            // out without decorations — same approach as Notion's default.
+            b.append_raw("{\\f1\\cf7 ");
             break;
         case MD_SPAN_A: {
             auto* d = static_cast<MD_SPAN_A_DETAIL*>(detail);
@@ -581,7 +588,7 @@ namespace md_render {
             b.append_raw("}");
             break;
         case MD_SPAN_CODE:
-            b.append_raw("\\u160?}");
+            b.append_raw("}");
             break;
         case MD_SPAN_A:
             b.append_raw("}}}");
@@ -643,17 +650,18 @@ namespace md_render {
         b.append_raw(R"({\rtf1\ansi\ansicpg65001\deff0)");
         b.append_raw(R"({\fonttbl{\f0 Segoe UI;}{\f1 Cascadia Mono;}})");
         b.append_raw("{\\colortbl;");
-        b.append_raw(ColorEntry(theme.text));
-        b.append_raw(ColorEntry(theme.link));
-        b.append_raw(ColorEntry(theme.quote));
-        b.append_raw(ColorEntry(theme.code_text));
-        b.append_raw(ColorEntry(theme.code_bg));
-        b.append_raw(ColorEntry(theme.hr_line));
+        b.append_raw(ColorEntry(theme.text));              // 1
+        b.append_raw(ColorEntry(theme.link));              // 2
+        b.append_raw(ColorEntry(theme.quote));             // 3
+        b.append_raw(ColorEntry(theme.code_text));         // 4
+        b.append_raw(ColorEntry(theme.code_bg));           // 5
+        b.append_raw(ColorEntry(theme.hr_line));           // 6
+        b.append_raw(ColorEntry(theme.inline_code_text));  // 7
         b.append_raw("}");
-        // \sl276\slmult1 = 1.15 line spacing (276/240). Applied to all paragraphs
-        // unless overridden — gives inline highlighted code visual breathing room
-        // between lines.
-        b.append_raw("\\fs22\\cf1\\sl276\\slmult1 \n");
+        // Document-level defaults. Line spacing is set per-paragraph (in each
+        // \pard block), not here — \pard resets paragraph properties, including
+        // \sl, so a top-level \sl is silently overridden by every block.
+        b.append_raw("\\fs22\\cf1 \n");
 
         MD_PARSER parser{};
         parser.abi_version = 0;

@@ -68,3 +68,21 @@ if(MSVC)
         _CRT_SECURE_NO_WARNINGS
     )
 endif()
+
+# ---- Packaging --------------------------------------------------------------
+# After every build, package the plugin into mdview.zip alongside the .wlx64.
+# To install in TC: open the zip via TC and press Enter. TC reads pluginst.inf
+# inside and offers one-click install (copies into TC's plugins dir and
+# registers in wincmd.ini).
+add_custom_command(TARGET mdview POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${CMAKE_SOURCE_DIR}/pluginst.inf
+        $<TARGET_FILE_DIR:mdview>/pluginst.inf
+    COMMAND ${CMAKE_COMMAND} -E tar c
+        mdview.zip --format=zip --
+        $<TARGET_FILE_NAME:mdview>
+        pluginst.inf
+    WORKING_DIRECTORY $<TARGET_FILE_DIR:mdview>
+    COMMENT "Packaging mdview.zip for TC install"
+    VERBATIM
+)
