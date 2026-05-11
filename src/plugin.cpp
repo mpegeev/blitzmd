@@ -4,8 +4,8 @@
 //  - Each line of a code block is padded with NBSP characters to match the
 //    longest line in the block, plus a fixed right margin.
 //  - Combined with \highlight5 (character-level background), this gives a
-//    visually rectangular fill since Cascadia Code is monospaced — every
-//    NBSP is exactly as wide as a code character.
+//    visually rectangular fill since Consolas is strictly monospaced — every
+//    glyph (including box-drawing chars) is exactly one cell wide.
 //  - Plus 2 NBSPs prefix on each line for left padding inside the box.
 //  - No TOM/ITextPara2 usage — that API surface isn't in current SDKs.
 
@@ -343,12 +343,24 @@ namespace md_render {
             const size_t target = max_chars + kCodeRightPadChars;
 
             // Emit each line: leading spaces, content, trailing spaces, \line.
-            // Padding uses \u32? (regular space via Unicode escape) rather than
-            // \u160? (NBSP). NBSP can trigger font fallback in some monospace
-            // fonts, producing slightly different glyph widths and a stepped
-            // right edge under \highlight5. Regular space is always rendered
-            // by the primary font at canonical monospace width.
+            //
+            // On the very first line we prepend a Zero-Width Joiner (U+200D).
+            // RichEdit strips leading whitespace at the start of a paragraph
+            // (but not after \line), which was eating our 2-space left pad on
+            // line 1 only — causing the first line to be visually shorter than
+            // the rest. ZWJ is a non-whitespace format character with zero
+            // visual width, so it anchors the paragraph start without affecting
+            // alignment, and subsequent space padding is preserved.
+            //
+            // Known limitation: lines containing box-drawing characters
+            // (U+2500..U+257F) may render with a slightly narrower right edge
+            // because RichEdit's font fallback gives those glyphs different
+            // width than ASCII chars even in strictly-monospaced fonts. This
+            // affects ASCII-art content but not regular source code.
             for (size_t i = 0; i < wlines.size(); ++i) {
+                if (i == 0) {
+                    append_raw("\\u8205?");  // ZWJ anchor
+                }
                 for (size_t j = 0; j < kCodeLeftPadChars; ++j) {
                     append_raw("\\u32?");
                 }
@@ -629,7 +641,7 @@ namespace md_render {
         b.out.reserve(md_utf8.size() * 2 + 512);
 
         b.append_raw(R"({\rtf1\ansi\ansicpg65001\deff0)");
-        b.append_raw(R"({\fonttbl{\f0 Segoe UI;}{\f1 Cascadia Code;}})");
+        b.append_raw(R"({\fonttbl{\f0 Segoe UI;}{\f1 Cascadia Mono;}})");
         b.append_raw("{\\colortbl;");
         b.append_raw(ColorEntry(theme.text));
         b.append_raw(ColorEntry(theme.link));
@@ -647,7 +659,8 @@ namespace md_render {
         parser.abi_version = 0;
         parser.flags = MD_FLAG_STRIKETHROUGH
             | MD_FLAG_PERMISSIVEAUTOLINKS
-            | MD_FLAG_TASKLISTS;
+            | MD_FLAG_TASKLISTS
+            | MD_FLAG_HARD_SOFT_BREAKS; // single \n -> <br>
         parser.enter_block = OnEnterBlock;
         parser.leave_block = OnLeaveBlock;
         parser.enter_span = OnEnterSpan;
@@ -907,6 +920,25 @@ HWND __stdcall ListLoadW(HWND ParentWin, wchar_t* FileToLoad, int /*ShowFlags*/)
     auto content = ReadFileToUtf8(FileToLoad);
     if (content) {
         const std::string rtf = md_render::ConvertMarkdownToRtf(*content, theme);
+
+#ifndef NDEBUG
+        // Debug: dump the generated RTF to %TEMP%\mdview-debug.rtf so we can
+        // inspect what we send to RichEdit. Only in Debug builds.
+        {
+            wchar_t tempPath[MAX_PATH] = {};
+            GetTempPathW(MAX_PATH, tempPath);
+            std::wstring dumpPath = std::wstring(tempPath) + L"mdview-debug.rtf";
+            HANDLE hf = CreateFileW(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (hf != INVALID_HANDLE_VALUE) {
+                DWORD written = 0;
+                WriteFile(hf, rtf.data(), static_cast<DWORD>(rtf.size()),
+                    &written, nullptr);
+                CloseHandle(hf);
+            }
+        }
+#endif
+
         LoadRtf(richEdit, rtf);
     }
     else {
