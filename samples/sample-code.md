@@ -3,8 +3,7 @@
 ## Inline code
 
 В тексте может встретиться `inline_code`, ссылки на переменные типа `g_hInstance`,
-имена функций `ListLoadW()`, и пути `C:\Windows\System32\msftedit.dll`. 
-
+имена функций `ListLoadW()`, и пути `C:\Windows\System32\msftedit.dll`.
 Команда `cmake --build . --config Release` собирает проект,
 а `Ctrl+Shift+B` это шорткат для Build All.
 
