@@ -1,10 +1,13 @@
-// MD Viewer for Total Commander — Stage 4.3
+// MD Viewer for Total Commander — Stage 4.5
 //
-// Fixes:
-//  - Nested blocks inside list items (loose lists with code blocks etc.)
-//    now inherit container indent instead of resetting to left edge.
-//  - Code blocks have left border, paragraph fill, and proper indentation.
-//  - Bumped code background contrast in both themes.
+// Code block rectangular shading via NBSP-padding:
+//  - Each line of a code block is padded with NBSP characters to match the
+//    longest line in the block, plus a fixed right margin.
+//  - Combined with \highlight5 (character-level background), this gives a
+//    visually rectangular fill since Cascadia Code is monospaced — every
+//    NBSP is exactly as wide as a code character.
+//  - Plus 2 NBSPs prefix on each line for left padding inside the box.
+//  - No TOM/ITextPara2 usage — that API surface isn't in current SDKs.
 
 #include <windows.h>
 #include <richedit.h>
@@ -40,6 +43,12 @@ inline constexpr LONG kPadLeft = 16;
 inline constexpr LONG kPadRight = 16;
 inline constexpr LONG kPadTop = 12;
 inline constexpr LONG kPadBottom = 12;
+
+inline constexpr int kListLevelIndent = 480;
+
+// Code block visual padding (in characters of monospaced font).
+inline constexpr size_t kCodeLeftPadChars = 2;
+inline constexpr size_t kCodeRightPadChars = 4;
 
 namespace {
     HINSTANCE g_hInstance = nullptr;
@@ -95,7 +104,7 @@ inline constexpr ThemeColors kLightTheme{
     .link = RGB(0, 102, 204),
     .quote = RGB(110, 110, 110),
     .code_text = RGB(40,  40,  40),
-    .code_bg = RGB(232, 232, 234),  // bumped contrast
+    .code_bg = RGB(232, 232, 234),
     .hr_line = RGB(195, 195, 195),
 };
 
@@ -105,7 +114,7 @@ inline constexpr ThemeColors kDarkTheme{
     .link = RGB(86, 156, 255),
     .quote = RGB(160, 160, 160),
     .code_text = RGB(206, 145, 120),
-    .code_bg = RGB(50,  52,  60),  // bumped contrast (slight blue tint)
+    .code_bg = RGB(50,  52,  60),
     .hr_line = RGB(85,  85,  85),
 };
 
@@ -223,9 +232,6 @@ namespace {
 
 // ============================================================================
 // Markdown → RTF
-//
-// Color table indices (1-based):
-//   1 = text, 2 = link, 3 = quote, 4 = code text, 5 = code bg, 6 = hr line
 // ============================================================================
 namespace md_render {
 
@@ -237,24 +243,18 @@ namespace md_render {
     struct RtfBuilder {
         std::string out;
         std::vector<ListContext> list_stack;
-
-        // Stack tracking whether the current list item has had a child block
-        // emitted yet. The first child block of an LI typically MERGES with the
-        // marker paragraph (so "1." and the content stay on the same line);
-        // subsequent blocks open new paragraphs at the LI's indent.
         std::vector<bool> li_block_emitted_stack;
-
-        // Depth counter for MD_BLOCK_CODE — when >0, line breaks get wrapped in
-        // NBSP padding so the character-level \highlight5 visually extends
-        // beyond the text on each line.
-        int code_block_depth = 0;
-
         bool first_block_emitted = false;
+
+        // Code block state. While in_code_block, OnText writes UTF-8 here
+        // (newlines preserved). FlushCodeBlock pads each line and emits to `out`.
+        bool in_code_block = false;
+        std::string code_buffer;
 
         void append_raw(std::string_view s) { out.append(s); }
 
         int container_indent() const {
-            return static_cast<int>(list_stack.size()) * 720;
+            return static_cast<int>(list_stack.size()) * kListLevelIndent;
         }
 
         bool inside_li_no_block_yet() const {
@@ -268,23 +268,12 @@ namespace md_render {
             }
         }
 
-        void emit_utf16(char16_t c) {
+        // Escape one wide char and write to `out` (no NBSP routing).
+        void write_escaped_char(wchar_t c) {
             switch (c) {
-            case u'\\': append_raw("\\\\"); return;
-            case u'{':  append_raw("\\{");  return;
-            case u'}':  append_raw("\\}");  return;
-            case u'\n':
-                // Inside code blocks: pad each line break with NBSPs so the
-                // character-level highlight extends a few characters beyond
-                // the actual code text on both ends, giving visual padding.
-                if (code_block_depth > 0) {
-                    append_raw("\\u160?\\u160?\\line \\u160?\\u160?");
-                }
-                else {
-                    append_raw("\\line ");
-                }
-                return;
-            case u'\r': return;
+            case L'\\': append_raw("\\\\"); return;
+            case L'{':  append_raw("\\{");  return;
+            case L'}':  append_raw("\\}");  return;
             }
             if (c < 0x20) return;
             if (c < 0x80) { out += static_cast<char>(c); return; }
@@ -292,6 +281,12 @@ namespace md_render {
             const int n = std::snprintf(buf, sizeof(buf), "\\u%d?",
                 static_cast<int>(static_cast<int16_t>(c)));
             out.append(buf, static_cast<size_t>(n));
+        }
+
+        void emit_utf16(char16_t c) {
+            if (c == u'\n') { append_raw("\\line "); return; }
+            if (c == u'\r') return;
+            write_escaped_char(static_cast<wchar_t>(c));
         }
 
         void append_inline(std::string_view utf8) {
@@ -303,6 +298,69 @@ namespace md_render {
             MultiByteToWideChar(CP_UTF8, 0, utf8.data(),
                 static_cast<int>(utf8.size()), w.data(), wlen);
             for (wchar_t c : w) emit_utf16(static_cast<char16_t>(c));
+        }
+
+        // Flush buffered code block: split into lines, find max width, pad each
+        // line with NBSPs to that width + right margin, prepend left margin.
+        void flush_code_block() {
+            // Split UTF-8 buffer on '\n' into line views.
+            std::vector<std::string_view> lines;
+            size_t start = 0;
+            for (size_t i = 0; i <= code_buffer.size(); ++i) {
+                if (i == code_buffer.size() || code_buffer[i] == '\n') {
+                    lines.emplace_back(code_buffer.data() + start, i - start);
+                    start = i + 1;
+                }
+            }
+            // Trim trailing empty lines (md4c often emits a final \n).
+            while (!lines.empty() && lines.back().empty()) lines.pop_back();
+            if (lines.empty()) {
+                code_buffer.clear();
+                return;
+            }
+
+            // Convert each line to UTF-16 once; track max char count.
+            std::vector<std::wstring> wlines;
+            wlines.reserve(lines.size());
+            size_t max_chars = 0;
+            for (auto line : lines) {
+                std::wstring w;
+                if (!line.empty()) {
+                    const int wlen = MultiByteToWideChar(CP_UTF8, 0,
+                        line.data(), static_cast<int>(line.size()),
+                        nullptr, 0);
+                    if (wlen > 0) {
+                        w.resize(static_cast<size_t>(wlen));
+                        MultiByteToWideChar(CP_UTF8, 0, line.data(),
+                            static_cast<int>(line.size()),
+                            w.data(), wlen);
+                    }
+                }
+                if (w.size() > max_chars) max_chars = w.size();
+                wlines.push_back(std::move(w));
+            }
+
+            const size_t target = max_chars + kCodeRightPadChars;
+
+            // Emit each line: leading spaces, content, trailing spaces, \line.
+            // Padding uses \u32? (regular space via Unicode escape) rather than
+            // \u160? (NBSP). NBSP can trigger font fallback in some monospace
+            // fonts, producing slightly different glyph widths and a stepped
+            // right edge under \highlight5. Regular space is always rendered
+            // by the primary font at canonical monospace width.
+            for (size_t i = 0; i < wlines.size(); ++i) {
+                for (size_t j = 0; j < kCodeLeftPadChars; ++j) {
+                    append_raw("\\u32?");
+                }
+                for (wchar_t c : wlines[i]) {
+                    write_escaped_char(c);
+                }
+                for (size_t j = wlines[i].size(); j < target; ++j) {
+                    append_raw("\\u32?");
+                }
+                if (i + 1 < wlines.size()) append_raw("\\line ");
+            }
+            code_buffer.clear();
         }
     };
 
@@ -333,12 +391,8 @@ namespace md_render {
         }
 
         case MD_BLOCK_P: {
-            // Inside an LI as the first child block: MERGE with marker
-            // paragraph (don't reset \pard). Subsequent paragraphs in the same
-            // LI open new paragraphs aligned with list text indent.
             if (b.inside_li_no_block_yet()) {
                 b.mark_li_block_emitted();
-                // intentionally emit nothing — merge with marker paragraph
             }
             else {
                 const int li = b.container_indent();
@@ -352,7 +406,7 @@ namespace md_render {
         case MD_BLOCK_QUOTE: {
             if (b.inside_li_no_block_yet()) {
                 b.mark_li_block_emitted();
-                b.append_raw("\\par");  // close marker paragraph first
+                b.append_raw("\\par");
             }
             const int li = b.container_indent() + 360;
             char buf[80];
@@ -383,7 +437,7 @@ namespace md_render {
         case MD_BLOCK_LI: {
             b.li_block_emitted_stack.push_back(false);
             const int level = static_cast<int>(b.list_stack.size());
-            const int text_indent = level * 720;
+            const int text_indent = level * kListLevelIndent;
             char buf[96];
             std::snprintf(buf, sizeof(buf),
                 "\\pard\\li%d\\fi-360\\tx%d ",
@@ -416,23 +470,23 @@ namespace md_render {
         }
 
         case MD_BLOCK_CODE: {
-            // If this is the first inner block of an LI, we need to break the
-            // marker paragraph first (a code block on the marker line is wrong).
             if (b.inside_li_no_block_yet()) {
                 b.mark_li_block_emitted();
                 b.append_raw("\\par");
             }
-            const int li = b.container_indent() + 360;
-            char buf[256];
+            // Align code blocks with list item text (no extra indent).
+            // Inside a list this gives consistent visual indent for both UL
+            // (bullet) and OL (number) since both have text starting at
+            // level * kListLevelIndent.
+            const int li = b.container_indent();
+            // Code blocks use tight line spacing (single, not 1.15).
+            char buf[192];
             std::snprintf(buf, sizeof(buf),
-                "\\pard\\li%d\\ri360"
-                "\\sa240\\sb240"                          // generous vertical breathing room
-                "\\box\\brdrs\\brdrw50\\brdrcf6\\brsp40"  // try paragraph border
-                " {\\f1\\fs18\\cf4\\highlight5 "
-                "\\u160?\\u160?",                         // leading NBSP padding
-                li);
+                "\\pard\\li%d\\sa120\\sb120\\sl240\\slmult1 "
+                "{\\f1\\fs18\\cf4\\highlight5 ", li);
             b.append_raw(buf);
-            b.code_block_depth++;
+            b.in_code_block = true;
+            b.code_buffer.clear();
             break;
         }
 
@@ -461,16 +515,13 @@ namespace md_render {
             if (!b.li_block_emitted_stack.empty()) {
                 b.li_block_emitted_stack.pop_back();
             }
-            // Tight LI: text was emitted via OnText, no inner block leaved \par.
-            // Close the marker paragraph here.
-            if (!emitted) {
-                b.append_raw("\\par\n");
-            }
+            if (!emitted) b.append_raw("\\par\n");
             break;
         }
         case MD_BLOCK_CODE:
-            b.code_block_depth--;
-            b.append_raw("\\u160?\\u160?}\\par\n");
+            b.in_code_block = false;
+            b.flush_code_block();
+            b.append_raw("}\\par\n");
             break;
         default: break;
         }
@@ -480,10 +531,14 @@ namespace md_render {
     static int OnEnterSpan(MD_SPANTYPE type, void* detail, void* ud) {
         auto& b = *static_cast<RtfBuilder*>(ud);
         switch (type) {
-        case MD_SPAN_EM:     b.append_raw("{\\i ");                     break;
-        case MD_SPAN_STRONG: b.append_raw("{\\b ");                     break;
-        case MD_SPAN_DEL:    b.append_raw("{\\strike ");                break;
-        case MD_SPAN_CODE:   b.append_raw("{\\f1\\cf4\\highlight5 ");   break;
+        case MD_SPAN_EM:     b.append_raw("{\\i ");          break;
+        case MD_SPAN_STRONG: b.append_raw("{\\b ");          break;
+        case MD_SPAN_DEL:    b.append_raw("{\\strike ");     break;
+        case MD_SPAN_CODE:
+            // Inline code: NBSP padding works well — \highlight5 visually
+            // extends 1 char beyond the actual code on each side.
+            b.append_raw("{\\f1\\cf4\\highlight5 \\u160?");
+            break;
         case MD_SPAN_A: {
             auto* d = static_cast<MD_SPAN_A_DETAIL*>(detail);
             b.append_raw("{\\field{\\*\\fldinst HYPERLINK \"");
@@ -511,8 +566,10 @@ namespace md_render {
         case MD_SPAN_EM:
         case MD_SPAN_STRONG:
         case MD_SPAN_DEL:
-        case MD_SPAN_CODE:
             b.append_raw("}");
+            break;
+        case MD_SPAN_CODE:
+            b.append_raw("\\u160?}");
             break;
         case MD_SPAN_A:
             b.append_raw("}}}");
@@ -528,6 +585,24 @@ namespace md_render {
     static int OnText(MD_TEXTTYPE type, const MD_CHAR* text, MD_SIZE size, void* ud) {
         auto& b = *static_cast<RtfBuilder*>(ud);
         const std::string_view s{ text, size };
+
+        // Inside a code block, buffer raw UTF-8 (preserve newlines for line split).
+        if (b.in_code_block) {
+            switch (type) {
+            case MD_TEXT_BR:
+            case MD_TEXT_SOFTBR:
+                b.code_buffer += '\n';
+                break;
+            case MD_TEXT_HTML:
+            case MD_TEXT_NULLCHAR:
+                break;
+            default:
+                b.code_buffer.append(s);
+                break;
+            }
+            return 0;
+        }
+
         switch (type) {
         case MD_TEXT_NORMAL:
         case MD_TEXT_ENTITY:
@@ -555,17 +630,18 @@ namespace md_render {
 
         b.append_raw(R"({\rtf1\ansi\ansicpg65001\deff0)");
         b.append_raw(R"({\fonttbl{\f0 Segoe UI;}{\f1 Cascadia Code;}})");
-
         b.append_raw("{\\colortbl;");
-        b.append_raw(ColorEntry(theme.text));       // 1
-        b.append_raw(ColorEntry(theme.link));       // 2
-        b.append_raw(ColorEntry(theme.quote));      // 3
-        b.append_raw(ColorEntry(theme.code_text));  // 4
-        b.append_raw(ColorEntry(theme.code_bg));    // 5
-        b.append_raw(ColorEntry(theme.hr_line));    // 6
+        b.append_raw(ColorEntry(theme.text));
+        b.append_raw(ColorEntry(theme.link));
+        b.append_raw(ColorEntry(theme.quote));
+        b.append_raw(ColorEntry(theme.code_text));
+        b.append_raw(ColorEntry(theme.code_bg));
+        b.append_raw(ColorEntry(theme.hr_line));
         b.append_raw("}");
-
-        b.append_raw("\\fs22\\cf1 \n");
+        // \sl276\slmult1 = 1.15 line spacing (276/240). Applied to all paragraphs
+        // unless overridden — gives inline highlighted code visual breathing room
+        // between lines.
+        b.append_raw("\\fs22\\cf1\\sl276\\slmult1 \n");
 
         MD_PARSER parser{};
         parser.abi_version = 0;
