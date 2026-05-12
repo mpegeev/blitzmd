@@ -1,4 +1,4 @@
-// MD Viewer for Total Commander — Stage 4.5
+// MD Viewer for Total Commander
 //
 // Code block rectangular shading via NBSP-padding:
 //  - Each line of a code block is padded with NBSP characters to match the
@@ -10,11 +10,20 @@
 //  - No TOM/ITextPara2 usage — that API surface isn't in current SDKs.
 
 #include <windows.h>
+#include <windowsx.h>  // GET_X_LPARAM, GET_Y_LPARAM
 #include <richedit.h>
 #include <richole.h>
 #include <commctrl.h>
 #include <shellapi.h>
 #include <tom.h>
+#include <ole2.h>      // OleInitialize, IRichEditOle, REOBJECT
+#include <olectl.h>    // IPicture, OleLoadPicture
+
+// GDI+ wants min/max as functions; we already define NOMINMAX, so pull in
+// std versions before the GDI+ header.
+#include <algorithm>
+namespace Gdiplus { using std::min; using std::max; }
+#include <gdiplus.h>   // GdiplusStartup, Gdiplus::Bitmap
 
 #include <array>
 #include <cstdint>
@@ -33,6 +42,7 @@
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "oleaut32.lib")
+#pragma comment(lib, "gdiplus.lib")
 
 inline constexpr std::string_view kDetectString =
 R"(EXT="MD" | EXT="MARKDOWN" | EXT="MDOWN" | EXT="MKD")";
@@ -53,6 +63,8 @@ inline constexpr size_t kCodeRightPadChars = 4;
 namespace {
     HINSTANCE g_hInstance = nullptr;
     HMODULE   g_richEditModule = nullptr;
+    bool      g_ole_initialized = false;
+    ULONG_PTR g_gdiplus_token = 0;  // 0 = not initialized
     constexpr wchar_t kHostClass[] = L"MdViewerHostV1";
     constexpr UINT_PTR kSubclassId = 0xCAFE;
 
@@ -77,8 +89,24 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
         g_hInstance = static_cast<HINSTANCE>(hModule);
         DisableThreadLibraryCalls(hModule);
         g_richEditModule = LoadLibraryW(L"msftedit.dll");
+        // OLE is needed for image embedding (Step 5).
+        if (SUCCEEDED(OleInitialize(nullptr))) {
+            g_ole_initialized = true;
+        }
+        // GDI+ for decoding PNG/JPG/GIF/BMP/TIFF.
+        // OleLoadPicture officially only handles BMP/ICO/WMF/EMF —
+        // we use GDI+ to decode anything else, then re-save as BMP
+        // into a memory stream for OleLoadPicture.
+        {
+            Gdiplus::GdiplusStartupInput startup;
+            Gdiplus::GdiplusStartup(&g_gdiplus_token, &startup, nullptr);
+        }
         break;
     case DLL_PROCESS_DETACH:
+        // Don't call OleUninitialize / GdiplusShutdown from DllMain —
+        // they may attempt to load other modules, which is restricted
+        // under the loader lock. TC unloads us on exit and the OS
+        // reclaims everything anyway.
         if (g_richEditModule) FreeLibrary(g_richEditModule);
         break;
     }
@@ -236,7 +264,35 @@ namespace {
 // ============================================================================
 // Markdown → RTF
 // ============================================================================
+// ============================================================================
+// Image embedding plan
+//
+// During markdown rendering (Pass 1), every MD_SPAN_IMG span is recorded
+// in `image_refs` with a unique placeholder string that's also emitted to
+// the RTF body. After EM_STREAMIN (Pass 2), the image_embed namespace
+// walks the placeholders, finds each one in the loaded document via
+// EM_FINDTEXTEXW, loads the actual image, and replaces the placeholder
+// with an embedded OLE picture.
+//
+// Failure modes (missing file, web URL, unsupported format, etc.) leave
+// the placeholder text in the document — never a crash, never a partial
+// render.
+// ============================================================================
+struct ImageRef {
+    std::wstring placeholder;  // unique string we can find in the document
+    std::wstring src;          // raw src attribute from markdown
+    std::wstring alt;          // alt text (for fallback display)
+    bool is_inside_link = false; // emitted inside an \field HYPERLINK — need
+    // hit-test mapping to make picture clickable
+    std::wstring link_url;     // URL of the enclosing link (if is_inside_link)
+};
+
 namespace md_render {
+
+    struct ConvertResult {
+        std::string rtf;
+        std::vector<ImageRef> image_refs;
+    };
 
     struct ListContext {
         bool ordered;
@@ -265,6 +321,26 @@ namespace md_render {
             bool capturing_aligns = false;     // true during THEAD: collect aligns
         };
         std::vector<TableCtx> table_stack;
+
+        // Collected image references. Populated by OnEnterSpan(MD_SPAN_IMG).
+        // Each entry pairs a unique placeholder string emitted into the RTF
+        // body with the original src/alt — Pass 2 (image_embed) uses these
+        // to locate and replace placeholders with real embedded pictures.
+        std::vector<ImageRef> image_refs;
+
+        // While inside an MD_SPAN_IMG, OnText routes text into `image_alt_buffer`
+        // (for the ImageRef's `alt` field) AND to the RTF body as the
+        // human-visible placeholder text. After the span closes, the ref is
+        // pushed onto image_refs with a unique placeholder wrapping the alt.
+        bool in_image_span = false;
+        std::wstring image_src_buffer;   // raw href from MD_SPAN_IMG_DETAIL
+        std::wstring image_alt_buffer;   // accumulated text inside the span
+
+        // Stack of URLs of currently open MD_SPAN_A hyperlinks. The depth gives
+        // us the link_span_depth (was a separate counter); the top URL is used
+        // to tag any MD_SPAN_IMG that closes inside (so picture clicks open
+        // the wrapping link via WM_LBUTTONUP hit-test in image_clicks state).
+        std::vector<std::wstring> link_url_stack;
 
         void append_raw(std::string_view s) { out.append(s); }
 
@@ -686,6 +762,19 @@ namespace md_render {
             break;
         case MD_SPAN_A: {
             auto* d = static_cast<MD_SPAN_A_DETAIL*>(detail);
+            // Convert href to wstring for later use by nested IMG span.
+            std::wstring url;
+            if (d->href.size > 0) {
+                const int wlen = MultiByteToWideChar(CP_UTF8, 0, d->href.text,
+                    static_cast<int>(d->href.size), nullptr, 0);
+                if (wlen > 0) {
+                    url.resize(static_cast<size_t>(wlen));
+                    MultiByteToWideChar(CP_UTF8, 0, d->href.text,
+                        static_cast<int>(d->href.size),
+                        url.data(), wlen);
+                }
+            }
+            b.link_url_stack.push_back(std::move(url));
             b.append_raw("{\\field{\\*\\fldinst HYPERLINK \"");
             for (MD_SIZE i = 0; i < d->href.size; ++i) {
                 const char c = d->href.text[i];
@@ -697,9 +786,26 @@ namespace md_render {
             b.append_raw("\"}{\\fldrslt{\\cf2\\ul ");
             break;
         }
-        case MD_SPAN_IMG:
-            b.append_raw("{\\cf3\\i [image: ");
+        case MD_SPAN_IMG: {
+            auto* d = static_cast<MD_SPAN_IMG_DETAIL*>(detail);
+            // Capture src as wide string (md4c gives UTF-8).
+            b.image_src_buffer.clear();
+            if (d->src.size > 0) {
+                const int wlen = MultiByteToWideChar(CP_UTF8, 0, d->src.text,
+                    static_cast<int>(d->src.size), nullptr, 0);
+                if (wlen > 0) {
+                    b.image_src_buffer.resize(static_cast<size_t>(wlen));
+                    MultiByteToWideChar(CP_UTF8, 0, d->src.text,
+                        static_cast<int>(d->src.size),
+                        b.image_src_buffer.data(), wlen);
+                }
+            }
+            b.image_alt_buffer.clear();
+            b.in_image_span = true;
+            // We don't emit anything to `out` yet — placeholder is built
+            // in OnLeaveSpan once we have the complete alt text.
             break;
+        }
         default: break;
         }
         return 0;
@@ -718,10 +824,48 @@ namespace md_render {
             break;
         case MD_SPAN_A:
             b.append_raw("}}}");
+            if (!b.link_url_stack.empty()) b.link_url_stack.pop_back();
             break;
-        case MD_SPAN_IMG:
-            b.append_raw("]}");
+        case MD_SPAN_IMG: {
+            b.in_image_span = false;
+            // Build a UNIQUE placeholder string that we can locate later
+            // via EM_FINDTEXTEXW. Format:
+            //   U+2063 IDX:N U+2063 [image: alt]
+            // The leading/trailing U+2063 (Invisible Separator) chars are
+            // anchor markers — zero-width, valid Unicode, virtually
+            // guaranteed not to occur in user content. The numeric N is
+            // unique per image; the [image: alt] tail is the human-visible
+            // fallback text the user sees if the picture fails to load.
+            const size_t idx = b.image_refs.size();
+            wchar_t header[64];
+            std::swprintf(header, _countof(header), L"\u2063IMG%zu\u2063", idx);
+
+            ImageRef ref;
+            ref.placeholder = std::wstring(header)
+                + L"[image: "
+                + (b.image_alt_buffer.empty()
+                    ? std::wstring(L"image")
+                    : b.image_alt_buffer)
+                + L"]";
+            ref.src = b.image_src_buffer;
+            ref.alt = b.image_alt_buffer;
+            ref.is_inside_link = !b.link_url_stack.empty();
+            if (ref.is_inside_link) {
+                ref.link_url = b.link_url_stack.back();
+            }
+
+            // Emit the placeholder text into RTF, styled like the old
+            // [image: ...] fallback (gray italic). U+2063 needs the \uN?
+            // escape; the rest goes through the normal text path.
+            b.append_raw("{\\cf3\\i ");
+            for (wchar_t c : ref.placeholder) {
+                b.emit_utf16(static_cast<char16_t>(c));
+            }
+            b.append_raw("}");
+
+            b.image_refs.push_back(std::move(ref));
             break;
+        }
         default: break;
         }
         return 0;
@@ -730,6 +874,25 @@ namespace md_render {
     static int OnText(MD_TEXTTYPE type, const MD_CHAR* text, MD_SIZE size, void* ud) {
         auto& b = *static_cast<RtfBuilder*>(ud);
         const std::string_view s{ text, size };
+
+        // While inside an MD_SPAN_IMG, text belongs to the alt-text and is
+        // accumulated into image_alt_buffer instead of being emitted to RTF.
+        // The placeholder containing this alt will be emitted in OnLeaveSpan.
+        if (b.in_image_span) {
+            if (type == MD_TEXT_NORMAL || type == MD_TEXT_ENTITY
+                || type == MD_TEXT_CODE) {
+                const int wlen = MultiByteToWideChar(CP_UTF8, 0, s.data(),
+                    static_cast<int>(s.size()), nullptr, 0);
+                if (wlen > 0) {
+                    const size_t old = b.image_alt_buffer.size();
+                    b.image_alt_buffer.resize(old + static_cast<size_t>(wlen));
+                    MultiByteToWideChar(CP_UTF8, 0, s.data(),
+                        static_cast<int>(s.size()),
+                        b.image_alt_buffer.data() + old, wlen);
+                }
+            }
+            return 0;
+        }
 
         // Inside a code block, buffer raw UTF-8 (preserve newlines for line split).
         if (b.in_code_block) {
@@ -768,7 +931,7 @@ namespace md_render {
             GetRValue(c), GetGValue(c), GetBValue(c));
     }
 
-    static std::string ConvertMarkdownToRtf(std::string_view md_utf8,
+    static ConvertResult ConvertMarkdownToRtf(std::string_view md_utf8,
         const ThemeColors& theme) {
         RtfBuilder b;
         b.out.reserve(md_utf8.size() * 2 + 512);
@@ -806,14 +969,59 @@ namespace md_render {
             &parser, &b);
 
         b.append_raw("}");
-        return std::move(b.out);
+        return ConvertResult{
+            .rtf = std::move(b.out),
+            .image_refs = std::move(b.image_refs),
+        };
     }
 
 } // namespace md_render
 
 // ============================================================================
-// Lister key forwarding
+// Per-window state — owned by host window via GWLP_USERDATA.
 // ============================================================================
+//
+// Holds the table of clickable images: each entry maps a document character
+// position (where an OLE picture sits) to the URL of the enclosing markdown
+// link. Populated by image_embed::EmbedAll after successful InsertObject.
+//
+// Looked up on WM_LBUTTONUP via EM_CHARFROMPOS to make picture-links work
+// (text CFE_LINK doesn't apply to OLE objects, so we hit-test ourselves).
+
+struct ImageClickTarget {
+    LONG cp;            // character position of the OLE image in the document
+    std::wstring url;   // URL to open on click
+};
+
+struct WindowState {
+    std::vector<ImageClickTarget> image_clicks;
+};
+
+namespace {
+
+    // Get the WindowState attached to the host window (the parent of the
+    // RichEdit). Returns nullptr if not yet attached.
+    WindowState* GetWindowState(HWND host) {
+        return reinterpret_cast<WindowState*>(
+            GetWindowLongPtrW(host, GWLP_USERDATA));
+    }
+
+    // Find a clickable image at the given document character position.
+    // Checks both `cp` and `cp - 1` because EM_CHARFROMPOS returns the position
+    // AFTER an OLE object when the click lands on the object itself (positions
+    // in RichEdit are between chars; the object is one char wide, so a click
+    // inside the object's box reports cp = object's position + 1).
+    const ImageClickTarget* FindImageClickAt(const WindowState* state, LONG cp) {
+        if (!state) return nullptr;
+        for (const auto& t : state->image_clicks) {
+            if (t.cp == cp || t.cp == cp - 1) return &t;
+        }
+        return nullptr;
+    }
+
+}  // namespace
+
+
 namespace {
 
     bool IsListerKey(WPARAM vk) noexcept {
@@ -828,6 +1036,7 @@ namespace {
     LRESULT CALLBACK RichEditSubclassProc(HWND hwnd, UINT msg,
         WPARAM wp, LPARAM lp,
         UINT_PTR, DWORD_PTR) {
+        // Key forwarding to TC's Lister window.
         if (msg == WM_KEYDOWN && IsListerKey(wp)) {
             const bool isLetter = (wp == 'N' || wp == 'P');
             const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
@@ -841,6 +1050,48 @@ namespace {
                 }
             }
         }
+
+        // Image-link clicking: text hyperlinks use EN_LINK, but CFE_LINK doesn't
+        // apply to OLE objects, so picture-links need manual hit testing.
+        // On WM_LBUTTONUP: check if the click hit a registered image-link
+        // position; if so, ShellExecute the URL and swallow the message.
+        if (msg == WM_LBUTTONUP) {
+            HWND host = GetParent(hwnd);
+            WindowState* state = GetWindowState(host);
+            if (state && !state->image_clicks.empty()) {
+                POINTL pt{ GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+                const LONG cp = static_cast<LONG>(SendMessageW(
+                    hwnd, EM_CHARFROMPOS, 0,
+                    reinterpret_cast<LPARAM>(&pt)));
+                if (const auto* target = FindImageClickAt(state, cp)) {
+                    ShellExecuteW(nullptr, L"open", target->url.c_str(),
+                        nullptr, nullptr, SW_SHOWNORMAL);
+                    return 0;
+                }
+            }
+        }
+
+        // Cursor feedback: WM_SETCURSOR fires when the mouse moves over the
+        // RichEdit. If the cursor is currently over an image-link, show the
+        // hand cursor instead of the default beam/arrow.
+        if (msg == WM_SETCURSOR && LOWORD(lp) == HTCLIENT) {
+            HWND host = GetParent(hwnd);
+            WindowState* state = GetWindowState(host);
+            if (state && !state->image_clicks.empty()) {
+                POINT pt;
+                GetCursorPos(&pt);
+                ScreenToClient(hwnd, &pt);
+                POINTL ptl{ pt.x, pt.y };
+                const LONG cp = static_cast<LONG>(SendMessageW(
+                    hwnd, EM_CHARFROMPOS, 0,
+                    reinterpret_cast<LPARAM>(&ptl)));
+                if (FindImageClickAt(state, cp)) {
+                    SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                    return TRUE;  // we handled cursor selection
+                }
+            }
+        }
+
         return DefSubclassProc(hwnd, msg, wp, lp);
     }
 
@@ -987,6 +1238,15 @@ namespace {
             }
             break;
         }
+        case WM_DESTROY: {
+            // Free per-window state attached via GWLP_USERDATA.
+            WindowState* state = GetWindowState(hwnd);
+            if (state) {
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+                delete state;
+            }
+            break;
+        }
         }
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
@@ -1008,8 +1268,587 @@ namespace {
 } // namespace
 
 // ============================================================================
-// WLX exports
+// Image embedding (OLE) — replaces [image:N] placeholders with real pictures
 // ============================================================================
+//
+// Pass 2 of the rendering pipeline. Called after EM_STREAMIN with the list
+// of image references collected by md_render during Pass 1.
+//
+// All functions in this namespace are FAIL-SAFE: if any step fails (file
+// missing, web URL, decode error, etc.), the placeholder text is replaced
+// with a clean "[image: alt]" fallback and rendering continues. Never
+// throws, never crashes, never leaves partial state.
+//
+// Pipeline:
+//   1. ResolvePath: src → absolute path (or "" for web URLs / data: URIs)
+//   2. IsLoadable: exists, regular file, size ≤ 5MB, supported extension
+//   3. LoadAsHBitmap: GDI+ decodes file → HBITMAP
+//   4. FindAndSelectPlaceholder: EM_FINDTEXTEXW finds unique anchor in doc
+//   5. InsertHBitmapAt: wraps HBITMAP in IDataObject, embeds via
+//      OleCreateStaticFromData + IRichEditOle::InsertObject
+//   6. After all inserts: walk IRichEditOle::GetObject to get authoritative
+//      cp positions, record (cp, url) for picture-link hit testing.
+//
+namespace image_embed {
+
+    // URL-decode %XX sequences in-place into a wide string.
+    // Markdown src attributes are URL-encoded for safety (spaces -> %20 etc.),
+    // but Windows file APIs want raw paths. Quietly skips malformed sequences.
+    static std::wstring UrlDecode(std::wstring_view in) {
+        std::wstring out;
+        out.reserve(in.size());
+        for (size_t i = 0; i < in.size(); ++i) {
+            if (in[i] == L'%' && i + 2 < in.size()) {
+                auto hex = [](wchar_t c) -> int {
+                    if (c >= L'0' && c <= L'9') return c - L'0';
+                    if (c >= L'a' && c <= L'f') return 10 + (c - L'a');
+                    if (c >= L'A' && c <= L'F') return 10 + (c - L'A');
+                    return -1;
+                    };
+                const int h1 = hex(in[i + 1]);
+                const int h2 = hex(in[i + 2]);
+                if (h1 >= 0 && h2 >= 0) {
+                    // %XX is a single UTF-8 byte. We collect a run of %XX into
+                    // a UTF-8 buffer and convert it to UTF-16 once.
+                    std::string utf8;
+                    while (i < in.size() && in[i] == L'%' && i + 2 < in.size()) {
+                        const int a = hex(in[i + 1]);
+                        const int b = hex(in[i + 2]);
+                        if (a < 0 || b < 0) break;
+                        utf8.push_back(static_cast<char>((a << 4) | b));
+                        i += 3;
+                    }
+                    --i;  // outer loop will ++i; we've consumed up to one past last %XX
+                    const int wlen = MultiByteToWideChar(CP_UTF8, 0,
+                        utf8.data(), static_cast<int>(utf8.size()),
+                        nullptr, 0);
+                    if (wlen > 0) {
+                        const size_t old = out.size();
+                        out.resize(old + static_cast<size_t>(wlen));
+                        MultiByteToWideChar(CP_UTF8, 0, utf8.data(),
+                            static_cast<int>(utf8.size()),
+                            out.data() + old, wlen);
+                    }
+                    continue;
+                }
+            }
+            out.push_back(in[i]);
+        }
+        return out;
+    }
+
+    // True if src is a URL scheme we cannot handle (web, ftp, data:).
+    // We do NOT treat file:// as resolvable to keep the implementation simple
+    // — markdown rarely uses file:// URIs for local images.
+    static bool IsExternalUrl(std::wstring_view src) {
+        static constexpr std::wstring_view prefixes[] = {
+            L"http://", L"https://", L"ftp://", L"ftps://", L"file://", L"data:",
+        };
+        for (auto p : prefixes) {
+            if (src.size() >= p.size()) {
+                // Case-insensitive prefix match.
+                bool match = true;
+                for (size_t i = 0; i < p.size(); ++i) {
+                    wchar_t a = src[i];
+                    wchar_t b = p[i];
+                    if (a >= L'A' && a <= L'Z') a = static_cast<wchar_t>(a + 32);
+                    if (a != b) { match = false; break; }
+                }
+                if (match) return true;
+            }
+        }
+        return false;
+    }
+
+    // Step 3: resolve `src` relative to the markdown file's directory.
+    // Returns absolute path on success, empty string on web URLs / data: URIs
+    // or any other un-resolvable input.
+    static std::wstring ResolvePath(const std::wstring& md_file_dir,
+        const std::wstring& src) {
+        if (src.empty()) return {};
+        if (IsExternalUrl(src)) return {};
+
+        // URL-decode %20 etc. before handing to Win32 file APIs.
+        const std::wstring decoded = UrlDecode(src);
+
+        // Forward slashes are common in markdown — normalize to backslashes
+        // for Windows file APIs (they accept both, but GetFullPathName is
+        // happier with backslashes for the result).
+        std::wstring normalized;
+        normalized.reserve(decoded.size());
+        for (wchar_t c : decoded) {
+            normalized.push_back(c == L'/' ? L'\\' : c);
+        }
+
+        // Check for absolute path: "X:\..." or "\\server\share\..."
+        const bool is_drive_abs =
+            normalized.size() >= 3
+            && ((normalized[0] >= L'A' && normalized[0] <= L'Z') ||
+                (normalized[0] >= L'a' && normalized[0] <= L'z'))
+            && normalized[1] == L':'
+            && normalized[2] == L'\\';
+        const bool is_unc =
+            normalized.size() >= 2
+            && normalized[0] == L'\\' && normalized[1] == L'\\';
+
+        std::wstring full_input = (is_drive_abs || is_unc)
+            ? normalized
+            : (md_file_dir + normalized);
+
+        // GetFullPathNameW resolves "..", "." and normalizes separators.
+        wchar_t resolved[MAX_PATH * 2] = {};
+        const DWORD len = GetFullPathNameW(full_input.c_str(),
+            _countof(resolved), resolved, nullptr);
+        if (len == 0 || len >= _countof(resolved)) return {};
+        return std::wstring(resolved, len);
+    }
+
+    // Max image file size we'll try to load (bytes). Larger files = placeholder.
+    inline constexpr uint64_t kMaxImageBytes = 5ull * 1024 * 1024;
+
+    // Image extensions supported by OleLoadPicture (matches our whitelist).
+    static bool HasSupportedExt(std::wstring_view path) {
+        static constexpr std::wstring_view exts[] = {
+            L".png", L".jpg", L".jpeg", L".bmp", L".gif", L".ico",
+        };
+        // Find last '.' after last separator.
+        size_t dot = path.size();
+        for (size_t i = path.size(); i > 0; --i) {
+            const wchar_t c = path[i - 1];
+            if (c == L'.') { dot = i - 1; break; }
+            if (c == L'\\' || c == L'/') break;
+        }
+        if (dot == path.size()) return false;
+        const std::wstring_view ext = path.substr(dot);
+        for (auto e : exts) {
+            if (ext.size() != e.size()) continue;
+            bool match = true;
+            for (size_t i = 0; i < e.size(); ++i) {
+                wchar_t a = ext[i];
+                if (a >= L'A' && a <= L'Z') a = static_cast<wchar_t>(a + 32);
+                if (a != e[i]) { match = false; break; }
+            }
+            if (match) return true;
+        }
+        return false;
+    }
+
+    // Step 3: returns true if the path points to a file we can actually load.
+    // Checks: exists, regular file, size <= kMaxImageBytes, supported extension.
+    static bool IsLoadable(const std::wstring& path) {
+        if (path.empty()) return false;
+        if (!HasSupportedExt(path)) return false;
+
+        WIN32_FILE_ATTRIBUTE_DATA fi{};
+        if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &fi)) {
+            return false;
+        }
+        if (fi.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) return false;
+
+        const uint64_t size = (static_cast<uint64_t>(fi.nFileSizeHigh) << 32)
+            | fi.nFileSizeLow;
+        if (size == 0 || size > kMaxImageBytes) return false;
+
+        return true;
+    }
+
+    // Step 4: load a picture file into an IPicture COM object.
+    // Returns nullptr on failure. Caller releases the picture.
+    //
+    // Implementation:
+    //   1. ReadFile into a memory buffer.
+    //   2. Wrap the buffer in a moveable HGLOBAL.
+    //   3. CreateStreamOnHGlobal to get an IStream.
+    //   4. OleLoadPicture parses the stream's contents (auto-detects PNG/JPG/
+    //      BMP/GIF/ICO from magic bytes — no need to tell it the format).
+    //   5. The stream takes ownership of the HGLOBAL when fDeleteOnRelease=TRUE;
+    //      releasing the stream frees the buffer.
+    //
+    // Notes on lifetime: IPicture keeps an internal HBITMAP/HENHMETAFILE. The
+    // caller owns this IPicture* and must Release() it. On Step 5 we'll pass
+    // the picture to IRichEditOle::InsertObject, which retains its own ref —
+    // after that we Release the local pointer.
+    // Step 4 (revised): load a picture file and return an HBITMAP. Caller
+    // must DeleteObject() the result when done.
+    //
+    // We use GDI+ for decoding (handles PNG/JPG/GIF/BMP/TIFF/ICO).
+    // The HBITMAP is then handed to a custom IDataObject and embedded into
+    // the RichEdit document via OleCreateStaticFromData.
+    static HBITMAP LoadAsHBitmap(const std::wstring& path,
+        UINT* outWidth, UINT* outHeight) {
+        if (!g_gdiplus_token) return nullptr;
+
+        Gdiplus::Bitmap bitmap(path.c_str());
+        if (bitmap.GetLastStatus() != Gdiplus::Ok) return nullptr;
+
+        const UINT w = bitmap.GetWidth();
+        const UINT h = bitmap.GetHeight();
+        if (outWidth)  *outWidth = w;
+        if (outHeight) *outHeight = h;
+
+        HBITMAP hbm = nullptr;
+        // Background color matters only for images with alpha. White matches
+        // the light theme; on dark theme transparent PNGs may look off
+        // (documented limitation — we don't auto-invert images).
+        const Gdiplus::Status s =
+            const_cast<Gdiplus::Bitmap&>(bitmap).GetHBITMAP(
+                Gdiplus::Color(255, 255, 255), &hbm);
+        if (s != Gdiplus::Ok) return nullptr;
+        return hbm;
+    }
+
+    // Compute available content width inside the RichEdit, in HIMETRIC units
+    // (0.01 mm). Used to scale down oversized images. Returns 0 on failure.
+    //
+    // HIMETRIC = pixels * 2540 / DPI.
+    static LONG GetAvailableWidthHimetric(HWND richEdit) {
+        RECT formatRect{};
+        SendMessageW(richEdit, EM_GETRECT, 0,
+            reinterpret_cast<LPARAM>(&formatRect));
+        const LONG width_px = formatRect.right - formatRect.left;
+        if (width_px <= 0) return 0;
+
+        HDC hdc = GetDC(richEdit);
+        if (!hdc) return 0;
+        const int dpi = GetDeviceCaps(hdc, LOGPIXELSX);
+        ReleaseDC(richEdit, hdc);
+        if (dpi <= 0) return 0;
+
+        return MulDiv(width_px, 2540, dpi);
+    }
+
+    // Minimal IDataObject exposing a single CF_BITMAP — just enough for
+    // OleCreateStaticFromData to make a static OLE picture out of an HBITMAP.
+    //
+    // We implement only what the call chain actually exercises:
+    //   - GetData (CF_BITMAP)
+    //   - QueryGetData (CF_BITMAP)
+    //   - GetDataHere — stub, not called by OleCreateStaticFromData in practice
+    //   - EnumFormatEtc — returns a single FORMATETC
+    // Other methods return E_NOTIMPL. This is sufficient based on common
+    // recipes used across RichEdit samples for inserting bitmaps.
+    class BitmapDataObject : public IDataObject {
+    public:
+        explicit BitmapDataObject(HBITMAP bmp) : m_bitmap(bmp) {}
+        virtual ~BitmapDataObject() = default;
+
+        // IUnknown
+        STDMETHODIMP QueryInterface(REFIID iid, void** ppv) override {
+            if (!ppv) return E_POINTER;
+            if (iid == IID_IUnknown || iid == IID_IDataObject) {
+                *ppv = static_cast<IDataObject*>(this);
+                AddRef();
+                return S_OK;
+            }
+            *ppv = nullptr;
+            return E_NOINTERFACE;
+        }
+        STDMETHODIMP_(ULONG) AddRef() override {
+            return InterlockedIncrement(&m_ref);
+        }
+        STDMETHODIMP_(ULONG) Release() override {
+            const LONG r = InterlockedDecrement(&m_ref);
+            if (r == 0) delete this;
+            return r;
+        }
+
+        // IDataObject
+        STDMETHODIMP GetData(FORMATETC* pFE, STGMEDIUM* pMed) override {
+            if (!pFE || !pMed) return E_POINTER;
+            if (pFE->cfFormat != CF_BITMAP || !(pFE->tymed & TYMED_GDI)) {
+                return DV_E_FORMATETC;
+            }
+            pMed->tymed = TYMED_GDI;
+            pMed->hBitmap = m_bitmap;
+            pMed->pUnkForRelease = nullptr;
+            return S_OK;
+        }
+        STDMETHODIMP QueryGetData(FORMATETC* pFE) override {
+            if (!pFE) return E_POINTER;
+            return (pFE->cfFormat == CF_BITMAP && (pFE->tymed & TYMED_GDI))
+                ? S_OK : DV_E_FORMATETC;
+        }
+        STDMETHODIMP GetDataHere(FORMATETC*, STGMEDIUM*) override { return E_NOTIMPL; }
+        STDMETHODIMP GetCanonicalFormatEtc(FORMATETC*, FORMATETC*) override { return E_NOTIMPL; }
+        STDMETHODIMP SetData(FORMATETC*, STGMEDIUM*, BOOL) override { return E_NOTIMPL; }
+        STDMETHODIMP EnumFormatEtc(DWORD dir, IEnumFORMATETC** ppEnum) override {
+            if (dir != DATADIR_GET || !ppEnum) return E_NOTIMPL;
+            // SHCreateStdEnumFmtEtc would be cleaner but pulls in shell32 dep.
+            // RichEdit doesn't actually call this during InsertObject — we
+            // return E_NOTIMPL and that's fine in practice.
+            return E_NOTIMPL;
+        }
+        STDMETHODIMP DAdvise(FORMATETC*, DWORD, IAdviseSink*, DWORD*) override { return E_NOTIMPL; }
+        STDMETHODIMP DUnadvise(DWORD) override { return E_NOTIMPL; }
+        STDMETHODIMP EnumDAdvise(IEnumSTATDATA**) override { return E_NOTIMPL; }
+
+    private:
+        LONG m_ref = 1;
+        HBITMAP m_bitmap;
+    };
+
+    // Find the placeholder text in the document and select it. Returns the
+    // CHARRANGE of the found text, or {-1,-1} if not found.
+    static CHARRANGE FindAndSelectPlaceholder(HWND richEdit,
+        const std::wstring& placeholder) {
+        FINDTEXTEXW ft{};
+        ft.chrg.cpMin = 0;
+        ft.chrg.cpMax = -1;
+        ft.lpstrText = placeholder.c_str();
+        const LONG pos = static_cast<LONG>(SendMessageW(
+            richEdit, EM_FINDTEXTEXW, /*FR_DOWN=*/1,
+            reinterpret_cast<LPARAM>(&ft)));
+        if (pos < 0) return { -1, -1 };
+
+        // Select the found range so InsertObject replaces it.
+        SendMessageW(richEdit, EM_EXSETSEL, 0,
+            reinterpret_cast<LPARAM>(&ft.chrgText));
+        return ft.chrgText;
+    }
+
+    // Insert an OLE static picture object made from an HBITMAP into the
+    // RichEdit at the current selection. Replaces the selection content.
+    // Returns true on success. On any failure, returns false and the document
+    // is left unchanged (the placeholder stays visible to the user).
+    //
+    // Sizing: `sizeWidth`/`sizeHeight` are the desired display size in HIMETRIC
+    // units. If the picture is wider than `maxWidthHimetric`, both dimensions
+    // are scaled down proportionally.
+    static bool InsertHBitmapAt(HWND richEdit,
+        HBITMAP hbm, UINT pxW, UINT pxH,
+        LONG maxWidthHimetric) {
+        // Get IRichEditOle for InsertObject.
+        IRichEditOle* pRichOle = nullptr;
+        SendMessageW(richEdit, EM_GETOLEINTERFACE, 0,
+            reinterpret_cast<LPARAM>(&pRichOle));
+        if (!pRichOle) return false;
+
+        // Wrap the HBITMAP in our minimal IDataObject.
+        BitmapDataObject* pData = new BitmapDataObject(hbm);
+
+        // Create an IStorage in memory to hold the OLE object's persisted state.
+        // OleCreateStaticFromData needs a real storage to write into.
+        ILockBytes* pLockBytes = nullptr;
+        HRESULT hr = CreateILockBytesOnHGlobal(nullptr, TRUE, &pLockBytes);
+        if (FAILED(hr) || !pLockBytes) {
+            pData->Release();
+            pRichOle->Release();
+            return false;
+        }
+
+        IStorage* pStorage = nullptr;
+        hr = StgCreateDocfileOnILockBytes(pLockBytes,
+            STGM_SHARE_EXCLUSIVE | STGM_CREATE | STGM_READWRITE,
+            0, &pStorage);
+        pLockBytes->Release();
+        if (FAILED(hr) || !pStorage) {
+            pData->Release();
+            pRichOle->Release();
+            return false;
+        }
+
+        // Get the IOleClientSite from the RichEdit.
+        IOleClientSite* pClientSite = nullptr;
+        if (FAILED(pRichOle->GetClientSite(&pClientSite)) || !pClientSite) {
+            pStorage->Release();
+            pData->Release();
+            pRichOle->Release();
+            return false;
+        }
+
+        // Create a static OLE object from our DataObject. Static = no live
+        // application backing it, just the bitmap data. This is exactly what
+        // we want for a viewer (no editing).
+        //
+        // OleCreateStaticFromData with OLERENDER_FORMAT requires a non-null
+        // pFormatEtc telling it WHICH format to extract. We want CF_BITMAP
+        // via TYMED_GDI — matches what our BitmapDataObject exposes.
+        FORMATETC fmt{};
+        fmt.cfFormat = CF_BITMAP;
+        fmt.ptd = nullptr;
+        fmt.dwAspect = DVASPECT_CONTENT;
+        fmt.lindex = -1;
+        fmt.tymed = TYMED_GDI;
+
+        IOleObject* pOleObject = nullptr;
+        hr = OleCreateStaticFromData(pData, IID_IOleObject, OLERENDER_FORMAT,
+            &fmt, pClientSite, pStorage,
+            reinterpret_cast<void**>(&pOleObject));
+        pData->Release();
+        if (FAILED(hr) || !pOleObject) {
+            pClientSite->Release();
+            pStorage->Release();
+            pRichOle->Release();
+            return false;
+        }
+
+        // Build the REOBJECT for InsertObject.
+        REOBJECT reo{};
+        reo.cbStruct = sizeof(reo);
+        reo.cp = REO_CP_SELECTION;        // insert at current selection
+        reo.clsid = CLSID_NULL;
+        pOleObject->GetUserClassID(&reo.clsid);
+        reo.poleobj = pOleObject;
+        reo.pstg = pStorage;
+        reo.polesite = pClientSite;
+
+        // Native size in HIMETRIC. 1 HIMETRIC = 0.01 mm; 1 inch = 2540 HIMETRIC.
+        // At 96 DPI: 1 px = 26.46 HIMETRIC.
+        LONG natWidth = MulDiv(static_cast<LONG>(pxW), 2540, 96);
+        LONG natHeight = MulDiv(static_cast<LONG>(pxH), 2540, 96);
+
+        // Scale down if wider than available width.
+        if (maxWidthHimetric > 0 && natWidth > maxWidthHimetric) {
+            natHeight = MulDiv(natHeight, maxWidthHimetric, natWidth);
+            natWidth = maxWidthHimetric;
+        }
+        reo.sizel.cx = natWidth;
+        reo.sizel.cy = natHeight;
+        reo.dvaspect = DVASPECT_CONTENT;
+        reo.dwFlags = REO_RESIZABLE;
+
+        hr = pRichOle->InsertObject(&reo);
+
+        pOleObject->Release();
+        pClientSite->Release();
+        pStorage->Release();
+        pRichOle->Release();
+        return SUCCEEDED(hr);
+    }
+
+    // Replace a placeholder in the document with plain `[image: alt]` text.
+    // Used when an image couldn't be loaded (web URL, missing file, decode
+    // failure) — strips our internal anchor markers so the user sees a clean
+    // fallback instead of "⁣IMG3⁣[image: alt]".
+    static void ReplacePlaceholderWithFallback(HWND richEdit,
+        const std::wstring& placeholder,
+        const std::wstring& alt) {
+        FINDTEXTEXW ft{};
+        ft.chrg.cpMin = 0;
+        ft.chrg.cpMax = -1;
+        ft.lpstrText = placeholder.c_str();
+        const LONG pos = static_cast<LONG>(SendMessageW(
+            richEdit, EM_FINDTEXTEXW, /*FR_DOWN=*/1,
+            reinterpret_cast<LPARAM>(&ft)));
+        if (pos < 0) return;
+
+        SendMessageW(richEdit, EM_EXSETSEL, 0,
+            reinterpret_cast<LPARAM>(&ft.chrgText));
+
+        const std::wstring clean = L"[image: "
+            + (alt.empty() ? std::wstring(L"image") : alt)
+            + L"]";
+        SendMessageW(richEdit, EM_REPLACESEL, FALSE,
+            reinterpret_cast<LPARAM>(clean.c_str()));
+    }
+
+    // Entry point: walk image_refs, try to load and embed each one.
+    // Failures are silent (clean [image: alt] fallback remains in document).
+    // On success for is_inside_link refs, records (cp, url) into out_clicks
+    // so the host window can hit-test mouse events later.
+    //
+    // Strategy notes:
+    //   - We collect a list of "embedded link URLs" in insertion order during
+    //     the main loop. These are URLs for picture-links that successfully
+    //     embedded.
+    //   - After the loop, we re-query the actual document positions of all
+    //     OLE objects via IRichEditOle::GetObject. RichEdit's REOBJECT.cp is
+    //     authoritative — using found.cpMin captured during insertion would
+    //     be wrong because later inserts/placeholder replacements shift earlier
+    //     positions.
+    //   - We match recorded URLs to OLE objects by insertion order: the i-th
+    //     successfully-embedded picture (counting all inserts, not just links)
+    //     corresponds to the i-th REOBJECT returned by GetObject. We use a
+    //     parallel array of "link URL or empty string" indexed by insert order.
+    static void EmbedAll(HWND richEdit,
+        const std::wstring& md_file_dir,
+        const std::vector<ImageRef>& refs,
+        std::vector<ImageClickTarget>& out_clicks) {
+        const LONG maxWidthHimetric = GetAvailableWidthHimetric(richEdit);
+
+        // URL of the i-th successfully-embedded picture, in insertion order.
+        // Empty string means "not a link". After all inserts, we map index → cp
+        // via IRichEditOle::GetObject and emit (cp, url) for non-empty entries.
+        std::vector<std::wstring> insert_order_urls;
+
+        for (size_t i = 0; i < refs.size(); ++i) {
+            const std::wstring path = ResolvePath(md_file_dir, refs[i].src);
+            if (!IsLoadable(path)) {
+                ReplacePlaceholderWithFallback(richEdit, refs[i].placeholder,
+                    refs[i].alt);
+                continue;
+            }
+
+            UINT pxW = 0, pxH = 0;
+            HBITMAP hbm = LoadAsHBitmap(path, &pxW, &pxH);
+            if (!hbm) {
+                ReplacePlaceholderWithFallback(richEdit, refs[i].placeholder,
+                    refs[i].alt);
+                continue;
+            }
+
+            const CHARRANGE found = FindAndSelectPlaceholder(richEdit,
+                refs[i].placeholder);
+            if (found.cpMin < 0) {
+                DeleteObject(hbm);
+                continue;
+            }
+
+            if (!InsertHBitmapAt(richEdit, hbm, pxW, pxH, maxWidthHimetric)) {
+                CHARRANGE clear{ 0, 0 };
+                SendMessageW(richEdit, EM_EXSETSEL, 0,
+                    reinterpret_cast<LPARAM>(&clear));
+                DeleteObject(hbm);
+                ReplacePlaceholderWithFallback(richEdit, refs[i].placeholder,
+                    refs[i].alt);
+                continue;
+            }
+
+            // Successfully embedded. Record URL (or empty) at this insertion
+            // index — actual cp positions are resolved at the end.
+            insert_order_urls.push_back(
+                refs[i].is_inside_link ? refs[i].link_url : std::wstring());
+
+            DeleteObject(hbm);
+        }
+
+        // Reset selection to start so user doesn't see the last image highlighted.
+        CHARRANGE clear{ 0, 0 };
+        SendMessageW(richEdit, EM_EXSETSEL, 0,
+            reinterpret_cast<LPARAM>(&clear));
+
+        // Resolve final document positions of inserted pictures via the RichEdit
+        // OLE object table — these are stable and accurate regardless of how
+        // other inserts shifted things during the loop.
+        if (insert_order_urls.empty()) return;
+
+        IRichEditOle* pRichOle = nullptr;
+        SendMessageW(richEdit, EM_GETOLEINTERFACE, 0,
+            reinterpret_cast<LPARAM>(&pRichOle));
+        if (!pRichOle) return;
+
+        const LONG count = pRichOle->GetObjectCount();
+        // Walk all OLE objects in document order. RichEdit returns them sorted
+        // by cp ascending, which matches our insertion order (we always find
+        // placeholders front-to-back). Pair i-th object with i-th recorded URL.
+        const LONG limit = (static_cast<LONG>(insert_order_urls.size()) < count)
+            ? static_cast<LONG>(insert_order_urls.size()) : count;
+        for (LONG i = 0; i < limit; ++i) {
+            REOBJECT reo{};
+            reo.cbStruct = sizeof(reo);
+            if (FAILED(pRichOle->GetObject(i, &reo, REO_GETOBJ_NO_INTERFACES))) {
+                continue;
+            }
+            if (!insert_order_urls[i].empty()) {
+                out_clicks.push_back({ reo.cp, insert_order_urls[i] });
+            }
+        }
+        pRichOle->Release();
+    }
+
+}  // namespace image_embed
+
+
 
 extern "C" __declspec(dllexport)
 void __stdcall ListGetDetectString(char* DetectString, int maxlen) {
@@ -1054,7 +1893,8 @@ HWND __stdcall ListLoadW(HWND ParentWin, wchar_t* FileToLoad, int /*ShowFlags*/)
 
     auto content = ReadFileToUtf8(FileToLoad);
     if (content) {
-        const std::string rtf = md_render::ConvertMarkdownToRtf(*content, theme);
+        const md_render::ConvertResult result =
+            md_render::ConvertMarkdownToRtf(*content, theme);
 
 #ifndef NDEBUG
         // Debug: dump the generated RTF to %TEMP%\mdview-debug.rtf so we can
@@ -1067,14 +1907,33 @@ HWND __stdcall ListLoadW(HWND ParentWin, wchar_t* FileToLoad, int /*ShowFlags*/)
                 CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
             if (hf != INVALID_HANDLE_VALUE) {
                 DWORD written = 0;
-                WriteFile(hf, rtf.data(), static_cast<DWORD>(rtf.size()),
+                WriteFile(hf, result.rtf.data(),
+                    static_cast<DWORD>(result.rtf.size()),
                     &written, nullptr);
                 CloseHandle(hf);
             }
         }
 #endif
 
-        LoadRtf(richEdit, rtf);
+        LoadRtf(richEdit, result.rtf);
+
+        // Pass 2: replace image placeholders with embedded pictures.
+        // Allocate per-host state that lives until WM_DESTROY; EmbedAll
+        // fills its image_clicks table for picture-link hit testing.
+        if (!result.image_refs.empty()) {
+            wchar_t mdDir[MAX_PATH * 2] = {};
+            GetFullPathNameW(FileToLoad, _countof(mdDir), mdDir, nullptr);
+            if (wchar_t* lastSlash = wcsrchr(mdDir, L'\\')) {
+                *(lastSlash + 1) = L'\0';
+            }
+            auto* state = new WindowState{};
+            image_embed::EmbedAll(richEdit, mdDir, result.image_refs,
+                state->image_clicks);
+            // Attach to host AFTER EmbedAll so the click handler doesn't
+            // see a half-built table mid-load.
+            SetWindowLongPtrW(host, GWLP_USERDATA,
+                reinterpret_cast<LONG_PTR>(state));
+        }
     }
     else {
         LoadPlainTextWide(richEdit, DescribeError(content.error(), FileToLoad));
