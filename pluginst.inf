@@ -12,4 +12,4 @@ description=Markdown viewer
 defaultextension=md
 detect=EXT="MD" | EXT="MARKDOWN" | EXT="MDOWN" | EXT="MKD"
 defaultdir=mdview
-version=0.4
+version=0.5
