@@ -1,4 +1,4 @@
-// MD Viewer for Total Commander
+// MD Viewer for Total Commander — Stage 4.5
 //
 // Code block rectangular shading via NBSP-padding:
 //  - Each line of a code block is padded with NBSP characters to match the
@@ -33,6 +33,7 @@ namespace Gdiplus { using std::min; using std::max; }
 #include <format>
 #include <span>
 #include <string>
+#include <memory>
 #include <string_view>
 #include <vector>
 
@@ -965,8 +966,17 @@ namespace md_render {
         parser.leave_span = OnLeaveSpan;
         parser.text = OnText;
 
-        md_parse(md_utf8.data(), static_cast<MD_SIZE>(md_utf8.size()),
+        const int parse_result = md_parse(
+            md_utf8.data(), static_cast<MD_SIZE>(md_utf8.size()),
             &parser, &b);
+#ifndef NDEBUG
+        if (parse_result != 0) {
+            OutputDebugStringW(L"[mdview] md_parse returned non-zero "
+                L"(parse may be incomplete)\n");
+        }
+#else
+        (void)parse_result;
+#endif
 
         b.append_raw("}");
         return ConvertResult{
@@ -1110,6 +1120,13 @@ namespace {
     DWORD CALLBACK RtfStreamCallback(DWORD_PTR cookie, LPBYTE buf,
         LONG cb, LONG* pcb) noexcept {
         auto* c = reinterpret_cast<RtfStreamCtx*>(cookie);
+        // Defensive: in valid usage pos <= data.size() always (we only
+        // increment by toCopy which is <= remaining), but a corrupted cookie
+        // or programming error could underflow `remaining` if pos > size().
+        if (c->pos >= c->data.size()) {
+            *pcb = 0;
+            return 0;
+        }
         const size_t remaining = c->data.size() - c->pos;
         const size_t toCopy = (static_cast<size_t>(cb) < remaining)
             ? static_cast<size_t>(cb) : remaining;
@@ -1126,6 +1143,15 @@ namespace {
         es.pfnCallback = RtfStreamCallback;
         SendMessageW(richEdit, EM_STREAMIN, SF_RTF,
             reinterpret_cast<LPARAM>(&es));
+#ifndef NDEBUG
+        if (es.dwError != 0) {
+            wchar_t buf[96];
+            std::swprintf(buf, _countof(buf),
+                L"[mdview] EM_STREAMIN dwError=0x%08lX (RTF parse issue)\n",
+                es.dwError);
+            OutputDebugStringW(buf);
+        }
+#endif
     }
 
     void LoadPlainTextWide(HWND richEdit, std::wstring_view text) {
@@ -1764,6 +1790,13 @@ namespace image_embed {
         const std::wstring& md_file_dir,
         const std::vector<ImageRef>& refs,
         std::vector<ImageClickTarget>& out_clicks) {
+        // Skip entirely if OLE wasn't initialized (very unusual — TC always
+        // uses STA on its UI thread). Without OLE, IRichEditOle::InsertObject
+        // would just fail per-image; the early-return is purely a fast path.
+        // Placeholders remain visible — fallback message would be nicer but
+        // adds complexity we don't need for a path that practically never hits.
+        if (!g_ole_initialized) return;
+
         const LONG maxWidthHimetric = GetAvailableWidthHimetric(richEdit);
 
         // URL of the i-th successfully-embedded picture, in insertion order.
@@ -1790,7 +1823,12 @@ namespace image_embed {
             const CHARRANGE found = FindAndSelectPlaceholder(richEdit,
                 refs[i].placeholder);
             if (found.cpMin < 0) {
+                // Placeholder not in document — unusual (could happen if RTF
+                // parse truncated). The Replace call below will also no-op
+                // since it uses the same finder, but kept for symmetry.
                 DeleteObject(hbm);
+                ReplacePlaceholderWithFallback(richEdit, refs[i].placeholder,
+                    refs[i].alt);
                 continue;
             }
 
@@ -1804,12 +1842,16 @@ namespace image_embed {
                 continue;
             }
 
+            // Release the original HBITMAP first — RichEdit copied it during
+            // InsertObject, so the original is no longer needed. Doing this
+            // BEFORE push_back (which can theoretically throw bad_alloc) avoids
+            // a leak in the bad_alloc path.
+            DeleteObject(hbm);
+
             // Successfully embedded. Record URL (or empty) at this insertion
             // index — actual cp positions are resolved at the end.
             insert_order_urls.push_back(
                 refs[i].is_inside_link ? refs[i].link_url : std::wstring());
-
-            DeleteObject(hbm);
         }
 
         // Reset selection to start so user doesn't see the last image highlighted.
@@ -1891,52 +1933,89 @@ HWND __stdcall ListLoadW(HWND ParentWin, wchar_t* FileToLoad, int /*ShowFlags*/)
     SetWindowSubclass(richEdit, RichEditSubclassProc, kSubclassId, 0);
     ApplyDefaultFontAndColor(richEdit, theme);
 
-    auto content = ReadFileToUtf8(FileToLoad);
-    if (content) {
-        const md_render::ConvertResult result =
-            md_render::ConvertMarkdownToRtf(*content, theme);
+    // Everything below is wrapped in try/catch because we cross the WLX C
+    // ABI back to TC — any uncaught exception there is undefined behavior.
+    // On bad_alloc (huge files, OOM), we fall back to showing a plain
+    // error message and return a valid host window so TC can still close
+    // it through ListCloseWindow.
+    try {
+        auto content = ReadFileToUtf8(FileToLoad);
+        if (content) {
+            const md_render::ConvertResult result =
+                md_render::ConvertMarkdownToRtf(*content, theme);
 
 #ifndef NDEBUG
-        // Debug: dump the generated RTF to %TEMP%\mdview-debug.rtf so we can
-        // inspect what we send to RichEdit. Only in Debug builds.
-        {
-            wchar_t tempPath[MAX_PATH] = {};
-            GetTempPathW(MAX_PATH, tempPath);
-            std::wstring dumpPath = std::wstring(tempPath) + L"mdview-debug.rtf";
-            HANDLE hf = CreateFileW(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr,
-                CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (hf != INVALID_HANDLE_VALUE) {
-                DWORD written = 0;
-                WriteFile(hf, result.rtf.data(),
-                    static_cast<DWORD>(result.rtf.size()),
-                    &written, nullptr);
-                CloseHandle(hf);
+            // Debug: dump the generated RTF to %TEMP%\mdview-debug.rtf so we
+            // can inspect what we send to RichEdit. Only in Debug builds.
+            {
+                wchar_t tempPath[MAX_PATH] = {};
+                GetTempPathW(MAX_PATH, tempPath);
+                std::wstring dumpPath = std::wstring(tempPath) + L"mdview-debug.rtf";
+                HANDLE hf = CreateFileW(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr,
+                    CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+                if (hf != INVALID_HANDLE_VALUE) {
+                    DWORD written = 0;
+                    WriteFile(hf, result.rtf.data(),
+                        static_cast<DWORD>(result.rtf.size()),
+                        &written, nullptr);
+                    CloseHandle(hf);
+                }
             }
-        }
 #endif
 
-        LoadRtf(richEdit, result.rtf);
+            LoadRtf(richEdit, result.rtf);
 
-        // Pass 2: replace image placeholders with embedded pictures.
-        // Allocate per-host state that lives until WM_DESTROY; EmbedAll
-        // fills its image_clicks table for picture-link hit testing.
-        if (!result.image_refs.empty()) {
-            wchar_t mdDir[MAX_PATH * 2] = {};
-            GetFullPathNameW(FileToLoad, _countof(mdDir), mdDir, nullptr);
-            if (wchar_t* lastSlash = wcsrchr(mdDir, L'\\')) {
-                *(lastSlash + 1) = L'\0';
+            // Pass 2: replace image placeholders with embedded pictures.
+            // WindowState is owned by unique_ptr until we successfully
+            // attach it to the host via SetWindowLongPtrW — only then we
+            // release(). This way exceptions during EmbedAll won't leak
+            // the state.
+            if (!result.image_refs.empty()) {
+                wchar_t mdDir[MAX_PATH * 2] = {};
+                const DWORD dirLen = GetFullPathNameW(
+                    FileToLoad, _countof(mdDir), mdDir, nullptr);
+                if (dirLen > 0 && dirLen < _countof(mdDir)) {
+                    if (wchar_t* lastSlash = wcsrchr(mdDir, L'\\')) {
+                        *(lastSlash + 1) = L'\0';
+                    }
+                    auto state = std::make_unique<WindowState>();
+                    image_embed::EmbedAll(richEdit, mdDir, result.image_refs,
+                        state->image_clicks);
+                    SetWindowLongPtrW(host, GWLP_USERDATA,
+                        reinterpret_cast<LONG_PTR>(state.release()));
+                }
+                // If GetFullPathNameW failed, skip image embedding entirely
+                // — placeholders will remain in the document as styled
+                // [image: alt] text. This is acceptable degradation.
             }
-            auto* state = new WindowState{};
-            image_embed::EmbedAll(richEdit, mdDir, result.image_refs,
-                state->image_clicks);
-            // Attach to host AFTER EmbedAll so the click handler doesn't
-            // see a half-built table mid-load.
-            SetWindowLongPtrW(host, GWLP_USERDATA,
-                reinterpret_cast<LONG_PTR>(state));
+        }
+        else {
+            LoadPlainTextWide(richEdit, DescribeError(content.error(), FileToLoad));
         }
     }
-    else {
-        LoadPlainTextWide(richEdit, DescribeError(content.error(), FileToLoad));
+    catch (const std::exception& /*e*/) {
+        // OOM or any other std exception. Show a simple message and bail.
+        // Note: even LoadPlainTextWide can throw (it std::wstring-copies);
+        // use a static buffer to be exception-free here.
+        static constexpr wchar_t kFallback[] =
+            L"Error: out of memory or internal error while rendering file.";
+        SETTEXTEX st{};
+        st.flags = ST_DEFAULT;
+        st.codepage = 1200;
+        SendMessageW(richEdit, EM_SETTEXTEX,
+            reinterpret_cast<WPARAM>(&st),
+            reinterpret_cast<LPARAM>(kFallback));
+    }
+    catch (...) {
+        // Anything else — same fallback. Don't propagate across C ABI.
+        static constexpr wchar_t kFallback[] =
+            L"Error: unknown exception while rendering file.";
+        SETTEXTEX st{};
+        st.flags = ST_DEFAULT;
+        st.codepage = 1200;
+        SendMessageW(richEdit, EM_SETTEXTEX,
+            reinterpret_cast<WPARAM>(&st),
+            reinterpret_cast<LPARAM>(kFallback));
     }
 
     ApplyEditorPadding(richEdit);
