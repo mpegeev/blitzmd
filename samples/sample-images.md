@@ -31,6 +31,10 @@ Markdown проходит через md4c, который генерирует R
 
 [![Кликни на логотип](logo.png)](https://www.ghisler.com/)
 
+[![Кликни на логотип](logo.png)](https://www.google.com/)
+
+[![Кликни на логотип](logo.png)](https://www.github.com/)
+
 ## Картинка inline в тексте
 
 Иногда хочется маленькую картинку ![](avatar.png) прямо в строке текста,
