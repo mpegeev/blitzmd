@@ -254,6 +254,18 @@ namespace md_render {
         bool in_code_block = false;
         std::string code_buffer;
 
+        // Table state. RTF tables need column positions defined at start of each
+        // row (\trowd + \cellx N). We capture col_count on enter MD_BLOCK_TABLE
+        // and emit precomputed column positions on every TR.
+        struct TableCtx {
+            int col_count = 0;
+            std::vector<MD_ALIGN> col_aligns;  // per-column alignment from header
+            int current_col = 0;               // current cell index within row
+            bool in_thead = false;
+            bool capturing_aligns = false;     // true during THEAD: collect aligns
+        };
+        std::vector<TableCtx> table_stack;
+
         void append_raw(std::string_view s) { out.append(s); }
 
         int container_indent() const {
@@ -406,6 +418,11 @@ namespace md_render {
         }
 
         case MD_BLOCK_P: {
+            if (!b.table_stack.empty()) {
+                // Inside a table cell — don't emit \pard, would break \intbl.
+                // The cell's TH/TD handler already opened the paragraph.
+                break;
+            }
             if (b.inside_li_no_block_yet()) {
                 b.mark_li_block_emitted();
             }
@@ -509,6 +526,90 @@ namespace md_render {
         case MD_BLOCK_HTML:
             break;
 
+            // ---- Tables (MD_FLAG_TABLES) -----------------------------------
+        case MD_BLOCK_TABLE: {
+            if (b.inside_li_no_block_yet()) {
+                b.mark_li_block_emitted();
+                b.append_raw("\\par");
+            }
+            auto* d = static_cast<MD_BLOCK_TABLE_DETAIL*>(detail);
+            RtfBuilder::TableCtx ctx;
+            ctx.col_count = static_cast<int>(d->col_count);
+            ctx.col_aligns.assign(ctx.col_count, MD_ALIGN_DEFAULT);
+            b.table_stack.push_back(std::move(ctx));
+            // Small vertical spacing before the table.
+            b.append_raw("\\pard\\sa120\\sb120\n");
+            break;
+        }
+        case MD_BLOCK_THEAD: {
+            if (!b.table_stack.empty()) {
+                b.table_stack.back().in_thead = true;
+                b.table_stack.back().capturing_aligns = true;
+            }
+            break;
+        }
+        case MD_BLOCK_TBODY: {
+            if (!b.table_stack.empty()) {
+                b.table_stack.back().in_thead = false;
+                b.table_stack.back().capturing_aligns = false;
+            }
+            break;
+        }
+        case MD_BLOCK_TR: {
+            if (b.table_stack.empty()) break;
+            auto& t = b.table_stack.back();
+            t.current_col = 0;
+            // \trowd starts a row; \cellxN gives the right-edge x-coord of
+            // each cell in twips. We distribute columns evenly across a
+            // fixed total width (8000 twips ≈ 5.5 inches).
+            // \trgaph108 = half-gap between cells (54 twips on each side).
+            b.append_raw("\\trowd\\trgaph108\\trleft0");
+            constexpr int kTableTotalWidth = 8000;
+            const int per_col = (t.col_count > 0)
+                ? (kTableTotalWidth / t.col_count) : kTableTotalWidth;
+            for (int i = 0; i < t.col_count; ++i) {
+                // Each cell gets borders on all four sides + position.
+                char buf[256];
+                std::snprintf(buf, sizeof(buf),
+                    "\\clbrdrt\\brdrs\\brdrw10\\brdrcf6"
+                    "\\clbrdrl\\brdrs\\brdrw10\\brdrcf6"
+                    "\\clbrdrb\\brdrs\\brdrw10\\brdrcf6"
+                    "\\clbrdrr\\brdrs\\brdrw10\\brdrcf6"
+                    "\\cellx%d", per_col * (i + 1));
+                b.append_raw(buf);
+            }
+            b.append_raw("\n");
+            break;
+        }
+        case MD_BLOCK_TH:
+        case MD_BLOCK_TD: {
+            if (b.table_stack.empty()) break;
+            auto& t = b.table_stack.back();
+            auto* d = static_cast<MD_BLOCK_TD_DETAIL*>(detail);
+            // First TH row defines per-column alignment.
+            if (t.capturing_aligns && t.current_col < t.col_count) {
+                t.col_aligns[t.current_col] = d->align;
+            }
+            // Cell paragraph. \intbl marks the paragraph as belonging to the
+            // current table cell; without it RichEdit shows raw text.
+            b.append_raw("\\pard\\intbl");
+            // Alignment: prefer the column's header-derived align; fallback
+            // to the cell's own align (some markdown variants set per-cell).
+            const MD_ALIGN align = (t.current_col < t.col_count
+                && t.col_aligns[t.current_col] != MD_ALIGN_DEFAULT)
+                ? t.col_aligns[t.current_col]
+                : d->align;
+            switch (align) {
+            case MD_ALIGN_CENTER: b.append_raw("\\qc"); break;
+            case MD_ALIGN_RIGHT:  b.append_raw("\\qr"); break;
+            default:              b.append_raw("\\ql"); break;
+            }
+            // Header cells get bold.
+            if (type == MD_BLOCK_TH) b.append_raw("\\b");
+            b.append_raw(" ");
+            break;
+        }
+
         default: break;
         }
         return 0;
@@ -518,7 +619,10 @@ namespace md_render {
         auto& b = *static_cast<RtfBuilder*>(ud);
         switch (type) {
         case MD_BLOCK_H:     b.append_raw("}\\par\n"); break;
-        case MD_BLOCK_P:     b.append_raw("\\par\n");  break;
+        case MD_BLOCK_P:
+            if (!b.table_stack.empty()) break;  // P inside cell — no \par
+            b.append_raw("\\par\n");
+            break;
         case MD_BLOCK_QUOTE: b.append_raw("}\\par\n"); break;
         case MD_BLOCK_UL:
         case MD_BLOCK_OL:
@@ -538,6 +642,28 @@ namespace md_render {
             b.in_code_block = false;
             b.flush_code_block();
             b.append_raw("}\\par\n");
+            break;
+
+            // ---- Tables ---------------------------------------------------
+        case MD_BLOCK_TABLE:
+            if (!b.table_stack.empty()) b.table_stack.pop_back();
+            b.append_raw("\\pard\\par\n");
+            break;
+        case MD_BLOCK_THEAD:
+        case MD_BLOCK_TBODY:
+            break;
+        case MD_BLOCK_TR:
+            b.append_raw("\\row\n");
+            break;
+        case MD_BLOCK_TH:
+        case MD_BLOCK_TD:
+            // \b applied above must be terminated; \cell finalizes the cell.
+            // We end the bold group implicitly by switching paragraphs;
+            // but to be safe in case the cell content opened spans, end
+            // any leftover formatting via \plain before \cell.
+            if (type == MD_BLOCK_TH) b.append_raw("\\b0");
+            b.append_raw("\\cell\n");
+            if (!b.table_stack.empty()) b.table_stack.back().current_col++;
             break;
         default: break;
         }
@@ -668,7 +794,8 @@ namespace md_render {
         parser.flags = MD_FLAG_STRIKETHROUGH
             | MD_FLAG_PERMISSIVEAUTOLINKS
             | MD_FLAG_TASKLISTS
-            | MD_FLAG_HARD_SOFT_BREAKS; // single \n -> <br>
+            | MD_FLAG_HARD_SOFT_BREAKS
+            | MD_FLAG_TABLES;
         parser.enter_block = OnEnterBlock;
         parser.leave_block = OnLeaveBlock;
         parser.enter_span = OnEnterSpan;
