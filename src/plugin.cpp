@@ -89,30 +89,59 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
     case DLL_PROCESS_ATTACH:
         g_hInstance = static_cast<HINSTANCE>(hModule);
         DisableThreadLibraryCalls(hModule);
-        g_richEditModule = LoadLibraryW(L"msftedit.dll");
-        // OLE is needed for image embedding (Step 5).
-        if (SUCCEEDED(OleInitialize(nullptr))) {
-            g_ole_initialized = true;
-        }
-        // GDI+ for decoding PNG/JPG/GIF/BMP/TIFF.
-        // OleLoadPicture officially only handles BMP/ICO/WMF/EMF —
-        // we use GDI+ to decode anything else, then re-save as BMP
-        // into a memory stream for OleLoadPicture.
-        {
-            Gdiplus::GdiplusStartupInput startup;
-            Gdiplus::GdiplusStartup(&g_gdiplus_token, &startup, nullptr);
-        }
+        // NOTE: nothing else here. LoadLibrary, OleInitialize and
+        // GdiplusStartup are forbidden under loader-lock by MSDN. We
+        // do them lazily in EnsurePluginInitialized() on first
+        // ListLoadW call instead.
         break;
     case DLL_PROCESS_DETACH:
-        // Don't call OleUninitialize / GdiplusShutdown from DllMain —
-        // they may attempt to load other modules, which is restricted
-        // under the loader lock. TC unloads us on exit and the OS
-        // reclaims everything anyway.
+        // FreeLibrary in DETACH is explicitly allowed by MSDN. We
+        // don't call OleUninitialize / GdiplusShutdown here because
+        // they may try to load other modules during teardown.
         if (g_richEditModule) FreeLibrary(g_richEditModule);
         break;
     }
     return TRUE;
 }
+
+namespace {
+
+    // Lazy plugin-wide initialization. Called on first ListLoadW so we never
+    // run LoadLibrary / OleInitialize / GdiplusStartup under loader-lock from
+    // DllMain (forbidden by MSDN — risks deadlock when those calls trigger
+    // dependent DLL loads).
+    //
+    // All steps are independent and best-effort: failure of any one doesn't
+    // prevent the others. Subsequent calls are no-ops (guarded by static).
+    //
+    // MUST be called on TC's UI thread (which is where ListLoadW runs). OLE
+    // is per-thread, so initializing here ties our STA to that thread.
+    void EnsurePluginInitialized() {
+        static const bool initialized = [] {
+            // RichEdit 8.5 DLL — registers MSFTEDIT_CLASS window class.
+            // Idempotent if already loaded (just bumps the module refcount).
+            g_richEditModule = LoadLibraryW(L"msftedit.dll");
+
+            // OLE for image embedding (IRichEditOle, OleCreateStaticFromData).
+            // STA apartment ties to this thread, which is fine — all our
+            // RichEdit interactions happen on the same UI thread.
+            if (SUCCEEDED(OleInitialize(nullptr))) {
+                g_ole_initialized = true;
+            }
+
+            // GDI+ for decoding PNG/JPG/GIF/BMP/TIFF/ICO.
+            // OleLoadPicture officially only handles BMP/ICO/WMF/EMF —
+            // GDI+ is the path for modern formats. We then hand the decoded
+            // HBITMAP to OleCreateStaticFromData via our custom IDataObject.
+            Gdiplus::GdiplusStartupInput startup;
+            Gdiplus::GdiplusStartup(&g_gdiplus_token, &startup, nullptr);
+
+            return true;
+            }();
+        (void)initialized;
+    }
+
+}  // namespace
 
 // ============================================================================
 // Theme
@@ -1899,6 +1928,7 @@ void __stdcall ListGetDetectString(char* DetectString, int maxlen) {
 
 extern "C" __declspec(dllexport)
 HWND __stdcall ListLoadW(HWND ParentWin, wchar_t* FileToLoad, int /*ShowFlags*/) {
+    EnsurePluginInitialized();
     EnsureHostClassRegistered();
 
     const ThemeColors& theme = GetActiveTheme();
