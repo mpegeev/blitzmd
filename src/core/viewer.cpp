@@ -59,6 +59,21 @@ bool IsMarkdownPath(std::wstring_view p) {
 
 bool IsRussianUi() { return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_RUSSIAN; }
 
+// GetDpiForWindow exists since Windows 10 1607; resolved dynamically so the
+// plugin still loads on older systems.
+UINT WindowDpi(HWND hwnd) {
+    using Fn = UINT(WINAPI*)(HWND);
+    static const Fn fn = reinterpret_cast<Fn>(
+        reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow")));
+    UINT dpi = fn ? fn(hwnd) : 0;
+    if (dpi == 0) {
+        HDC dc = GetDC(hwnd);
+        dpi = static_cast<UINT>(GetDeviceCaps(dc, LOGPIXELSX));
+        ReleaseDC(hwnd, dc);
+    }
+    return dpi ? dpi : 96;
+}
+
 const wchar_t* Tr(const wchar_t* en, const wchar_t* ru) { return IsRussianUi() ? ru : en; }
 
 enum MenuId : UINT {
@@ -290,8 +305,7 @@ bool Viewer::Create(HWND parent, int flags) {
     hwnd_ = CreateWindowExW(0, kClassName, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0, rc.right, rc.bottom,
                             parent, nullptr, reinterpret_cast<HINSTANCE>(&__ImageBase), this);
     if (!hwnd_) return false;
-    dpi_ = GetDpiForWindow(hwnd_);
-    if (dpi_ == 0) dpi_ = 96;
+    dpi_ = WindowDpi(hwnd_);
     layout_.Init(g.dw.Get(), &palette_, &images_);
     zoom_percent_ = GlobalSettings().zoom_percent;
     ApplySettings(false);
@@ -1607,7 +1621,7 @@ LRESULT Viewer::Proc(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_DPICHANGED_AFTERPARENT: {
         const ScrollAnchor a = CaptureAnchor();
-        dpi_ = GetDpiForWindow(hwnd_);
+        dpi_ = WindowDpi(hwnd_);
         if (rt_) rt_->SetDpi(static_cast<float>(dpi_), static_cast<float>(dpi_));
         Relayout(false);
         RestoreAnchor(a);
