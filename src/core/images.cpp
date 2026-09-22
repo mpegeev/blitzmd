@@ -524,6 +524,20 @@ void ImageStore::LoadAll() {
         bool remote = false;
         e.url = ResolveResourceUrl(doc->base_dir, src, &remote);
         e.remote = remote;
+        // Never touch network shares on our own: loading \\host\share\x.png
+        // makes Windows authenticate to that host (NTLM hash leak). Only
+        // shares on the same server as the document itself are allowed.
+        if (!remote && e.url.size() > 2 && e.url[0] == L'\\' && e.url[1] == L'\\') {
+            auto server = [](const std::wstring& p) {
+                const size_t end = p.find(L'\\', 2);
+                return ToLower(p.substr(0, end == std::wstring::npos ? p.size() : end));
+            };
+            const bool doc_on_share = doc->base_dir.size() > 2 && doc->base_dir[0] == L'\\' && doc->base_dir[1] == L'\\';
+            if (!doc_on_share || server(doc->base_dir) != server(e.url)) {
+                e.state = ImageState::Failed;
+                continue;
+            }
+        }
         if (e.url.empty() || (remote && !impl_->allow_remote)) {
             std::shared_ptr<const std::string> cached;
             if (!(remote && RemoteCache::Get().Lookup(e.url, cached) && cached)) {

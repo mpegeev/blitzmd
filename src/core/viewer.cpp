@@ -57,6 +57,18 @@ bool IsMarkdownPath(std::wstring_view p) {
     return false;
 }
 
+bool IsExecutablePath(std::wstring_view p) {
+    const size_t dot = p.find_last_of(L'.');
+    if (dot == std::wstring_view::npos) return false;
+    const std::wstring_view ext = p.substr(dot + 1);
+    for (const wchar_t* e : {L"exe", L"com", L"bat", L"cmd", L"scr", L"pif", L"msi", L"msp", L"ps1", L"psm1",
+                             L"vbs", L"vbe", L"js", L"jse", L"wsf", L"wsh", L"hta", L"cpl", L"lnk", L"reg",
+                             L"jar", L"application", L"appref-ms", L"url", L"inf", L"sct", L"msc", L"dll"}) {
+        if (EqualsNoCase(ext, e)) return true;
+    }
+    return false;
+}
+
 bool IsRussianUi() { return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_RUSSIAN; }
 
 // GetDpiForWindow exists since Windows 10 1607; resolved dynamically so the
@@ -260,7 +272,8 @@ private:
     std::wstring search_text_;
     std::vector<TextRange> hits_;
     int current_hit_ = -1;
-    std::wstring folded_text_;        // lowercase global text for searching
+    std::wstring global_text_;        // document text for searching (lazy)
+    std::wstring folded_text_;        // lowercase version of it
     bool folded_valid_ = false;
 };
 
@@ -391,6 +404,10 @@ bool Viewer::Load(const std::wstring& path, int flags, bool keep_history) {
     hits_.clear();
     current_hit_ = -1;
     folded_valid_ = false;
+    global_text_.clear();
+    global_text_.shrink_to_fit();
+    folded_text_.clear();
+    folded_text_.shrink_to_fit();
     hover_link_ = -1;
     hover_link_leaf_ = nullptr;
     hover_block_ = nullptr;
@@ -828,9 +845,11 @@ Viewer::Hit Viewer::HitTest(float x, float y) const {
     if (!doc_) return hit;
     // Find the deepest visible block containing the point.
     Block* b = doc_->root;
+    float scroll_x = 0;  // accumulated horizontal scroll of wide ancestors
     for (;;) {
         Block* next = nullptr;
-        const float lx = x + (b->content_w > 0 ? b->scroll_x : 0.f);
+        if (b->content_w > 0) scroll_x += b->scroll_x;
+        const float lx = x + scroll_x;
         for (Block* c : b->children) {
             if (!c->visible || c->h <= 0) continue;
             if (y >= c->y && y < c->y + c->h) {
@@ -1186,6 +1205,13 @@ void Viewer::NavigateTo(const std::wstring& path, const std::wstring& fragment) 
         if (!fragment.empty()) JumpToAnchor(fragment);
         return;
     }
+    // A document must not be able to start programs with a single click.
+    if (!(attrs & FILE_ATTRIBUTE_DIRECTORY) && IsExecutablePath(path)) {
+        const std::wstring msg = std::wstring(Tr(L"The link points to a program or script:\n\n",
+                                                 L"Ссылка указывает на программу или скрипт:\n\n")) +
+                                 path + Tr(L"\n\nRun it?", L"\n\nЗапустить?");
+        if (MessageBoxW(hwnd_, msg.c_str(), L"mdview", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+    }
     ShellExecuteW(hwnd_, L"open", path.c_str(), nullptr, DirectoryOf(path).c_str(), SW_SHOWNORMAL);
 }
 
@@ -1281,12 +1307,13 @@ bool Viewer::Search(const std::wstring& text, int flags) {
     const bool match_case = (flags & lcs_matchcase) != 0;
     const bool whole = (flags & lcs_wholewords) != 0;
     const bool backwards = (flags & lcs_backwards) != 0;
-    const std::wstring global = doc_->GlobalText();
-    if (!match_case && !folded_valid_) {
-        folded_text_ = ToLower(global);
-        if (folded_text_.size() != global.size()) folded_text_ = global;  // length-changing folds: fall back
+    if (!folded_valid_) {
+        global_text_ = doc_->GlobalText();
+        folded_text_ = ToLower(global_text_);
+        if (folded_text_.size() != global_text_.size()) folded_text_ = global_text_;  // length-changing folds
         folded_valid_ = true;
     }
+    const std::wstring& global = global_text_;
     const std::wstring& hay = match_case ? global : folded_text_;
     const std::wstring needle = match_case ? text : ToLower(text);
     if (needle.size() > hay.size()) return false;
