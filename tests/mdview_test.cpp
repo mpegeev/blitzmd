@@ -209,9 +209,13 @@ int main(int argc, char** argv) {
         }
         bool dark = false;
         const char* query = nullptr;
+        int hover_x = -1, hover_y = -1;
         for (int i = 5; i < argc; ++i) {
             if (!std::strcmp(argv[i], "--dark")) dark = true;
-            else query = argv[i];
+            else if (!std::strcmp(argv[i], "--hover") && i + 2 < argc) {
+                hover_x = std::atoi(argv[++i]);
+                hover_y = std::atoi(argv[++i]);
+            } else query = argv[i];
         }
         DefaultParams dp{sizeof(DefaultParams), 13, 2, {}};
         const std::string ini = WideToUtf8(DirectoryOf(FullPath(argv[4]))) + "lsplugin.ini";
@@ -273,6 +277,12 @@ int main(int argc, char** argv) {
                     command(viewer, 4, 0));
         if (query) search(viewer, Utf8ToWide(query).c_str(), 1);
         pump(300);
+        if (hover_x >= 0) {
+            // Hover: deliver the move and repaint synchronously before the
+            // WM_MOUSELEAVE queued by TrackMouseEvent is processed.
+            SendMessageW(viewer, WM_MOUSEMOVE, 0, MAKELPARAM(hover_x, hover_y));
+            RedrawWindow(viewer, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+        }
         // Capture the host window (including Direct2D content).
         RECT rc{};
         GetClientRect(host, &rc);
