@@ -174,7 +174,8 @@ int main(int argc, char** argv) {
         const UINT msg = static_cast<UINT>(std::strtoul(argv[3], nullptr, 0));
         const WPARAM wp = static_cast<WPARAM>(std::strtoull(argv[4], nullptr, 0));
         const LPARAM lp = argc >= 6 ? static_cast<LPARAM>(std::strtoll(argv[5], nullptr, 0)) : 0;
-        SendMessageW(hwnd, msg, wp, lp);
+        if (argc >= 7 && !std::strcmp(argv[6], "--async")) PostMessageW(hwnd, msg, wp, lp);
+        else SendMessageW(hwnd, msg, wp, lp);
         return 0;
     }
     if (cmd == "plugin" && argc >= 5) {

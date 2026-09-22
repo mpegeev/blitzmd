@@ -108,6 +108,7 @@ enum MenuId : UINT {
     kMenuOpenExternal,
     kMenuReload,
     kMenuAbout,
+    kMenuTocBase = 1000,
 };
 
 }  // namespace
@@ -249,6 +250,7 @@ private:
     bool dragged_ = false;
     POINT down_pt_{};
     int down_link_ = -1;
+    int down_image_ = -1;
     Block* down_summary_ = nullptr;
     int click_count_ = 0;
     DWORD last_click_time_ = 0;
@@ -1026,6 +1028,7 @@ void Viewer::OnLButtonDown(int px, int py, bool dbl) {
     }
     down_link_ = hit.link;
     down_summary_ = hit.summary;
+    down_image_ = hit.image;
     if (shift && selection_.end >= selection_.start && hit.leaf) {
         selection_ = TextRange{std::min(anchor_, hit.pos), std::max(anchor_, hit.pos)};
     } else if (hit.leaf) {
@@ -1124,9 +1127,17 @@ void Viewer::OnLButtonUp(int px, int py) {
     } else if (down_summary_ && hit.summary == down_summary_ && click_count_ == 1) {
         selection_ = {};
         ToggleDetails(down_summary_);
+    } else if (down_image_ >= 0 && hit.image == down_image_ && hit.link < 0 && click_count_ == 1) {
+        // Like GitHub: clicking a picture that isn't a link opens the image.
+        const ImageEntry* e = images_.Entry(down_image_);
+        if (e && !e->url.empty() && !StartsWithNoCase(e->url, L"data:") && e->state == ImageState::Ready) {
+            selection_ = {};
+            ShellExecuteW(hwnd_, L"open", e->url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
     }
     down_link_ = -1;
     down_summary_ = nullptr;
+    down_image_ = -1;
 }
 
 void Viewer::SelectWordAt(const Hit& hit) {
@@ -1472,6 +1483,34 @@ void Viewer::OnContextMenu(int sx, int sy) {
     if (hit.code) AppendMenuW(menu, MF_STRING, kMenuCopyCode, Tr(L"Copy co&de block", L"Копировать &блок кода"));
     AppendMenuW(menu, MF_STRING, kMenuSelectAll, Tr(L"Select &all\tCtrl+A", L"Выделить &всё\tCtrl+A"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    // Table of contents: jump to a heading.
+    std::vector<Block*> toc;
+    if (doc_) {
+        int min_level = 6;
+        for (Block* leaf : doc_->leaves) {
+            if (leaf->type == BlockType::Heading) min_level = std::min<int>(min_level, leaf->level);
+        }
+        for (Block* leaf : doc_->leaves) {
+            if (leaf->type == BlockType::Heading && leaf->level <= min_level + 2 && toc.size() < 60) toc.push_back(leaf);
+        }
+        if (toc.size() > 1) {
+            HMENU contents = CreatePopupMenu();
+            for (size_t i = 0; i < toc.size(); ++i) {
+                std::wstring label(static_cast<size_t>((toc[i]->level - min_level) * 4), L' ');
+                for (wchar_t c : toc[i]->text) {
+                    if (c == 0xFFFC || c == 0x200B) continue;
+                    if (c == L'&') label += L"&&";
+                    else label.push_back(c == 0x2028 ? L' ' : c);
+                    if (label.size() > 90) {
+                        label += L"…";
+                        break;
+                    }
+                }
+                AppendMenuW(contents, MF_STRING, kMenuTocBase + static_cast<UINT>(i), label.c_str());
+            }
+            AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(contents), Tr(L"C&ontents", L"&Оглавление"));
+        }
+    }
     if (!history_.empty()) AppendMenuW(menu, MF_STRING, kMenuBack, Tr(L"&Back\tBackspace", L"&Назад\tBackspace"));
     AppendMenuW(menu, MF_STRING, kMenuZoomIn, Tr(L"Zoom &in\tCtrl++", L"&Увеличить\tCtrl++"));
     AppendMenuW(menu, MF_STRING, kMenuZoomOut, Tr(L"Zoom &out\tCtrl+-", L"У&меньшить\tCtrl+-"));
@@ -1496,6 +1535,26 @@ void Viewer::OnContextMenu(int sx, int sy) {
     const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
     Settings& ws = GlobalSettings();
+    if (cmd >= kMenuTocBase && cmd < kMenuTocBase + toc.size()) {
+        Block* heading = toc[cmd - kMenuTocBase];
+        // Collapsed <details> around the heading are opened first.
+        bool opened = false;
+        for (Block* p = heading->parent; p; p = p->parent) {
+            if (p->type == BlockType::Details && !p->open) {
+                p->open = true;
+                opened = true;
+            }
+        }
+        if (opened) {
+            LayoutEngine::UpdateVisibility(doc_->root, true);
+            Relayout(true);
+        }
+        scroll_y_ = std::clamp(heading->y - layout_.metrics().em, 0.f, MaxScroll());
+        Relayout(false);
+        ScrollTo(heading->y - layout_.metrics().em, false);
+        Relayout(true);
+        return;
+    }
     switch (cmd) {
     case kMenuCopy: CopySelection(); break;
     case kMenuOpenLink: OpenLink(hit.link); break;
@@ -1719,7 +1778,7 @@ LRESULT Viewer::Proc(UINT msg, WPARAM wp, LPARAM lp) {
             LPCWSTR cursor = IDC_ARROW;
             if (!(MaxScroll() > 0.5f && pt.x / Scale() >= ViewWidth() - 16.f)) {
                 const Hit hit = HitTest(pt.x / Scale(), pt.y / Scale() + scroll_y_);
-                if (hit.link >= 0 || hit.summary || copy_hover_) cursor = IDC_HAND;
+                if (hit.link >= 0 || hit.summary || copy_hover_ || (hit.image >= 0 && hit.on_text)) cursor = IDC_HAND;
                 else if (hit.on_text) cursor = IDC_IBEAM;
             }
             SetCursor(LoadCursorW(nullptr, cursor));
