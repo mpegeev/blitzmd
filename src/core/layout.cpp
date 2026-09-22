@@ -719,9 +719,13 @@ void LayoutEngine::Layout(float viewport_w, float exact_y0, float exact_y1) {
     estimated_count_ = 0;
 
     const float vw = viewport_w_;
-    m_.page_pad_x = std::clamp(vw * 0.04f, 8.f, 32.f);
-    m_.page_pad_top = std::clamp(vw * 0.03f, 8.f, 24.f);
-    m_.page_pad_bottom = m_.page_pad_top + 8.f;
+    if (cfg_.page_padding >= 0) {
+        m_.page_pad_x = m_.page_pad_top = m_.page_pad_bottom = cfg_.page_padding;
+    } else {
+        m_.page_pad_x = std::clamp(vw * 0.04f, 8.f, 32.f);
+        m_.page_pad_top = std::clamp(vw * 0.03f, 8.f, 24.f);
+        m_.page_pad_bottom = m_.page_pad_top + 8.f;
+    }
     float cw = vw - 2.f * m_.page_pad_x;
     if (cfg_.max_content_width > 0) cw = std::min(cw, cfg_.max_content_width * cfg_.zoom);
     cw = std::max(cw, 40.f);
@@ -878,6 +882,16 @@ float LayoutEngine::LayoutList(Block* b, float x, float y, float w, const Ctx& c
     c.list_depth++;
     const float indent = m_.list_indent * ctx.scale;
     const float gap = b->tight ? m_.li_gap * ctx.scale : m_.block_gap * ctx.scale;
+    // dir="auto": the list direction comes from its first strong character.
+    b->rtl = false;
+    for (const Block* p = b; p && !p->children.empty();) {
+        p = p->children.front();
+        if (p->IsLeaf()) {
+            b->rtl = DetectRtl(p->text);
+            break;
+        }
+    }
+    const float item_x = b->rtl ? x : x + indent;
     float cursor = y;
     bool first = true;
     for (Block* item : b->children) {
@@ -887,7 +901,7 @@ float LayoutEngine::LayoutList(Block* b, float x, float y, float w, const Ctx& c
             continue;
         }
         if (!first) cursor += gap;
-        cursor += LayoutBlock(item, x + indent, cursor, std::max(w - indent, 20.f), c);
+        cursor += LayoutBlock(item, item_x, cursor, std::max(w - indent, 20.f), c);
         first = false;
     }
     return cursor - y;
@@ -988,8 +1002,9 @@ void LayoutEngine::MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& ma
         float pad = 0;
         if (b->type == BlockType::CodeBlock) pad = 2.f * m_.code_pad * ctx.scale;
         if (b->type == BlockType::Summary) pad = m_.em * ctx.scale * 1.25f;
-        min_w = s.min_w + pad;
-        max_w = s.nowrap_w + pad;
+        // +1: a layout exactly as wide as its text may still wrap (rounding).
+        min_w = s.min_w + pad + 1.f;
+        max_w = s.nowrap_w + pad + 1.f;
         if (b->type == BlockType::CodeBlock && !s.style.nowrap) min_w = std::min(min_w, m_.em * 12.f);
         return;
     }

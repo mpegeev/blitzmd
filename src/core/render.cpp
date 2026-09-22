@@ -388,23 +388,27 @@ void Renderer::DrawListItem(Block* item) {
         if (p->type == BlockType::List) ++depth;
     }
 
+    // Right-to-left lists have their markers on the right side.
+    const bool rtl = list && list->type == BlockType::List && list->rtl;
+    const float right = item->x + item->w;
     if (footnote || (list && list->type == BlockType::List && list->ordered && item->task < 0)) {
-        const std::wstring text = (footnote ? std::to_wstring(item->number) : ListMarkerText(item->number, depth)) + L".";
+        const std::wstring num = footnote ? std::to_wstring(item->number) : ListMarkerText(item->number, depth);
+        const std::wstring text = rtl ? L"." + num : num + L".";
         if (IDWriteTextLayout* tl = layout_->LabelLayout(text, em, 400)) {
             const float w = LabelWidth(tl);
-            const float x = item->x - em * 0.35f - w;
+            const float x = rtl ? right + em * 0.35f : item->x - em * 0.35f - w;
             rt_->DrawTextLayout(D2D1::Point2F(x, baseline - LabelBaseline(tl)), tl, Brush(color),
                                 D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
         }
     } else if (item->task >= 0) {
         const float sz = em * 0.875f;
-        const float x = item->x - em * 1.45f;
+        const float x = rtl ? right + em * 1.45f - sz : item->x - em * 1.45f;
         const float cy = baseline - em * 0.34f;
         const D2D1_RECT_F r = D2D1::RectF(Snap(x), Snap(cy - sz * 0.5f), Snap(x + sz), Snap(cy + sz * 0.5f));
         DrawCheckbox(rt_, icons_, r, item->task == 1, Brush(kColorMuted), Brush(kColorCheckboxBg),
                      Brush(kColorCheckboxChecked), Brush(kColorCheckmark));
     } else if (list && list->type == BlockType::List) {
-        const float cx = item->x - em * 0.95f;
+        const float cx = rtl ? right + em * 0.95f : item->x - em * 0.95f;
         const float cy = baseline - em * 0.3f;
         if (depth == 0) {
             const float r = em * 0.17f;

@@ -132,6 +132,7 @@ struct Block {
     float scroll_x = 0;         // horizontal scroll offset of wide blocks
     float marker_y = 0;         // list items: baseline of the marker
     bool visible = true;        // false inside collapsed <details>
+    bool rtl = false;           // lists: right-to-left (markers on the right)
 
     bool IsLeaf() const { return IsLeafType(type); }
     uint32_t text_end() const { return text_start + static_cast<uint32_t>(text.size()); }
@@ -161,6 +162,9 @@ struct Document {
 
     // Global text model: all leaf texts separated by one virtual '\n'.
     std::wstring GlobalText() const;
+    // Plain text of global range [a, b) for the clipboard: CRLF line breaks,
+    // tabs between cells of a table row, images as their alt text.
+    std::wstring PlainText(uint32_t a, uint32_t b) const;
     // Finds the leaf containing the global offset (nullptr if none).
     Block* LeafAt(uint32_t global_pos) const;
     // Resolves "#fragment" links. Accepts raw, lowercase or percent-encoded ids.

@@ -33,6 +33,7 @@ struct LayoutConfig {
     float max_content_width = 900.f;    // DIPs at 100% zoom; 0 = unlimited
     bool wrap_code = true;
     bool dark = false;
+    float page_padding = -1.f;          // DIPs around the content; <0 = automatic
 };
 
 // Resolved typography of one leaf.

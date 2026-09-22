@@ -29,6 +29,12 @@ foreach(kind SHARED EXE STATIC)
     endif()
 endforeach()
 
+option(MDVIEW_ASAN "Build with AddressSanitizer (testing only)" OFF)
+if(MDVIEW_ASAN)
+    add_compile_options(/fsanitize=address /Zi)
+    add_link_options(/INCREMENTAL:NO /DEBUG)
+endif()
+
 # ---- md4c (vendored, see third_party/md4c/VERSION.txt) ----------------------
 add_library(md4c STATIC
     third_party/md4c/md4c.c
@@ -49,6 +55,7 @@ add_library(mdview_core STATIC
     src/core/document.cpp
     src/core/html.cpp
     src/core/parser.cpp
+    src/core/math.cpp
     ${MDVIEW_HIGHLIGHT_SOURCE}
     src/core/emoji.cpp
     src/core/theme.cpp
@@ -60,6 +67,7 @@ add_library(mdview_core STATIC
     src/core/icons.cpp
     src/core/viewer.cpp
     src/core/offscreen.cpp
+    src/core/print.cpp
 )
 target_include_directories(mdview_core PUBLIC src)
 target_link_libraries(mdview_core PUBLIC md4c
@@ -73,7 +81,9 @@ target_compile_definitions(mdview_core PUBLIC ${MDVIEW_DEFINITIONS})
 
 # ---- the Lister plugin DLL --------------------------------------------------
 add_library(mdview SHARED src/plugin.cpp src/plugin.def src/plugin.rc)
-target_link_libraries(mdview PRIVATE mdview_core)
+target_link_libraries(mdview PRIVATE mdview_core delayimp)
+# Load rarely needed system DLLs only when used (remote images, printing).
+target_link_options(mdview PRIVATE /DELAYLOAD:winhttp.dll /DELAYLOAD:comdlg32.dll /DELAYLOAD:dwmapi.dll)
 target_compile_options(mdview PRIVATE ${MDVIEW_CXX_OPTIONS})
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set_target_properties(mdview PROPERTIES PREFIX "" SUFFIX ".wlx64")

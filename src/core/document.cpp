@@ -25,6 +25,40 @@ std::wstring Document::GlobalText() const {
     return out;
 }
 
+std::wstring Document::PlainText(uint32_t a, uint32_t b) const {
+    std::wstring out;
+    if (b <= a) return out;
+    const Block* prev = nullptr;
+    for (const Block* leaf : leaves) {
+        if (leaf->text_end() < a) continue;
+        if (leaf->text_start >= b) break;
+        if (!leaf->visible) continue;
+        if (prev) {
+            const Block* pc = prev->parent;
+            const Block* lc = leaf->parent;
+            const bool same_row = pc && lc && pc->type == BlockType::TableCell && lc->type == BlockType::TableCell &&
+                                  pc->parent == lc->parent;
+            out += same_row ? L"\t" : L"\r\n";
+        }
+        const uint32_t s0 = std::max(a, leaf->text_start) - leaf->text_start;
+        const uint32_t s1 = std::min<uint32_t>(b, leaf->text_end()) - leaf->text_start;
+        for (uint32_t i = s0; i < s1 && i < leaf->text.size(); ++i) {
+            const wchar_t c = leaf->text[i];
+            if (c == 0xFFFC) {
+                for (const InlineObject& o : leaf->objects) {
+                    if (o.pos == i && o.image >= 0) out += images[static_cast<size_t>(o.image)].alt;
+                }
+            } else if (c == 0x2028 || c == L'\n') {
+                out += L"\r\n";
+            } else if (c != 0x200B) {
+                out.push_back(c);
+            }
+        }
+        prev = leaf;
+    }
+    return out;
+}
+
 Block* Document::LeafAt(uint32_t pos) const {
     if (leaves.empty()) return nullptr;
     // Last leaf whose text_start <= pos.

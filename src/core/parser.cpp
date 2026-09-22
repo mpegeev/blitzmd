@@ -14,6 +14,7 @@
 #include "core/emoji.h"
 #include "core/highlight.h"
 #include "core/html.h"
+#include "core/math.h"
 #include "core/util.h"
 #include "md4c.h"
 
@@ -147,9 +148,134 @@ bool IsShortcodeChar(wchar_t c) {
            c == L'-';
 }
 
+using FootnoteBodies = std::unordered_map<std::wstring, std::string>;
+
+bool IsBlankLine(std::string_view l) {
+    for (char c : l) {
+        if (c != ' ' && c != '\t' && c != '\r') return false;
+    }
+    return true;
+}
+
+bool IsIndented4(std::string_view l) {
+    int col = 0;
+    for (char c : l) {
+        if (c == ' ') ++col;
+        else if (c == '\t') col += 4 - col % 4;
+        else break;
+        if (col >= 4) return true;
+    }
+    return false;
+}
+
+std::string_view Dedent4(std::string_view l) {
+    size_t i = 0;
+    int col = 0;
+    while (i < l.size() && col < 4) {
+        if (l[i] == ' ') ++col;
+        else if (l[i] == '\t') col += 4 - col % 4;
+        else break;
+        ++i;
+    }
+    return l.substr(i);
+}
+
+// md4c limits footnote definitions to one paragraph. GitHub (cmark-gfm)
+// also includes following blocks indented by 4 spaces. This pre-pass moves
+// such continuation blocks out of the source into `bodies` (keyed by label);
+// they are parsed separately and appended to the footnote. Returns an empty
+// string if nothing had to be changed.
+std::string ExtractFootnoteBodies(std::string_view src, FootnoteBodies& bodies) {
+    if (src.find("[^") == std::string_view::npos) return {};
+    std::vector<std::string_view> lines;
+    for (size_t p = 0; p <= src.size();) {
+        size_t e = src.find('\n', p);
+        if (e == std::string_view::npos) e = src.size();
+        lines.push_back(src.substr(p, e - p));
+        p = e + 1;
+    }
+    std::string out;
+    bool changed = false;
+    char fence = 0;
+    size_t fence_len = 0;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const std::string_view line = lines[i];
+        size_t ind = 0;
+        while (ind < line.size() && ind < 4 && line[ind] == ' ') ++ind;
+        const std::string_view body = line.substr(ind);
+        auto emit = [&](std::string_view l) {
+            out.append(l);
+            out.push_back('\n');
+        };
+        if (ind < 4 && (body.rfind("```", 0) == 0 || body.rfind("~~~", 0) == 0)) {
+            size_t n = 0;
+            while (n < body.size() && body[n] == body[0]) ++n;
+            if (!fence) {
+                fence = body[0];
+                fence_len = n;
+            } else if (body[0] == fence && n >= fence_len && IsBlankLine(body.substr(n))) {
+                fence = 0;
+            }
+            emit(line);
+            continue;
+        }
+        if (fence || ind >= 4 || body.rfind("[^", 0) != 0) {
+            emit(line);
+            continue;
+        }
+        const size_t close = body.find("]:");
+        if (close == std::string_view::npos || close <= 2 ||
+            body.substr(2, close - 2).find_first_of(" \t[]") != std::string_view::npos) {
+            emit(line);
+            continue;
+        }
+        const std::wstring label = Utf8ToWide(body.substr(2, close - 2));
+        emit(line);
+        // The first paragraph (with lazy continuation lines) stays in place;
+        // it ends at a blank line or at the next definition.
+        auto starts_def = [](std::string_view l) {
+            size_t n = 0;
+            while (n < l.size() && n < 4 && l[n] == ' ') ++n;
+            return n < 4 && l.substr(n).rfind("[^", 0) == 0 && l.find("]:", n) != std::string_view::npos;
+        };
+        size_t j = i + 1;
+        while (j < lines.size() && !IsBlankLine(lines[j]) && !starts_def(lines[j])) emit(lines[j++]);
+        if (j < lines.size() && starts_def(lines[j])) {
+            i = j - 1;
+            continue;
+        }
+        // Then: blank lines followed by 4-space-indented blocks.
+        std::string extra;
+        size_t k = j;
+        for (;;) {
+            size_t m = k;
+            while (m < lines.size() && IsBlankLine(lines[m])) ++m;
+            if (m == k || m >= lines.size() || !IsIndented4(lines[m])) break;
+            extra.push_back('\n');
+            while (m < lines.size() && (IsBlankLine(lines[m]) || IsIndented4(lines[m]))) {
+                extra.append(Dedent4(lines[m]));
+                extra.push_back('\n');
+                ++m;
+            }
+            k = m;
+        }
+        if (!extra.empty()) {
+            bodies[label] = std::move(extra);
+            changed = true;
+            out.push_back('\n');
+            i = k - 1;
+        } else {
+            i = j - 1;
+        }
+    }
+    if (!changed) return {};
+    return out;
+}
+
 class Builder {
 public:
-    Builder(Document& doc, const ParseOptions& opt) : doc_(doc), opt_(opt) {
+    Builder(Document& doc, const ParseOptions& opt, const FootnoteBodies* bodies)
+        : doc_(doc), opt_(opt), footnote_bodies_(bodies) {
         stack_.push_back(doc.root);
     }
 
@@ -192,6 +318,7 @@ private:
     void Append(std::wstring_view s, uint32_t extra_flags = 0);
     void AppendNormal(std::wstring_view s);
     void FlushText();
+    void AppendMath(const std::wstring& tex, bool display);
     void AppendImage(ImageRef img);
     void RegisterAnchor(const std::wstring& id);
     void BindPendingAnchors(Block* b);
@@ -213,8 +340,11 @@ private:
     Block* FindOpenHtml(Tag tag, Tag stop = Tag::Unknown) const;
     bool PopHtml(Tag tag);
 
+    void AppendFootnoteBody(Block* def);
+
     Document& doc_;
     const ParseOptions& opt_;
+    const FootnoteBodies* footnote_bodies_ = nullptr;
     std::vector<Block*> stack_;
     std::vector<Block*> md_open_;
 
@@ -227,6 +357,9 @@ private:
     int image_depth_ = 0;
     ImageRef pending_image_;
     std::wstring image_alt_;
+
+    int math_depth_ = 0;
+    std::wstring math_buf_;       // TeX source of the current $math$ span
 
     bool in_html_block_ = false;
     bool html_block_mode_ = false;  // processing an HTML block (vs inline HTML)
@@ -351,6 +484,21 @@ void Builder::FinalizeLeaf(Block* b) {
     }
     leaf_anchors_.clear();
 
+    // A paragraph holding only $$display math$$ is centered, like on GitHub.
+    if (b->type == BlockType::Paragraph && b->align == Align::Default) {
+        bool any_display = false, only_display = true;
+        for (const StyleRun& r : b->runs) {
+            bool blank = true;
+            for (uint32_t k = r.start; k < r.start + r.length; ++k) {
+                if (!IsSpace(b->text[k]) && b->text[k] != kLineBreak) blank = false;
+            }
+            if (blank) continue;
+            if (r.flags & kMathDisplay) any_display = true;
+            else only_display = false;
+        }
+        if (any_display && only_display) b->align = Align::Center;
+    }
+
     if (b->type == BlockType::Heading) {
         std::wstring plain;
         plain.reserve(b->text.size());
@@ -367,6 +515,24 @@ void Builder::FinalizeLeaf(Block* b) {
 
 void Builder::FinalizeCode(Block* b) {
     if (!b->text.empty() && b->text.back() == L'\n') b->text.pop_back();
+    if (!b->from_html && opt_.math && EqualsNoCase(b->lang, L"math")) {
+        // ```math blocks are display equations on GitHub.
+        const std::wstring tex = std::move(b->text);
+        b->text.clear();
+        b->runs.clear();
+        b->type = BlockType::Paragraph;
+        b->align = Align::Center;
+        std::vector<MathPiece> pieces;
+        TexToUnicode(tex, true, pieces);
+        for (MathPiece& p : pieces) {
+            for (wchar_t& c : p.text) {
+                if (c == L'\n') c = kLineBreak;
+            }
+            AppendToLeaf(b, p.text, kMath | kMathDisplay | p.flags, -1);
+        }
+        if (b->text.empty()) AppendToLeaf(b, L"​", 0, -1);
+        return;
+    }
     if (b->from_html) {
         // <pre>: keep inline styles, just fix the run coverage after trimming.
         while (!b->runs.empty() && b->runs.back().start >= b->text.size()) b->runs.pop_back();
@@ -440,6 +606,8 @@ void Builder::ResetInline() {
     links_.clear();
     a_has_href_.clear();
     hidden_depth_ = 0;
+    math_depth_ = 0;
+    math_buf_.clear();
 }
 
 void Builder::AppendToLeaf(Block* leaf, std::wstring_view s, uint32_t flags, int32_t link) {
@@ -517,6 +685,18 @@ void Builder::AppendNormal(std::wstring_view text) {
         ++i;
     }
     Append(w.substr(last));
+}
+
+void Builder::AppendMath(const std::wstring& tex, bool display) {
+    std::vector<MathPiece> pieces;
+    TexToUnicode(tex, display, pieces);
+    const uint32_t base = kMath | (display ? kMathDisplay : 0);
+    for (MathPiece& p : pieces) {
+        for (wchar_t& c : p.text) {
+            if (c == L'\n') c = kLineBreak;
+        }
+        Append(p.text, base | p.flags);
+    }
 }
 
 void Builder::FlushText() {
@@ -656,6 +836,7 @@ int Builder::EnterBlock(MD_BLOCKTYPE type, void* detail) {
         b = Push(BlockType::FootnoteDef);
         b->number = static_cast<int32_t>(d->id);
         b->ref_count = static_cast<int32_t>(d->ref_count);
+        b->lang = DecodeAttr(d->label);  // label, to find a multi-block body
         doc_.anchors.try_emplace(L"fn-" + std::to_wstring(d->id), Anchor{b, 0});
         break;
     }
@@ -686,8 +867,48 @@ int Builder::LeaveBlock(MD_BLOCKTYPE type, void* /*detail*/) {
         in_picture_ = false;
         return 0;
     }
+    if (b && type == MD_BLOCK_FOOTNOTE_DEF) AppendFootnoteBody(b);
     if (b) PopTo(b);
     return 0;
+}
+
+void Builder::AppendFootnoteBody(Block* def) {
+    if (!footnote_bodies_) return;
+    const auto it = footnote_bodies_->find(def->lang);
+    if (it == footnote_bodies_->end()) return;
+    FlushText();
+    PopAbove(def);
+    // The first paragraph becomes a real <p> (spacing) now that more follows.
+    if (!def->children.empty() && def->children.front()->type == BlockType::Paragraph) {
+        def->children.front()->anonymous = false;
+    }
+    ParseOptions sub_opt = opt_;
+    std::unique_ptr<Document> sub = ParseMarkdown(it->second, doc_.path, sub_opt);
+    const int32_t link_off = static_cast<int32_t>(doc_.links.size());
+    const int32_t image_off = static_cast<int32_t>(doc_.images.size());
+    for (Link& l : sub->links) doc_.links.push_back(std::move(l));
+    for (ImageRef& im : sub->images) doc_.images.push_back(std::move(im));
+    for (auto& up : sub->storage) {
+        Block* b = up.get();
+        for (StyleRun& r : b->runs) {
+            if (r.link >= 0) r.link += link_off;
+        }
+        for (InlineObject& o : b->objects) {
+            if (o.image >= 0) o.image += image_off;
+        }
+        b->leaf_index = -1;
+    }
+    for (Block* c : sub->root->children) {
+        if (c->type == BlockType::FootnoteSection) continue;  // nested refs don't resolve
+        c->parent = def;
+        def->children.push_back(c);
+    }
+    for (const auto& [id, anchor] : sub->anchors) {
+        if (anchor.block != sub->root) doc_.anchors.try_emplace(id, anchor);
+    }
+    for (auto& up : sub->storage) {
+        if (up.get() != sub->root) doc_.storage.push_back(std::move(up));
+    }
 }
 
 int Builder::EnterSpan(MD_SPANTYPE type, void* detail) {
@@ -706,8 +927,11 @@ int Builder::EnterSpan(MD_SPANTYPE type, void* detail) {
     case MD_SPAN_MARK: PushStyle(kMark); break;
     case MD_SPAN_SUPERSCRIPT: PushStyle(kSup); break;
     case MD_SPAN_SUBSCRIPT: PushStyle(kSub); break;
-    case MD_SPAN_LATEXMATH: PushStyle(kMath); break;
-    case MD_SPAN_LATEXMATH_DISPLAY: PushStyle(kMath | kMathDisplay); break;
+    case MD_SPAN_LATEXMATH:
+    case MD_SPAN_LATEXMATH_DISPLAY:
+        math_depth_++;
+        math_buf_.clear();
+        break;
     case MD_SPAN_A: {
         const auto* d = static_cast<const MD_SPAN_A_DETAIL*>(detail);
         Link link;
@@ -766,8 +990,14 @@ int Builder::LeaveSpan(MD_SPANTYPE type, void* /*detail*/) {
     case MD_SPAN_MARK: PopStyle(kMark); break;
     case MD_SPAN_SUPERSCRIPT: PopStyle(kSup); break;
     case MD_SPAN_SUBSCRIPT: PopStyle(kSub); break;
-    case MD_SPAN_LATEXMATH: PopStyle(kMath); break;
-    case MD_SPAN_LATEXMATH_DISPLAY: PopStyle(kMath | kMathDisplay); break;
+    case MD_SPAN_LATEXMATH:
+    case MD_SPAN_LATEXMATH_DISPLAY:
+        if (math_depth_ > 0 && --math_depth_ == 0) {
+            const bool display = type == MD_SPAN_LATEXMATH_DISPLAY;
+            AppendMath(math_buf_, display);
+            math_buf_.clear();
+        }
+        break;
     case MD_SPAN_A:
         if (!links_.empty()) links_.pop_back();
         break;
@@ -780,6 +1010,13 @@ int Builder::LeaveSpan(MD_SPANTYPE type, void* /*detail*/) {
 int Builder::Text(MD_TEXTTYPE type, std::string_view s) {
     if (in_html_block_) {
         html_buf_.append(s);
+        return 0;
+    }
+    if (math_depth_ > 0 && image_depth_ == 0) {
+        if (type == MD_TEXT_SOFTBR || type == MD_TEXT_BR) math_buf_.push_back(L' ');
+        else if (type == MD_TEXT_ENTITY) {
+            if (!AppendEntity(math_buf_, s)) AppendUtf8(math_buf_, s);
+        } else AppendUtf8(math_buf_, s);
         return 0;
     }
     if ((type == MD_TEXT_NORMAL || type == MD_TEXT_SOFTBR) && image_depth_ == 0) {
@@ -832,7 +1069,10 @@ int Builder::Text(MD_TEXTTYPE type, std::string_view s) {
     case MD_TEXT_HTML:
         ProcessHtml(s, false);
         break;
-    default: {  // MD_TEXT_CODE, MD_TEXT_LATEXMATH
+    case MD_TEXT_LATEXMATH:
+        AppendUtf8(math_buf_, s);
+        break;
+    default: {  // MD_TEXT_CODE
         std::wstring w;
         AppendUtf8(w, s);
         // GFM splits table cells before inline parsing: "\|" inside a code
@@ -1349,7 +1589,11 @@ std::unique_ptr<Document> ParseMarkdown(std::string_view utf8, std::wstring_view
     doc->path = std::wstring(path);
     doc->base_dir = DirectoryOf(path);
 
-    Builder builder(*doc, options);
+    FootnoteBodies bodies;
+    const std::string rewritten = ExtractFootnoteBodies(utf8, bodies);
+    if (!rewritten.empty()) utf8 = rewritten;
+
+    Builder builder(*doc, options, bodies.empty() ? nullptr : &bodies);
     MD_PARSER parser{};
     parser.abi_version = 0;
     parser.flags = MD_FLAG_PERMISSIVEAUTOLINKS | MD_FLAG_TABLES | MD_FLAG_STRIKETHROUGH |

@@ -1,15 +1,9 @@
-; pluginst.inf — Total Commander plugin installer descriptor.
-; When the user opens this .zip (or this file) in TC and presses Enter,
-; TC offers to install the plugin via this manifest.
-;
-; Documentation: https://www.ghisler.com/plugins.htm
-
 [plugininstall]
+description=mdview - GitHub Flavored Markdown viewer (Direct2D/DirectWrite)
 type=wlx
-file=mdview.wlx64
+file=mdview.wlx
 file64=mdview.wlx64
-description=Markdown viewer
-defaultextension=md
-detect=EXT="MD" | EXT="MARKDOWN" | EXT="MDOWN" | EXT="MKD"
 defaultdir=mdview
-version=0.5
+defaultextension=md
+detect=EXT="MD" | EXT="MARKDOWN" | EXT="MDOWN" | EXT="MKD" | EXT="MKDN" | EXT="MDWN" | EXT="MDTXT" | EXT="MDTEXT" | EXT="RMD"
+version=1.0.0

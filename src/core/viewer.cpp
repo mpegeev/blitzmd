@@ -13,6 +13,7 @@
 #include "core/layout.h"
 #include "core/offscreen.h"
 #include "core/parser.h"
+#include "core/print.h"
 #include "core/render.h"
 #include "core/settings.h"
 #include "core/theme.h"
@@ -184,7 +185,6 @@ private:
     void ToggleDetails(Block* summary);
     void SelectWordAt(const Hit& hit);
     void SelectLeaf(Block* leaf);
-    std::wstring TextInRange(uint32_t a, uint32_t b) const;
     void CopySelection();
     void CopyCode(Block* code);
     void SetZoom(int percent);
@@ -1054,16 +1054,19 @@ void Viewer::OnMouseMove(int px, int py) {
 }
 
 void Viewer::OnLButtonUp(int px, int py) {
+    // Evaluate the click before ReleaseCapture(): it synchronously sends
+    // WM_CAPTURECHANGED, which resets the mouse state.
+    const bool was_click = mouse_down_ && !dragged_;
+    const bool was_drag = thumb_drag_ || hscroll_drag_ != nullptr;
+    mouse_down_ = false;
+    selecting_ = false;
+    thumb_drag_ = false;
+    hscroll_drag_ = nullptr;
     ReleaseCapture();
     KillTimer(hwnd_, kTimerAutoScroll);
     KillTimer(hwnd_, kTimerRepeat);
     repeat_dir_ = 0;
-    const bool was_click = mouse_down_ && !dragged_;
-    mouse_down_ = false;
-    selecting_ = false;
-    if (thumb_drag_ || hscroll_drag_) {
-        thumb_drag_ = false;
-        hscroll_drag_ = nullptr;
+    if (was_drag) {
         Invalidate();
         return;
     }
@@ -1227,42 +1230,9 @@ bool Viewer::JumpToAnchor(const std::wstring& fragment) {
 // Selection & clipboard
 // ============================================================================
 
-std::wstring Viewer::TextInRange(uint32_t a, uint32_t b) const {
-    std::wstring out;
-    if (!doc_ || b <= a) return out;
-    const Block* prev = nullptr;
-    for (const Block* leaf : doc_->leaves) {
-        if (leaf->text_end() < a) continue;
-        if (leaf->text_start >= b) break;
-        if (!leaf->visible) continue;
-        if (prev) {
-            const bool same_row = prev->parent && leaf->parent && prev->parent->parent &&
-                                  prev->parent->type == BlockType::TableCell && leaf->parent->type == BlockType::TableCell &&
-                                  prev->parent->parent == leaf->parent->parent;
-            out += same_row ? L"\t" : L"\r\n";
-        }
-        const uint32_t s0 = std::max(a, leaf->text_start) - leaf->text_start;
-        const uint32_t s1 = std::min<uint32_t>(b, leaf->text_end()) - leaf->text_start;
-        for (uint32_t i = s0; i < s1 && i < leaf->text.size(); ++i) {
-            const wchar_t c = leaf->text[i];
-            if (c == 0xFFFC) {
-                for (const InlineObject& o : leaf->objects) {
-                    if (o.pos == i && o.image >= 0) out += doc_->images[static_cast<size_t>(o.image)].alt;
-                }
-            } else if (c == 0x2028 || c == L'\n') {
-                out += L"\r\n";
-            } else if (c != 0x200B) {
-                out.push_back(c);
-            }
-        }
-        prev = leaf;
-    }
-    return out;
-}
-
 void Viewer::CopySelection() {
-    if (selection_.end <= selection_.start) return;
-    CopyTextToClipboard(hwnd_, TextInRange(selection_.start, selection_.end));
+    if (!doc_ || selection_.end <= selection_.start) return;
+    CopyTextToClipboard(hwnd_, doc_->PlainText(selection_.start, selection_.end));
 }
 
 void Viewer::CopyCode(Block* code) {
@@ -1705,6 +1675,9 @@ LRESULT Viewer::Proc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CONTEXTMENU:
         OnContextMenu(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         return 0;
+    case WM_COPY:
+        CopySelection();
+        return 0;
     case WM_TIMER:
         OnTimer(wp);
         return 0;
@@ -1726,7 +1699,25 @@ LRESULT Viewer::Proc(UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd_, msg, wp, lp);
 }
 
-bool Viewer::Print(const wchar_t* /*printer*/, const RECT* /*margins*/) { return false; }
+bool Viewer::Print(const wchar_t* /*printer*/, const RECT* margins) {
+    if (!doc_) return false;
+    LayoutConfig cfg = MakeLayoutConfig();
+    cfg.dark = false;             // paper is white
+    cfg.zoom = 0.85f;
+    cfg.max_content_width = 0;
+    cfg.wrap_code = true;         // nothing can scroll on paper
+    cfg.page_padding = 0;
+    const size_t slash = path_.find_last_of(L"\\/");
+    const std::wstring title = slash == std::wstring::npos ? path_ : path_.substr(slash + 1);
+    const ScrollAnchor anchor = CaptureAnchor();
+    const bool ok = PrintDocument(hwnd_, *doc_, cfg, title, margins);
+    // The print layout reused the document's block boxes: lay out again.
+    Relayout(false);
+    RestoreAnchor(anchor);
+    Relayout(true);
+    Invalidate();
+    return ok;
+}
 
 // ============================================================================
 // Public API
