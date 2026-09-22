@@ -30,6 +30,7 @@ constexpr UINT_PTR kTimerRefine = 1;
 constexpr UINT_PTR kTimerCopied = 2;
 constexpr UINT_PTR kTimerAutoScroll = 3;
 constexpr UINT_PTR kTimerRepeat = 4;
+constexpr UINT_PTR kTimerGif = 5;
 constexpr uint64_t kMaxFileBytes = 32ull << 20;  // larger files: the beginning is shown
 
 // Shared Direct2D factory for all viewer windows (all live on TC's UI thread).
@@ -188,6 +189,7 @@ private:
     // Rendering
     bool EnsureRenderTarget();
     void DiscardDeviceResources();
+    void ScheduleGifFrame();
     void DrawOverlays();
     void Invalidate() { InvalidateRect(hwnd_, nullptr, FALSE); }
 
@@ -612,6 +614,7 @@ void Viewer::OnPaint() {
     st.hover_block = hover_block_;
     st.copy_button_hover = copy_hover_;
     st.copied_block = copied_block_;
+    images_.BeginPaint();
     if (doc_) renderer_.Draw(rt_.Get(), layout_, st);
     DrawOverlays();
     const HRESULT hr = rt_->EndDraw();
@@ -620,12 +623,24 @@ void Viewer::OnPaint() {
         Invalidate();
         return;
     }
+    ScheduleGifFrame();
     if (anim_) {
         // Keep animating at the display's refresh rate.
         DwmFlush();
         Invalidate();
     }
     layout_.EvictFar(scroll_y_, scroll_y_ + ViewHeight());
+}
+
+// Animated GIFs visible in the last paint get their next frame on time;
+// nothing runs while none is on screen.
+void Viewer::ScheduleGifFrame() {
+    const double due = images_.NextAnimationDue();
+    if (due <= 0) {
+        KillTimer(hwnd_, kTimerGif);
+        return;
+    }
+    SetTimer(hwnd_, kTimerGif, static_cast<UINT>(std::clamp(due - NowMs(), 10.0, 10000.0)), nullptr);
 }
 
 D2D1_RECT_F Viewer::ScrollbarTrack() const {
@@ -1651,6 +1666,14 @@ void Viewer::OnTimer(UINT_PTR id) {
         OnMouseMove(last_mouse_.x, last_mouse_.y);
         break;
     }
+    case kTimerGif:
+        KillTimer(hwnd_, kTimerGif);
+        if (images_.AdvanceAnimations(NowMs())) {
+            Invalidate();
+        } else {
+            ScheduleGifFrame();
+        }
+        break;
     case kTimerRepeat: {
         SetTimer(hwnd_, kTimerRepeat, 60, nullptr);
         POINT pt;

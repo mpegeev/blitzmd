@@ -179,7 +179,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (cmd == "plugin" && argc >= 5) {
-        // plugin <mdview.wlx64> <file.md> <out.png> [search text] [--dark]
+        // plugin <mdview.wlx64> <file.md> <out.png> [search text] [--dark] [--hover X Y] [--idle]
         // Drives the real plugin DLL like Total Commander: ListSetDefaultParams,
         // ListLoadW, ListSearchTextW, ListSendCommand, ListGetPreviewBitmapW.
         HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
@@ -208,11 +208,12 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "missing exports\n");
             return 1;
         }
-        bool dark = false;
+        bool dark = false, idle = false;
         const char* query = nullptr;
         int hover_x = -1, hover_y = -1;
         for (int i = 5; i < argc; ++i) {
             if (!std::strcmp(argv[i], "--dark")) dark = true;
+            else if (!std::strcmp(argv[i], "--idle")) idle = true;
             else if (!std::strcmp(argv[i], "--hover") && i + 2 < argc) {
                 hover_x = std::atoi(argv[++i]);
                 hover_y = std::atoi(argv[++i]);
@@ -267,6 +268,62 @@ int main(int argc, char** argv) {
             SendMessageW(viewer, WM_KEYDOWN, VK_HOME, 0);
             pump(300);
         }
+        ComPtr<IWICImagingFactory> wic;
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
+        // Captures the host window (including Direct2D content).
+        auto capture = [&](const std::string& path) {
+            RECT rc{};
+            GetClientRect(host, &rc);
+            HDC screen = GetDC(nullptr);
+            HDC mem = CreateCompatibleDC(screen);
+            HBITMAP bmp = CreateCompatibleBitmap(screen, rc.right, rc.bottom);
+            HGDIOBJ old = SelectObject(mem, bmp);
+            PrintWindow(host, mem, PW_CLIENTONLY | PW_RENDERFULLCONTENT);
+            SelectObject(mem, old);
+            ComPtr<IWICBitmap> wbmp;
+            if (wic && SUCCEEDED(wic->CreateBitmapFromHBITMAP(bmp, nullptr, WICBitmapIgnoreAlpha, &wbmp))) {
+                SaveBitmapPng(wbmp.Get(), Utf8ToWide(path));
+            }
+            DeleteObject(bmp);
+            DeleteDC(mem);
+            ReleaseDC(nullptr, screen);
+        };
+        auto suffixed = [&](const char* suffix) {
+            std::string tp = argv[4];
+            tp.insert(tp.size() - 4, suffix);
+            return tp;
+        };
+        if (idle) {
+            // CPU spent while nothing happens except (visible) animations.
+            auto cpu_ms = [] {
+                FILETIME c, e, k, u;
+                GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u);
+                auto ms = [](const FILETIME& f) {
+                    return (static_cast<double>(f.dwHighDateTime) * 4294967296.0 + f.dwLowDateTime) / 10000.0;
+                };
+                return ms(k) + ms(u);
+            };
+            capture(suffixed("-idle0"));
+            const double c0 = cpu_ms();
+            pump(3000);
+            const double c1 = cpu_ms();
+            capture(suffixed("-idle1"));
+            for (int i = 2; i < 5; ++i) {
+                pump(110);
+                capture(suffixed(("-idle" + std::to_string(i)).c_str()));
+            }
+            std::printf("idle at top: %.1f ms CPU in 3 s\n", c1 - c0);
+            SendMessageW(viewer, WM_KEYDOWN, VK_END, 0);
+            pump(300);
+            const double r0 = NowMs();
+            for (int i = 0; i < 20; ++i) RedrawWindow(viewer, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+            std::printf("full repaint: %.2f ms\n", (NowMs() - r0) / 20);
+            const double c2 = cpu_ms();
+            pump(3000);
+            std::printf("idle at end: %.1f ms CPU in 3 s\n", cpu_ms() - c2);
+            SendMessageW(viewer, WM_KEYDOWN, VK_HOME, 0);
+            pump(300);
+        }
         if (query) {
             const int r = search(viewer, Utf8ToWide(query).c_str(), 1);
             std::printf("ListSearchTextW(\"%s\") = %d\n", query, r);
@@ -284,24 +341,7 @@ int main(int argc, char** argv) {
             SendMessageW(viewer, WM_MOUSEMOVE, 0, MAKELPARAM(hover_x, hover_y));
             RedrawWindow(viewer, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
         }
-        // Capture the host window (including Direct2D content).
-        RECT rc{};
-        GetClientRect(host, &rc);
-        HDC screen = GetDC(nullptr);
-        HDC mem = CreateCompatibleDC(screen);
-        HBITMAP bmp = CreateCompatibleBitmap(screen, rc.right, rc.bottom);
-        HGDIOBJ old = SelectObject(mem, bmp);
-        PrintWindow(host, mem, PW_CLIENTONLY | PW_RENDERFULLCONTENT);
-        SelectObject(mem, old);
-        ComPtr<IWICImagingFactory> wic;
-        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
-        ComPtr<IWICBitmap> wbmp;
-        if (wic && SUCCEEDED(wic->CreateBitmapFromHBITMAP(bmp, nullptr, WICBitmapIgnoreAlpha, &wbmp))) {
-            SaveBitmapPng(wbmp.Get(), Utf8ToWide(argv[4]));
-        }
-        DeleteObject(bmp);
-        DeleteDC(mem);
-        ReleaseDC(nullptr, screen);
+        capture(argv[4]);
         close(viewer);
         DestroyWindow(host);
         // Thumbnail.
@@ -314,9 +354,7 @@ int main(int argc, char** argv) {
             std::printf("ListGetPreviewBitmapW: %ldx%ld in %.1f ms\n", bm.bmWidth, bm.bmHeight, t4 - t3);
             ComPtr<IWICBitmap> tb;
             if (wic && SUCCEEDED(wic->CreateBitmapFromHBITMAP(thumb, nullptr, WICBitmapIgnoreAlpha, &tb))) {
-                std::string tp = argv[4];
-                tp.insert(tp.size() - 4, "-thumb");
-                SaveBitmapPng(tb.Get(), Utf8ToWide(tp));
+                SaveBitmapPng(tb.Get(), Utf8ToWide(suffixed("-thumb")));
             }
             DeleteObject(thumb);
         } else {

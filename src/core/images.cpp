@@ -5,6 +5,7 @@
 #include <winhttp.h>
 
 #include <algorithm>
+#include <cstring>
 #include <list>
 #include <mutex>
 #include <unordered_map>
@@ -22,6 +23,7 @@ constexpr uint64_t kMaxImageBytes = 40ull << 20;     // per image file / downloa
 constexpr size_t kRemoteCacheBytes = 48u << 20;      // process-wide download cache
 constexpr UINT kMaxDecodeWidth = 2560;
 constexpr uint64_t kMaxDecodePixels = 16ull << 20;
+constexpr uint64_t kMaxAnimationPixels = 4ull << 20;  // larger GIFs stay static
 
 struct Pixels {
     UINT w = 0, h = 0;
@@ -144,6 +146,166 @@ bool ReadImageSize(IWICImagingFactory* wic, const std::wstring& path, UINT& w, U
     ComPtr<IWICBitmapFrameDecode> frame;
     return SUCCEEDED(decoder->GetFrame(0, &frame)) && SUCCEEDED(frame->GetSize(&w, &h)) && w > 0 && h > 0;
 }
+
+bool IsGifBytes(const std::string& b) {
+    return b.size() > 6 && (b.compare(0, 6, "GIF89a") == 0 || b.compare(0, 6, "GIF87a") == 0);
+}
+
+UINT MetadataUInt(IWICMetadataQueryReader* q, const wchar_t* name, UINT fallback) {
+    if (!q) return fallback;
+    PROPVARIANT v;
+    PropVariantInit(&v);
+    UINT r = fallback;
+    if (SUCCEEDED(q->GetMetadataByName(name, &v))) {
+        if (v.vt == VT_UI1) r = v.bVal;
+        else if (v.vt == VT_UI2) r = v.uiVal;
+        else if (v.vt == VT_UI4) r = v.ulVal;
+    }
+    PropVariantClear(&v);
+    return r;
+}
+
+}  // namespace
+
+// Plays an animated GIF by compositing frames on demand into one canvas
+// (frames are never all decoded at once).
+class GifAnimation {
+public:
+    // Fails for single-frame or oversized GIFs (those are shown statically).
+    bool Open(IWICImagingFactory* wic, const std::string& bytes) {
+        wic_ = wic;
+        stream_.Attach(SHCreateMemStream(reinterpret_cast<const BYTE*>(bytes.data()), static_cast<UINT>(bytes.size())));
+        if (!stream_ ||
+            FAILED(wic->CreateDecoderFromStream(stream_.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder_))) {
+            return false;
+        }
+        if (FAILED(decoder_->GetFrameCount(&frames_)) || frames_ < 2) return false;
+        ComPtr<IWICMetadataQueryReader> q;
+        decoder_->GetMetadataQueryReader(&q);
+        width_ = MetadataUInt(q.Get(), L"/logscrdesc/Width", 0);
+        height_ = MetadataUInt(q.Get(), L"/logscrdesc/Height", 0);
+        if (width_ == 0 || height_ == 0) {
+            ComPtr<IWICBitmapFrameDecode> f;
+            if (FAILED(decoder_->GetFrame(0, &f)) || FAILED(f->GetSize(&width_, &height_))) return false;
+        }
+        if (width_ == 0 || height_ == 0 || width_ > kMaxDecodeWidth ||
+            static_cast<uint64_t>(width_) * height_ > kMaxAnimationPixels) {
+            return false;
+        }
+        // Like browsers: without the NETSCAPE2.0 extension a GIF plays once;
+        // loop count 0 means forever, N means N repetitions.
+        plays_left_ = 1;
+        if (q) {
+            PROPVARIANT v;
+            PropVariantInit(&v);
+            if (SUCCEEDED(q->GetMetadataByName(L"/appext/application", &v)) && v.vt == (VT_UI1 | VT_VECTOR) &&
+                v.caub.cElems == 11 &&
+                (!memcmp(v.caub.pElems, "NETSCAPE2.0", 11) || !memcmp(v.caub.pElems, "ANIMEXTS1.0", 11))) {
+                PropVariantClear(&v);
+                if (SUCCEEDED(q->GetMetadataByName(L"/appext/data", &v)) && v.vt == (VT_UI1 | VT_VECTOR) &&
+                    v.caub.cElems >= 4 && v.caub.pElems[0] > 0 && v.caub.pElems[1] == 1) {
+                    const UINT loops = MAKEWORD(v.caub.pElems[2], v.caub.pElems[3]);
+                    plays_left_ = loops == 0 ? 0 : loops + 1;
+                }
+            }
+            PropVariantClear(&v);
+        }
+        canvas_.assign(static_cast<size_t>(width_) * height_ * 4, 0);
+        return true;
+    }
+
+    // Renders frame `index` (0, or the frame after the current one).
+    bool RenderFrame(UINT index) {
+        if (index == 0) {
+            std::fill(canvas_.begin(), canvas_.end(), uint8_t{0});
+            prev_disposal_ = 0;
+        } else if (prev_disposal_ == 2) {
+            ClearRect(prev_);
+        } else if (prev_disposal_ == 3 && saved_.size() == canvas_.size()) {
+            canvas_ = saved_;
+        }
+        ComPtr<IWICBitmapFrameDecode> frame;
+        if (FAILED(decoder_->GetFrame(index, &frame))) return false;
+        ComPtr<IWICMetadataQueryReader> q;
+        frame->GetMetadataQueryReader(&q);
+        const UINT left = MetadataUInt(q.Get(), L"/imgdesc/Left", 0);
+        const UINT top = MetadataUInt(q.Get(), L"/imgdesc/Top", 0);
+        const UINT delay_cs = MetadataUInt(q.Get(), L"/grctlext/Delay", 10);
+        const UINT disposal = MetadataUInt(q.Get(), L"/grctlext/Disposal", 0);
+        delay_ms_ = delay_cs < 2 ? 100.0 : delay_cs * 10.0;  // like browsers
+        if (disposal == 3) saved_ = canvas_;
+        UINT fw = 0, fh = 0;
+        frame->GetSize(&fw, &fh);
+        ComPtr<IWICFormatConverter> conv;
+        if (fw == 0 || fh == 0 || FAILED(wic_->CreateFormatConverter(&conv)) ||
+            FAILED(conv->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0,
+                                    WICBitmapPaletteTypeCustom))) {
+            return false;
+        }
+        std::vector<uint8_t> px(static_cast<size_t>(fw) * fh * 4);
+        if (FAILED(conv->CopyPixels(nullptr, fw * 4, static_cast<UINT>(px.size()), px.data()))) return false;
+        for (UINT y = 0; y < fh && top + y < height_; ++y) {
+            for (UINT x = 0; x < fw && left + x < width_; ++x) {
+                const uint8_t* s = &px[(static_cast<size_t>(y) * fw + x) * 4];
+                if (s[3] == 0) continue;  // transparent pixel keeps the canvas
+                uint8_t* d = &canvas_[(static_cast<size_t>(top + y) * width_ + left + x) * 4];
+                d[0] = s[0];
+                d[1] = s[1];
+                d[2] = s[2];
+                d[3] = s[3];
+            }
+        }
+        prev_ = RECT{static_cast<LONG>(left), static_cast<LONG>(top), static_cast<LONG>(left + fw),
+                     static_cast<LONG>(top + fh)};
+        prev_disposal_ = disposal;
+        current_ = index;
+        return true;
+    }
+
+    // Steps to the next frame; false when the animation has finished.
+    bool Next() {
+        if (finished_) return false;
+        if (current_ + 1 >= frames_ && plays_left_ != 0 && --plays_left_ == 0) {
+            finished_ = true;
+            return false;
+        }
+        if (!RenderFrame((current_ + 1) % frames_)) {
+            finished_ = true;
+            return false;
+        }
+        return true;
+    }
+
+    UINT width() const { return width_; }
+    UINT height() const { return height_; }
+    const std::vector<uint8_t>& canvas() const { return canvas_; }
+    double delay_ms() const { return delay_ms_; }
+    bool finished() const { return finished_; }
+
+    double due = 0;  // NowMs() when the next frame is due
+
+private:
+    void ClearRect(const RECT& r) {
+        for (LONG y = std::max<LONG>(r.top, 0); y < r.bottom && y < static_cast<LONG>(height_); ++y) {
+            for (LONG x = std::max<LONG>(r.left, 0); x < r.right && x < static_cast<LONG>(width_); ++x) {
+                std::memset(&canvas_[(static_cast<size_t>(y) * width_ + x) * 4], 0, 4);
+            }
+        }
+    }
+
+    ComPtr<IWICImagingFactory> wic_;
+    ComPtr<IStream> stream_;
+    ComPtr<IWICBitmapDecoder> decoder_;
+    UINT frames_ = 0, width_ = 0, height_ = 0, current_ = 0;
+    UINT plays_left_ = 0;
+    bool finished_ = false;
+    UINT prev_disposal_ = 0;
+    RECT prev_{};
+    double delay_ms_ = 100;
+    std::vector<uint8_t> canvas_, saved_;
+};
+
+namespace {
 
 // ---- HTTP ---------------------------------------------------------------------
 HINTERNET HttpSession() {
@@ -351,6 +513,7 @@ struct ImageStore::Impl {
         UINT w = 0, h = 0;
         Pixels pixels;
         std::shared_ptr<SvgImage> svg;
+        std::shared_ptr<const std::string> animated;  // GIF with several frames
     };
     struct Queue {
         std::mutex mu;
@@ -398,7 +561,16 @@ struct ImageStore::Impl {
                     job.ok = true;
                 }
             } else if (auto wic = CreateWic()) {
-                job.ok = DecodeBytes(wic.Get(), *bytes, job.pixels, job.w, job.h);
+                GifAnimation anim;
+                if (IsGifBytes(*bytes) && anim.Open(wic.Get(), *bytes) && anim.RenderFrame(0)) {
+                    job.w = job.pixels.w = anim.width();
+                    job.h = job.pixels.h = anim.height();
+                    job.pixels.data = anim.canvas();
+                    job.animated = bytes;
+                    job.ok = true;
+                } else {
+                    job.ok = DecodeBytes(wic.Get(), *bytes, job.pixels, job.w, job.h);
+                }
             }
         }
         if (com) CoUninitialize();
@@ -598,6 +770,8 @@ bool ImageStore::CompletePending() {
             } else {
                 impl_->pending_pixels[static_cast<size_t>(job->index)] = std::move(job->pixels);
                 e.bitmap.Reset();
+                // Offscreen rendering (thumbnails, printing) shows frame 0.
+                if (!impl_->sync && !e.animation) e.encoded = std::move(job->animated);
             }
         } else {
             e.state = ImageState::Failed;
@@ -605,6 +779,36 @@ bool ImageStore::CompletePending() {
         if (e.px_w != old_w || e.px_h != old_h || !job->ok) resized = true;
     }
     return resized;
+}
+
+double ImageStore::NextAnimationDue() const {
+    double due = 0;
+    for (const ImageEntry& e : impl_->entries) {
+        if (e.animation && e.drawn_stamp == paint_stamp_ && !e.animation->finished()) {
+            if (due == 0 || e.animation->due < due) due = e.animation->due;
+        }
+    }
+    return due;
+}
+
+bool ImageStore::AdvanceAnimations(double now_ms) {
+    bool changed = false;
+    for (size_t i = 0; i < impl_->entries.size(); ++i) {
+        ImageEntry& e = impl_->entries[i];
+        // Only animations visible in the last paint play; others wait.
+        if (!e.animation || e.drawn_stamp != paint_stamp_ || e.animation->due > now_ms) continue;
+        GifAnimation& a = *e.animation;
+        if (!a.Next()) continue;
+        // After a long pause (scrolled away, window hidden) continue from now
+        // instead of fast-forwarding.
+        a.due = a.due + a.delay_ms() < now_ms - 250 ? now_ms + a.delay_ms() : a.due + a.delay_ms();
+        if (e.bitmap && FAILED(e.bitmap->CopyFromMemory(nullptr, a.canvas().data(), a.width() * 4))) {
+            e.bitmap.Reset();
+            impl_->bitmap_rt[i] = nullptr;
+        }
+        changed = true;
+    }
+    return changed;
 }
 
 void ImageStore::ReleaseDeviceResources() {
@@ -690,18 +894,37 @@ void ImageStore::Draw(ID2D1RenderTarget* rt, int index, const D2D1_RECT_F& r, Pa
             e.bitmap.Reset();
             impl_->bitmap_rt[i] = nullptr;
         }
+        if (e.encoded) {
+            // First time on screen: start playing (frame 0 is already decoded).
+            auto anim = std::make_shared<GifAnimation>();
+            if (impl_->wic && anim->Open(impl_->wic.Get(), *e.encoded) && anim->RenderFrame(0)) {
+                anim->due = NowMs() + anim->delay_ms();
+                e.animation = std::move(anim);
+                impl_->pending_pixels[i] = Pixels{};
+                e.bitmap.Reset();
+            }
+            e.encoded.reset();
+        }
+        if (e.animation) e.drawn_stamp = paint_stamp_;
+        const D2D1_BITMAP_PROPERTIES props =
+            D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        if (!e.bitmap && e.animation) {
+            const GifAnimation& a = *e.animation;
+            if (SUCCEEDED(rt->CreateBitmap(D2D1::SizeU(a.width(), a.height()), a.canvas().data(), a.width() * 4, props,
+                                           &e.bitmap))) {
+                impl_->bitmap_rt[i] = rt;
+            }
+        }
         if (!e.bitmap) {
             Pixels& px = impl_->pending_pixels[i];
             if (!px.data.empty()) {
-                const D2D1_BITMAP_PROPERTIES props =
-                    D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
                 if (SUCCEEDED(rt->CreateBitmap(D2D1::SizeU(px.w, px.h), px.data.data(), px.w * 4, props, &e.bitmap))) {
                     impl_->bitmap_rt[i] = rt;
                     // Keep pixels only while other render targets may need them
                     // (offscreen rendering); a device loss triggers a reload.
                     if (!impl_->sync) px = Pixels{};
                 }
-            } else if (!impl_->sync) {
+            } else if (!impl_->sync && !e.animation) {
                 // Device resources were lost: decode again.
                 e.state = ImageState::Loading;
                 impl_->Submit(index, e.url, e.remote);
@@ -713,7 +936,7 @@ void ImageStore::Draw(ID2D1RenderTarget* rt, int index, const D2D1_RECT_F& r, Pa
             const float scale_x = (r.right - r.left) / std::max(bs.width, 1.f);
             if (SUCCEEDED(rt->QueryInterface(IID_PPV_ARGS(&dc)))) {
                 dc->DrawBitmap(e.bitmap.Get(), &r, 1.f,
-                               scale_x < 0.95f ? D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC
+                               scale_x < 0.95f && !e.animation ? D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC
                                                : D2D1_INTERPOLATION_MODE_LINEAR,
                                nullptr, nullptr);
             } else {

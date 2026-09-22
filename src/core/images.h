@@ -18,6 +18,7 @@ namespace mdv {
 
 class Palette;
 class SvgImage;
+class GifAnimation;
 
 enum class ImageState : uint8_t { Pending, Loading, Ready, Failed };
 
@@ -31,6 +32,9 @@ struct ImageEntry {
     std::shared_ptr<SvgImage> svg_image; // parsed SVG (device independent)
     ComPtr<ID2D1Bitmap> bitmap;          // device resource, created on demand
     uint32_t bitmap_gen = 0;
+    std::shared_ptr<const std::string> encoded;  // animated GIF source
+    std::shared_ptr<GifAnimation> animation;     // created when first drawn
+    uint32_t drawn_stamp = 0;                    // paint in which it was last drawn
 };
 
 class ImageStore {
@@ -64,10 +68,19 @@ public:
     const ImageEntry* Entry(int index) const;
     std::wstring ResolvedUrl(int index) const;
 
+    // Animated GIFs: call BeginPaint() before drawing a frame; afterwards
+    // NextAnimationDue() tells when (NowMs() time) a visible animation needs
+    // its next frame (0 = none), and AdvanceAnimations() steps those that are
+    // due. Returns true if anything changed.
+    void BeginPaint() { ++paint_stamp_; }
+    double NextAnimationDue() const;
+    bool AdvanceAnimations(double now_ms);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     bool dark_ = false;
+    uint32_t paint_stamp_ = 1;
 };
 
 // Registered window message sent when asynchronous image work completes.
