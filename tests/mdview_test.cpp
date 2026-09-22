@@ -13,7 +13,7 @@
 #include <cstring>
 #include <string>
 
-#include "core/math.h"
+#include "core/texmath.h"
 #include "core/offscreen.h"
 #include "core/parser.h"
 #include "core/print.h"

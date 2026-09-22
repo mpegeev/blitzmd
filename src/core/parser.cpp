@@ -14,7 +14,7 @@
 #include "core/emoji.h"
 #include "core/highlight.h"
 #include "core/html.h"
-#include "core/math.h"
+#include "core/texmath.h"
 #include "core/util.h"
 #include "md4c.h"
 

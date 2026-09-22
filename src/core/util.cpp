@@ -209,9 +209,23 @@ std::wstring DirectoryOf(std::wstring_view path) {
     return std::wstring(path.substr(0, pos + 1));
 }
 
+namespace {
+
+// Paths of MAX_PATH characters or more need the "\\?\" prefix.
+HANDLE OpenForReading(const wchar_t* path) {
+    std::wstring p = path;
+    if (p.size() >= MAX_PATH - 12 && p.rfind(L"\\\\?\\", 0) != 0) {
+        if (p.rfind(L"\\\\", 0) == 0) p = L"\\\\?\\UNC\\" + p.substr(2);
+        else if (p.size() > 2 && p[1] == L':') p = L"\\\\?\\" + p;
+    }
+    return CreateFileW(p.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                       OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+}
+
+}  // namespace
+
 bool ReadFileBytes(const wchar_t* path, std::string& out, uint64_t max_bytes) {
-    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    HANDLE h = OpenForReading(path);
     if (h == INVALID_HANDLE_VALUE) return false;
     LARGE_INTEGER size{};
     bool ok = GetFileSizeEx(h, &size) && size.QuadPart >= 0 &&
@@ -232,8 +246,7 @@ bool ReadFileBytes(const wchar_t* path, std::string& out, uint64_t max_bytes) {
 }
 
 bool ReadFilePrefix(const wchar_t* path, std::string& out, uint64_t max_bytes, uint64_t* total) {
-    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                           nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    HANDLE h = OpenForReading(path);
     if (h == INVALID_HANDLE_VALUE) return false;
     LARGE_INTEGER size{};
     bool ok = GetFileSizeEx(h, &size) && size.QuadPart >= 0;

@@ -55,7 +55,7 @@ add_library(mdview_core STATIC
     src/core/document.cpp
     src/core/html.cpp
     src/core/parser.cpp
-    src/core/math.cpp
+    src/core/texmath.cpp
     ${MDVIEW_HIGHLIGHT_SOURCE}
     src/core/emoji.cpp
     src/core/theme.cpp
@@ -96,3 +96,9 @@ add_executable(mdview_test tests/mdview_test.cpp tests/spec_runner.cpp tests/htm
 target_link_libraries(mdview_test PRIVATE mdview_core md4c_html)
 target_compile_options(mdview_test PRIVATE ${MDVIEW_CXX_OPTIONS})
 set_target_properties(mdview_test PROPERTIES LINK_FLAGS "/SUBSYSTEM:CONSOLE")
+
+# ---- unit tests of self-contained modules -----------------------------------
+add_executable(highlight_test tests/highlight_test.cpp src/core/highlight.cpp)
+target_compile_options(highlight_test PRIVATE ${MDVIEW_CXX_OPTIONS})
+add_executable(emoji_test tests/emoji_test.cpp src/core/emoji.cpp)
+target_compile_options(emoji_test PRIVATE ${MDVIEW_CXX_OPTIONS})
