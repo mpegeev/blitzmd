@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- No width/height: intrinsic size must come from the viewBox (or the <img> attributes). -->
+  <rect x="2" y="2" width="96" height="96" rx="16" fill="#ddf4ff" stroke="#0969da" stroke-width="4"/>
+  <path d="M28 52 L44 68 L74 34" fill="none" stroke="#1f883d" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

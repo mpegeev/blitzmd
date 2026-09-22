@@ -1,0 +1,12 @@
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
+*.bmp binary
+*.ico binary
+*.webp binary
+# Encoding test samples must be kept byte-exact.
+samples/**/*encoding* -text
+samples/**/*crlf* -text
+samples/sample-utf16le.md -text
+samples/gfm/08-edge-cases.md -text

@@ -1,0 +1,1778 @@
+#include "core/viewer.h"
+
+#include <d2d1.h>
+#include <dwmapi.h>
+#include <shellapi.h>
+#include <windowsx.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cwctype>
+
+#include "core/images.h"
+#include "core/layout.h"
+#include "core/offscreen.h"
+#include "core/parser.h"
+#include "core/render.h"
+#include "core/settings.h"
+#include "core/theme.h"
+
+#pragma comment(lib, "dwmapi.lib")
+
+extern "C" IMAGE_DOS_HEADER __ImageBase;
+
+namespace mdv {
+namespace {
+
+constexpr wchar_t kClassName[] = L"MdViewWlxWindow";
+constexpr UINT_PTR kTimerRefine = 1;
+constexpr UINT_PTR kTimerCopied = 2;
+constexpr UINT_PTR kTimerAutoScroll = 3;
+constexpr UINT_PTR kTimerRepeat = 4;
+constexpr uint64_t kMaxFileBytes = 64ull << 20;
+
+// Shared Direct2D factory for all viewer windows (all live on TC's UI thread).
+struct Shared {
+    ComPtr<ID2D1Factory> d2d;
+    ComPtr<IDWriteFactory> dw;
+    int viewers = 0;
+};
+Shared& G() {
+    static Shared g;
+    return g;
+}
+
+bool IsWordChar(wchar_t c) {
+    return c == L'_' || IsCharAlphaNumericW(c) || (c >= 0x0300 && c <= 0x036F);
+}
+
+bool IsMarkdownPath(std::wstring_view p) {
+    const size_t dot = p.find_last_of(L'.');
+    if (dot == std::wstring_view::npos) return false;
+    const std::wstring_view ext = p.substr(dot + 1);
+    for (const wchar_t* e : {L"md", L"markdown", L"mdown", L"mkd", L"mkdn", L"mdwn", L"mdtxt", L"mdtext", L"rmd"}) {
+        if (EqualsNoCase(ext, e)) return true;
+    }
+    return false;
+}
+
+bool IsRussianUi() { return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_RUSSIAN; }
+
+const wchar_t* Tr(const wchar_t* en, const wchar_t* ru) { return IsRussianUi() ? ru : en; }
+
+enum MenuId : UINT {
+    kMenuCopy = 100,
+    kMenuCopyLink,
+    kMenuCopyImage,
+    kMenuCopyCode,
+    kMenuSelectAll,
+    kMenuZoomIn,
+    kMenuZoomOut,
+    kMenuZoomReset,
+    kMenuThemeAuto,
+    kMenuThemeLight,
+    kMenuThemeDark,
+    kMenuWrap,
+    kMenuRemote,
+    kMenuFullWidth,
+    kMenuBack,
+    kMenuOpenLink,
+    kMenuOpenExternal,
+    kMenuReload,
+    kMenuAbout,
+};
+
+}  // namespace
+
+HostInfo& Host() {
+    static HostInfo info;
+    return info;
+}
+
+bool SystemUsesDarkTheme() {
+    DWORD value = 1, size = sizeof value;
+    const LSTATUS s = RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                                   L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &size);
+    return s == ERROR_SUCCESS && value == 0;
+}
+
+class Viewer {
+public:
+    Viewer() = default;
+    ~Viewer();
+
+    bool Create(HWND parent, int flags);
+    bool Load(const std::wstring& path, int flags, bool keep_history = false);
+    bool Search(const std::wstring& text, int flags);
+    bool Command(int command, int parameter);
+    bool Print(const wchar_t* printer, const RECT* margins);
+    HWND hwnd() const { return hwnd_; }
+
+    static LRESULT CALLBACK StaticProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+
+private:
+    struct Hit {
+        Block* leaf = nullptr;
+        uint32_t pos = 0;           // global text position
+        bool on_text = false;
+        int link = -1;
+        int image = -1;
+        Block* code = nullptr;      // code block under the point
+        Block* summary = nullptr;   // <summary> under the point
+        Block* wide = nullptr;      // horizontally scrollable block under the point
+    };
+    struct ScrollAnchor {
+        Block* leaf = nullptr;
+        float offset = 0;
+    };
+    struct HistoryEntry {
+        std::wstring path;
+        float scroll = 0;
+    };
+
+    LRESULT Proc(UINT msg, WPARAM wp, LPARAM lp);
+    void OnPaint();
+    void OnSize();
+    void OnMouseWheel(int delta, bool horizontal);
+    void OnKeyDown(WPARAM vk);
+    void OnLButtonDown(int x, int y, bool dbl);
+    void OnMouseMove(int x, int y);
+    void OnLButtonUp(int x, int y);
+    void OnContextMenu(int x, int y);
+    void OnTimer(UINT_PTR id);
+
+    // Document / layout
+    void ApplySettings(bool relayout);
+    LayoutConfig MakeLayoutConfig() const;
+    bool DarkTheme() const;
+    void Relayout(bool keep_anchor = true);
+    void EnsureLayout();
+    void EnsureVisibleExact();
+    ScrollAnchor CaptureAnchor() const;
+    void RestoreAnchor(const ScrollAnchor& a);
+    Block* LeafAtY(float y) const;
+    float ViewWidth() const;
+    float ViewHeight() const;
+    float MaxScroll() const;
+    float Scale() const { return dpi_ / 96.f; }
+
+    // Rendering
+    bool EnsureRenderTarget();
+    void DiscardDeviceResources();
+    void DrawOverlays();
+    void Invalidate() { InvalidateRect(hwnd_, nullptr, FALSE); }
+
+    // Scrolling
+    void ScrollTo(float y, bool smooth);
+    void ScrollBy(float dy, bool smooth) { ScrollTo((anim_ ? anim_to_ : scroll_y_) + dy, smooth); }
+    void ScrollIntoView(Block* leaf, uint32_t local_pos, bool center);
+    void UpdatePercent();
+    float LineStep() const { return layout_.metrics().em * 2.5f; }
+
+    // Hit testing & interaction
+    Hit HitTest(float x, float y) const;  // document coordinates
+    uint32_t LeafPosFromPoint(Block* leaf, float x, float y, bool* inside, uint32_t* run_link) const;
+    float ScrollXOf(const Block* b) const;
+    int LinkAt(Block* leaf, uint32_t local) const;
+    D2D1_RECT_F ScrollbarTrack() const;
+    D2D1_RECT_F ScrollbarThumb() const;
+    void SetHoverLink(Block* leaf, int link);
+    void OpenLink(int link_index);
+    void NavigateTo(const std::wstring& path, const std::wstring& fragment);
+    bool JumpToAnchor(const std::wstring& fragment);
+    void GoBack();
+    void ToggleDetails(Block* summary);
+    void SelectWordAt(const Hit& hit);
+    void SelectLeaf(Block* leaf);
+    std::wstring TextInRange(uint32_t a, uint32_t b) const;
+    void CopySelection();
+    void CopyCode(Block* code);
+    void SetZoom(int percent);
+    void SetStatus(const std::wstring& text);
+
+    HWND hwnd_ = nullptr;
+    HWND parent_ = nullptr;
+    int flags_ = 0;
+    UINT dpi_ = 96;
+
+    std::unique_ptr<Document> doc_;
+    std::wstring path_;
+    std::vector<HistoryEntry> history_;
+    Palette palette_;
+    ImageStore images_;
+    LayoutEngine layout_;
+    Renderer renderer_;
+    ComPtr<ID2D1HwndRenderTarget> rt_;
+    bool layout_dirty_ = true;
+    float laid_out_width_ = 0;
+    bool dark_ = false;
+    int zoom_percent_ = 100;
+
+    float scroll_y_ = 0;
+    bool anim_ = false;
+    float anim_from_ = 0, anim_to_ = 0;
+    double anim_start_ = 0, anim_duration_ = 0;
+    int last_percent_ = -1;
+    float wheel_accum_ = 0;
+
+    TextRange selection_;
+    uint32_t anchor_ = 0;
+    bool selecting_ = false;
+    bool mouse_down_ = false;
+    bool dragged_ = false;
+    POINT down_pt_{};
+    int down_link_ = -1;
+    Block* down_summary_ = nullptr;
+    int click_count_ = 0;
+    DWORD last_click_time_ = 0;
+    POINT last_click_pt_{};
+    POINT last_mouse_{};
+
+    int hover_link_ = -1;
+    Block* hover_link_leaf_ = nullptr;
+    Block* hover_block_ = nullptr;    // code block or wide table under the mouse
+    bool copy_hover_ = false;
+    Block* copied_block_ = nullptr;
+    bool tracking_mouse_ = false;
+    bool thumb_drag_ = false;
+    float thumb_drag_offset_ = 0;
+    bool scrollbar_hover_ = false;
+    Block* hscroll_drag_ = nullptr;
+    float hscroll_drag_start_x_ = 0, hscroll_drag_start_scroll_ = 0;
+    int repeat_dir_ = 0;
+    std::wstring status_;
+
+    std::wstring search_text_;
+    std::vector<TextRange> hits_;
+    int current_hit_ = -1;
+    std::wstring folded_text_;        // lowercase global text for searching
+    bool folded_valid_ = false;
+};
+
+// ============================================================================
+// Creation & loading
+// ============================================================================
+
+Viewer::~Viewer() {
+    images_.Detach();
+    layout_.SetDocument(nullptr);
+    rt_.Reset();
+    if (--G().viewers == 0) {
+        G().d2d.Reset();
+    }
+}
+
+bool Viewer::Create(HWND parent, int flags) {
+    static const bool registered = [] {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof wc;
+        wc.style = CS_DBLCLKS;
+        wc.lpfnWndProc = &Viewer::StaticProc;
+        wc.hInstance = reinterpret_cast<HINSTANCE>(&__ImageBase);
+        wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        wc.lpszClassName = kClassName;
+        return RegisterClassExW(&wc) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+    }();
+    if (!registered) return false;
+
+    Shared& g = G();
+    if (!g.d2d && FAILED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, g.d2d.GetAddressOf()))) return false;
+    if (!g.dw && FAILED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                            reinterpret_cast<IUnknown**>(g.dw.GetAddressOf())))) {
+        return false;
+    }
+    ++g.viewers;
+
+    flags_ = flags;
+    parent_ = parent;
+    RECT rc{};
+    GetClientRect(parent, &rc);
+    hwnd_ = CreateWindowExW(0, kClassName, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0, rc.right, rc.bottom,
+                            parent, nullptr, reinterpret_cast<HINSTANCE>(&__ImageBase), this);
+    if (!hwnd_) return false;
+    dpi_ = GetDpiForWindow(hwnd_);
+    if (dpi_ == 0) dpi_ = 96;
+    layout_.Init(g.dw.Get(), &palette_, &images_);
+    zoom_percent_ = GlobalSettings().zoom_percent;
+    ApplySettings(false);
+    return true;
+}
+
+bool Viewer::DarkTheme() const {
+    switch (GlobalSettings().theme) {
+    case ThemeMode::Light: return false;
+    case ThemeMode::Dark: return true;
+    default:
+        if (Host().tc_reports_dark_mode()) return (flags_ & lcp_darkmode) != 0;
+        return SystemUsesDarkTheme();
+    }
+}
+
+LayoutConfig Viewer::MakeLayoutConfig() const {
+    const Settings& s = GlobalSettings();
+    LayoutConfig cfg;
+    cfg.font_family = s.font_family;
+    cfg.mono_family = s.mono_family;
+    cfg.font_size = s.font_size;
+    cfg.zoom = static_cast<float>(zoom_percent_) / 100.f;
+    cfg.max_content_width = static_cast<float>(s.max_width);
+    cfg.wrap_code = s.wrap_code < 0 ? (flags_ & lcp_wraptext) != 0 : s.wrap_code == 1;
+    cfg.dark = dark_;
+    return cfg;
+}
+
+void Viewer::ApplySettings(bool relayout) {
+    const bool dark = DarkTheme();
+    const bool theme_changed = dark != dark_;
+    dark_ = dark;
+    if (theme_changed && rt_) palette_.Apply(GetTheme(dark_));
+    if (theme_changed) images_.SetDark(dark_);
+    const LayoutConfig cfg = MakeLayoutConfig();
+    const LayoutConfig& old = layout_.config();
+    const bool layout_changed = cfg.font_family != old.font_family || cfg.mono_family != old.mono_family ||
+                                cfg.font_size != old.font_size || cfg.zoom != old.zoom ||
+                                cfg.max_content_width != old.max_content_width || cfg.wrap_code != old.wrap_code ||
+                                !layout_.laid_out();
+    if (layout_changed) {
+        const ScrollAnchor a = CaptureAnchor();
+        layout_.SetConfig(cfg);
+        layout_dirty_ = true;
+        if (relayout && doc_) {
+            Relayout(false);
+            RestoreAnchor(a);
+        }
+    }
+    Invalidate();
+}
+
+bool Viewer::Load(const std::wstring& path, int flags, bool keep_history) {
+    std::string bytes;
+    std::string utf8;
+    if (ReadFileBytes(path.c_str(), bytes, kMaxFileBytes)) {
+        utf8 = DecodeTextToUtf8(bytes);
+    } else {
+        utf8 = WideToUtf8(std::wstring(L"# ") + Tr(L"Cannot open file", L"Не удалось открыть файл") + L"\n\n`" +
+                          path + L"`\n");
+    }
+    bytes.clear();
+    bytes.shrink_to_fit();
+
+    const Settings& s = GlobalSettings();
+    ParseOptions opt;
+    opt.emoji_shortcodes = s.emoji_shortcodes;
+    opt.math = s.math;
+    opt.highlight_code = s.syntax_highlight;
+    auto doc = ParseMarkdown(utf8, path, opt);
+    utf8.clear();
+    utf8.shrink_to_fit();
+
+    if (!keep_history) history_.clear();
+    flags_ = flags;
+    images_.Detach();
+    layout_.SetDocument(nullptr);
+    doc_ = std::move(doc);
+    path_ = path;
+    selection_ = {};
+    anchor_ = 0;
+    hits_.clear();
+    current_hit_ = -1;
+    folded_valid_ = false;
+    hover_link_ = -1;
+    hover_link_leaf_ = nullptr;
+    hover_block_ = nullptr;
+    copied_block_ = nullptr;
+    status_.clear();
+    scroll_y_ = 0;
+    anim_ = false;
+    last_percent_ = -1;
+
+    dark_ = DarkTheme();
+    if (rt_) palette_.Apply(GetTheme(dark_));
+    images_.Attach(doc_.get(), hwnd_, dark_, s.remote_images);
+    images_.LoadAll();
+    layout_.SetConfig(MakeLayoutConfig());
+    layout_.SetDocument(doc_.get());
+    layout_dirty_ = true;
+    Relayout(false);
+    UpdatePercent();
+    Invalidate();
+    return true;
+}
+
+// ============================================================================
+// Layout
+// ============================================================================
+
+float Viewer::ViewWidth() const {
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    return static_cast<float>(rc.right) / Scale();
+}
+
+float Viewer::ViewHeight() const {
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    return static_cast<float>(rc.bottom) / Scale();
+}
+
+float Viewer::MaxScroll() const { return std::max(0.f, layout_.doc_height() - ViewHeight()); }
+
+Block* Viewer::LeafAtY(float y) const {
+    if (!doc_) return nullptr;
+    const auto& leaves = doc_->leaves;
+    auto it = std::partition_point(leaves.begin(), leaves.end(),
+                                   [y](const Block* b) { return !b->visible || b->y + b->h <= y; });
+    // partition_point assumes monotonic order; hidden leaves sit at their
+    // parent's position, which keeps the sequence sorted.
+    while (it != leaves.end() && !(*it)->visible) ++it;
+    return it == leaves.end() ? nullptr : *it;
+}
+
+Viewer::ScrollAnchor Viewer::CaptureAnchor() const {
+    ScrollAnchor a;
+    if (!doc_ || !layout_.laid_out()) return a;
+    a.leaf = LeafAtY(scroll_y_);
+    if (a.leaf) a.offset = scroll_y_ - a.leaf->y;
+    return a;
+}
+
+void Viewer::RestoreAnchor(const ScrollAnchor& a) {
+    if (a.leaf && a.leaf->visible) {
+        scroll_y_ = a.leaf->y + a.offset;
+    }
+    scroll_y_ = std::clamp(scroll_y_, 0.f, MaxScroll());
+    if (anim_) anim_to_ = std::clamp(anim_to_, 0.f, MaxScroll());
+}
+
+void Viewer::Relayout(bool keep_anchor) {
+    if (!doc_) return;
+    const ScrollAnchor a = keep_anchor ? CaptureAnchor() : ScrollAnchor{};
+    const float vh = ViewHeight();
+    const float margin = vh;
+    layout_.Layout(ViewWidth(), scroll_y_ - margin, scroll_y_ + vh + margin);
+    if (keep_anchor) RestoreAnchor(a);
+    // Positions may have shifted: make sure what is on screen is exact.
+    for (int pass = 0; pass < 3; ++pass) {
+        bool estimated = false;
+        for (Block* leaf = LeafAtY(scroll_y_); leaf; ) {
+            if (leaf->y > scroll_y_ + vh) break;
+            const LeafState* s = layout_.State(leaf);
+            if (leaf->visible && s && !s->exact) {
+                estimated = true;
+                break;
+            }
+            const int next = leaf->leaf_index + 1;
+            leaf = next < static_cast<int>(doc_->leaves.size()) ? doc_->leaves[static_cast<size_t>(next)] : nullptr;
+        }
+        if (!estimated) break;
+        const ScrollAnchor b = CaptureAnchor();
+        layout_.Layout(ViewWidth(), scroll_y_ - margin, scroll_y_ + vh + margin);
+        RestoreAnchor(b);
+    }
+    laid_out_width_ = ViewWidth();
+    layout_dirty_ = false;
+    if (layout_.HasEstimates()) SetTimer(hwnd_, kTimerRefine, 15, nullptr);
+    UpdatePercent();
+}
+
+void Viewer::EnsureLayout() {
+    if (!doc_) return;
+    if (layout_dirty_ || std::fabs(laid_out_width_ - ViewWidth()) > 0.01f) Relayout(layout_.laid_out());
+}
+
+void Viewer::EnsureVisibleExact() {
+    if (!doc_ || !layout_.HasEstimates()) return;
+    const float vh = ViewHeight();
+    for (Block* leaf = LeafAtY(scroll_y_); leaf;) {
+        if (leaf->y > scroll_y_ + vh) break;
+        const LeafState* s = layout_.State(leaf);
+        if (leaf->visible && s && !s->exact) {
+            Relayout(true);
+            return;
+        }
+        const int next = leaf->leaf_index + 1;
+        leaf = next < static_cast<int>(doc_->leaves.size()) ? doc_->leaves[static_cast<size_t>(next)] : nullptr;
+    }
+}
+
+// ============================================================================
+// Rendering
+// ============================================================================
+
+bool Viewer::EnsureRenderTarget() {
+    if (rt_) return true;
+    RECT rc{};
+    GetClientRect(hwnd_, &rc);
+    const float dpi = static_cast<float>(dpi_);
+    const D2D1_RENDER_TARGET_PROPERTIES props = D2D1::RenderTargetProperties(
+        GlobalSettings().hardware ? D2D1_RENDER_TARGET_TYPE_DEFAULT : D2D1_RENDER_TARGET_TYPE_SOFTWARE,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE), dpi, dpi);
+    const D2D1_HWND_RENDER_TARGET_PROPERTIES hprops = D2D1::HwndRenderTargetProperties(
+        hwnd_, D2D1::SizeU(std::max<LONG>(rc.right, 1), std::max<LONG>(rc.bottom, 1)), D2D1_PRESENT_OPTIONS_NONE);
+    if (FAILED(G().d2d->CreateHwndRenderTarget(props, hprops, &rt_))) {
+        // Fall back to software rendering.
+        const D2D1_RENDER_TARGET_PROPERTIES sw = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_SOFTWARE, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE),
+            dpi, dpi);
+        if (FAILED(G().d2d->CreateHwndRenderTarget(sw, hprops, &rt_))) return false;
+    }
+    if (!palette_.Create(rt_.Get(), GetTheme(dark_))) {
+        rt_.Reset();
+        return false;
+    }
+    layout_.InvalidateTextLayouts();
+    images_.ReleaseDeviceResources();
+    return true;
+}
+
+void Viewer::DiscardDeviceResources() {
+    rt_.Reset();
+    layout_.InvalidateTextLayouts();
+    images_.ReleaseDeviceResources();
+}
+
+void Viewer::OnPaint() {
+    PAINTSTRUCT ps;
+    BeginPaint(hwnd_, &ps);
+    EndPaint(hwnd_, &ps);
+    if (!EnsureRenderTarget()) return;
+    EnsureLayout();
+    if (anim_) {
+        const double t = (NowMs() - anim_start_) / anim_duration_;
+        if (t >= 1.0) {
+            scroll_y_ = anim_to_;
+            anim_ = false;
+        } else {
+            const double e = 1.0 - std::pow(1.0 - t, 3.0);  // ease-out cubic
+            scroll_y_ = anim_from_ + static_cast<float>((anim_to_ - anim_from_) * e);
+        }
+        UpdatePercent();
+    }
+    EnsureVisibleExact();
+
+    const Theme& theme = GetTheme(dark_);
+    rt_->BeginDraw();
+    rt_->SetTransform(D2D1::Matrix3x2F::Identity());
+    rt_->Clear(theme.Color(kColorBackground));
+    RenderState st;
+    st.scroll_y = scroll_y_;
+    st.view_w = ViewWidth();
+    st.view_h = ViewHeight();
+    st.dpi_scale = Scale();
+    st.selection = selection_;
+    st.focused = GetFocus() == hwnd_;
+    st.hits = &hits_;
+    st.current_hit = current_hit_;
+    st.hover_block = hover_block_;
+    st.copy_button_hover = copy_hover_;
+    st.copied_block = copied_block_;
+    if (doc_) renderer_.Draw(rt_.Get(), layout_, st);
+    DrawOverlays();
+    const HRESULT hr = rt_->EndDraw();
+    if (hr == D2DERR_RECREATE_TARGET) {
+        DiscardDeviceResources();
+        Invalidate();
+        return;
+    }
+    if (anim_) {
+        // Keep animating at the display's refresh rate.
+        DwmFlush();
+        Invalidate();
+    }
+    layout_.EvictFar(scroll_y_, scroll_y_ + ViewHeight());
+}
+
+D2D1_RECT_F Viewer::ScrollbarTrack() const {
+    const float w = ViewWidth(), h = ViewHeight();
+    const float width = (scrollbar_hover_ || thumb_drag_) ? 12.f : 8.f;
+    return D2D1::RectF(w - width - 2.f, 2.f, w - 2.f, h - 2.f);
+}
+
+D2D1_RECT_F Viewer::ScrollbarThumb() const {
+    const D2D1_RECT_F track = ScrollbarTrack();
+    const float th = track.bottom - track.top;
+    const float doc_h = std::max(layout_.doc_height(), 1.f);
+    const float vh = ViewHeight();
+    const float size = std::clamp(th * vh / doc_h, 28.f, th);
+    const float range = MaxScroll();
+    const float pos = range > 0 ? scroll_y_ / range : 0.f;
+    const float top = track.top + (th - size) * pos;
+    return D2D1::RectF(track.left, top, track.right, top + size);
+}
+
+void Viewer::DrawOverlays() {
+    const Theme& theme = GetTheme(dark_);
+    (void)theme;
+    // Vertical scrollbar (only when the document is taller than the view).
+    if (MaxScroll() > 0.5f) {
+        const D2D1_RECT_F thumb = ScrollbarThumb();
+        const float r = (thumb.right - thumb.left) * 0.5f;
+        if (!hits_.empty() && doc_) {
+            // Search matches as ticks on the track.
+            const D2D1_RECT_F track = ScrollbarTrack();
+            const float doc_h = std::max(layout_.doc_height(), 1.f);
+            const float th = track.bottom - track.top;
+            float last_y = -10.f;
+            for (size_t i = 0; i < hits_.size(); ++i) {
+                const Block* leaf = doc_->LeafAt(hits_[i].start);
+                if (!leaf || !leaf->visible) continue;
+                const float y = track.top + th * leaf->y / doc_h;
+                if (y - last_y < 2.f && static_cast<int>(i) != current_hit_) continue;
+                last_y = y;
+                rt_->FillRectangle(D2D1::RectF(track.left - 2.f, y, track.right, y + 2.f),
+                                   palette_.Brush(static_cast<int>(i) == current_hit_ ? kColorSearchCurrent
+                                                                                       : kColorAlertWarning));
+            }
+        }
+        rt_->FillRoundedRectangle(D2D1_ROUNDED_RECT{thumb, r, r},
+                                  palette_.Brush((scrollbar_hover_ || thumb_drag_) ? kColorScrollThumbHover
+                                                                                    : kColorScrollThumb));
+    }
+    // Link status bubble.
+    if (!status_.empty()) {
+        const float em = 12.f;
+        IDWriteTextLayout* tl = layout_.LabelLayout(status_, em, 400);
+        if (tl) {
+            DWRITE_TEXT_METRICS tm{};
+            tl->GetMetrics(&tm);
+            const float vw = ViewWidth(), vh = ViewHeight();
+            const float w = std::min(tm.widthIncludingTrailingWhitespace + 16.f, vw * 0.7f);
+            const float h = tm.height + 8.f;
+            float top = vh - h - 4.f;
+            const float left = 4.f;
+            if (last_mouse_.y / Scale() > top - 8.f && last_mouse_.x / Scale() < left + w + 8.f) top = 4.f;
+            const D2D1_RECT_F r = D2D1::RectF(left, top, left + w, top + h);
+            rt_->FillRoundedRectangle(D2D1_ROUNDED_RECT{r, 4.f, 4.f}, palette_.Brush(kColorBubbleBg));
+            rt_->DrawRoundedRectangle(D2D1_ROUNDED_RECT{D2D1::RectF(r.left + .5f, r.top + .5f, r.right - .5f, r.bottom - .5f),
+                                                        4.f, 4.f},
+                                      palette_.Brush(kColorBorder), 1.f);
+            rt_->PushAxisAlignedClip(D2D1::RectF(r.left + 8.f, r.top, r.right - 8.f, r.bottom), D2D1_ANTIALIAS_MODE_ALIASED);
+            rt_->DrawTextLayout(D2D1::Point2F(r.left + 8.f, r.top + 4.f), tl, palette_.Brush(kColorBubbleText));
+            rt_->PopAxisAlignedClip();
+        }
+    }
+}
+
+// ============================================================================
+// Scrolling
+// ============================================================================
+
+void Viewer::ScrollTo(float y, bool smooth) {
+    y = std::clamp(y, 0.f, MaxScroll());
+    if (smooth && GlobalSettings().smooth_scroll) {
+        anim_from_ = scroll_y_;
+        anim_to_ = y;
+        anim_start_ = NowMs();
+        anim_duration_ = 140.0;
+        anim_ = std::fabs(anim_to_ - anim_from_) > 0.5f;
+        if (!anim_) scroll_y_ = y;
+    } else {
+        anim_ = false;
+        scroll_y_ = y;
+    }
+    UpdatePercent();
+    Invalidate();
+}
+
+void Viewer::ScrollIntoView(Block* leaf, uint32_t local_pos, bool center) {
+    if (!leaf) return;
+    // Make sure the target is laid out exactly before computing positions.
+    Relayout(true);
+    IDWriteTextLayout* tl = layout_.TextLayout(leaf);
+    float y = leaf->y, h = leaf->h;
+    if (tl) {
+        DWRITE_HIT_TEST_METRICS m{};
+        FLOAT px = 0, py = 0;
+        if (SUCCEEDED(tl->HitTestTextPosition(local_pos, FALSE, &px, &py, &m))) {
+            const D2D1_POINT_2F o = layout_.TextOrigin(leaf);
+            y = o.y + m.top;
+            h = m.height;
+        }
+    }
+    const float vh = ViewHeight();
+    if (center) {
+        if (y < scroll_y_ + vh * 0.15f || y + h > scroll_y_ + vh * 0.85f) ScrollTo(y - vh * 0.35f, false);
+    } else {
+        if (y < scroll_y_) ScrollTo(y - 8.f, false);
+        else if (y + h > scroll_y_ + vh) ScrollTo(y + h - vh + 8.f, false);
+    }
+}
+
+void Viewer::UpdatePercent() {
+    if (!parent_) return;
+    const float max = MaxScroll();
+    const int pct = max > 0 ? static_cast<int>(std::lround(100.f * scroll_y_ / max)) : 100;
+    if (pct == last_percent_) return;
+    last_percent_ = pct;
+    PostMessageW(parent_, WM_COMMAND, MAKEWPARAM(pct, itm_percent), reinterpret_cast<LPARAM>(hwnd_));
+}
+
+void Viewer::OnMouseWheel(int delta, bool horizontal) {
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    if (ctrl && !horizontal) {
+        wheel_accum_ += static_cast<float>(delta);
+        while (wheel_accum_ >= WHEEL_DELTA) {
+            SetZoom(zoom_percent_ + 10);
+            wheel_accum_ -= WHEEL_DELTA;
+        }
+        while (wheel_accum_ <= -WHEEL_DELTA) {
+            SetZoom(zoom_percent_ - 10);
+            wheel_accum_ += WHEEL_DELTA;
+        }
+        return;
+    }
+    if (horizontal || shift) {
+        POINT pt;
+        GetCursorPos(&pt);
+        ScreenToClient(hwnd_, &pt);
+        const Hit hit = HitTest(pt.x / Scale(), pt.y / Scale() + scroll_y_);
+        if (hit.wide) {
+            const float step = static_cast<float>(horizontal ? delta : -delta) / WHEEL_DELTA * layout_.metrics().em * 4.f;
+            hit.wide->scroll_x = std::clamp(hit.wide->scroll_x + step, 0.f, hit.wide->content_w - hit.wide->w);
+            Invalidate();
+        }
+        return;
+    }
+    UINT lines = 3;
+    SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+    float amount;
+    if (lines == WHEEL_PAGESCROLL) {
+        amount = ViewHeight() - LineStep();
+    } else {
+        amount = static_cast<float>(lines) * layout_.metrics().em * 2.f;
+    }
+    ScrollBy(-static_cast<float>(delta) / WHEEL_DELTA * amount, std::abs(delta) >= WHEEL_DELTA);
+}
+
+void Viewer::OnKeyDown(WPARAM vk) {
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    const float page = std::max(ViewHeight() - LineStep() * 1.5f, LineStep());
+    switch (vk) {
+    case VK_DOWN: ScrollBy(LineStep(), true); break;
+    case VK_UP: ScrollBy(-LineStep(), true); break;
+    case VK_NEXT: ScrollBy(page, true); break;
+    case VK_PRIOR: ScrollBy(-page, true); break;
+    case VK_SPACE: ScrollBy(shift ? -page : page, true); break;
+    case VK_HOME: ScrollTo(0, true); break;
+    case VK_END: ScrollTo(MaxScroll(), true); break;
+    case VK_BACK: GoBack(); break;
+    case VK_LEFT: if (alt) GoBack(); break;
+    case VK_F5: if (!path_.empty()) { const float y = scroll_y_; Load(path_, flags_, true); ScrollTo(y, false); } break;
+    case 'A': if (ctrl) Command(lc_selectall, 0); break;
+    case 'C': case VK_INSERT: if (ctrl) CopySelection(); break;
+    case VK_OEM_PLUS: case VK_ADD: if (ctrl) SetZoom(zoom_percent_ + 10); break;
+    case VK_OEM_MINUS: case VK_SUBTRACT: if (ctrl) SetZoom(zoom_percent_ - 10); break;
+    case '0': case VK_NUMPAD0: if (ctrl) SetZoom(100); break;
+    default: break;
+    }
+}
+
+// ============================================================================
+// Hit testing
+// ============================================================================
+
+float Viewer::ScrollXOf(const Block* b) const {
+    float sx = 0;
+    for (const Block* p = b; p; p = p->parent) {
+        if (p->content_w > 0) sx += p->scroll_x;
+    }
+    return sx;
+}
+
+uint32_t Viewer::LeafPosFromPoint(Block* leaf, float x, float y, bool* inside, uint32_t* run_link) const {
+    auto& self = const_cast<Viewer&>(*this);
+    IDWriteTextLayout* tl = self.layout_.TextLayout(leaf);
+    if (inside) *inside = false;
+    if (run_link) *run_link = static_cast<uint32_t>(-1);
+    if (!tl) return leaf->text_start;
+    const D2D1_POINT_2F o = layout_.TextOrigin(leaf);
+    BOOL trailing = FALSE, in = FALSE;
+    DWRITE_HIT_TEST_METRICS m{};
+    tl->HitTestPoint(x + ScrollXOf(leaf) - o.x, y - o.y, &trailing, &in, &m);
+    if (inside) *inside = in != FALSE;
+    uint32_t pos = m.textPosition + (trailing ? m.length : 0);
+    pos = std::min<uint32_t>(pos, static_cast<uint32_t>(leaf->text.size()));
+    if (run_link && in) {
+        const int l = LinkAt(leaf, m.textPosition);
+        *run_link = static_cast<uint32_t>(l);
+    }
+    return leaf->text_start + pos;
+}
+
+int Viewer::LinkAt(Block* leaf, uint32_t local) const {
+    for (const StyleRun& r : leaf->runs) {
+        if (local >= r.start && local < r.start + r.length) return r.link;
+    }
+    return -1;
+}
+
+Viewer::Hit Viewer::HitTest(float x, float y) const {
+    Hit hit;
+    if (!doc_) return hit;
+    // Find the deepest visible block containing the point.
+    Block* b = doc_->root;
+    for (;;) {
+        Block* next = nullptr;
+        const float lx = x + (b->content_w > 0 ? b->scroll_x : 0.f);
+        for (Block* c : b->children) {
+            if (!c->visible || c->h <= 0) continue;
+            if (y >= c->y && y < c->y + c->h) {
+                if (b->type == BlockType::TableRow && !(lx >= c->x && lx < c->x + c->w)) continue;
+                if (c->type == BlockType::TableCell && !(lx >= c->x && lx < c->x + c->w)) continue;
+                next = c;
+                break;
+            }
+            if (c->y > y) break;
+        }
+        if (!next) break;
+        b = next;
+        if (b->type == BlockType::CodeBlock) hit.code = b;
+        if (b->type == BlockType::Summary) hit.summary = b;
+        if (b->content_w > 0) hit.wide = b;
+        if (b->IsLeaf()) break;
+    }
+    Block* leaf = b->IsLeaf() ? b : nullptr;
+    if (!leaf) {
+        // Between blocks: nearest leaf by vertical distance.
+        Block* after = LeafAtY(y);
+        Block* before = nullptr;
+        if (after && after->leaf_index > 0) {
+            for (int i = after->leaf_index - 1; i >= 0; --i) {
+                Block* c = doc_->leaves[static_cast<size_t>(i)];
+                if (c->visible) {
+                    before = c;
+                    break;
+                }
+            }
+        }
+        if (after && y >= after->y) leaf = after;
+        else if (before && after) leaf = (y - (before->y + before->h) < after->y - y) ? before : after;
+        else leaf = after ? after : before;
+        if (!leaf && !doc_->leaves.empty()) leaf = doc_->leaves.back();
+    }
+    if (!leaf) return hit;
+    hit.leaf = leaf;
+    bool inside = false;
+    uint32_t link = static_cast<uint32_t>(-1);
+    hit.pos = LeafPosFromPoint(leaf, x, y, &inside, &link);
+    hit.on_text = inside && b == leaf;
+    if (hit.on_text) {
+        hit.link = static_cast<int>(link);
+        const uint32_t local = hit.pos - leaf->text_start;
+        for (const InlineObject& o : leaf->objects) {
+            if (o.pos == local || o.pos + 1 == local) {
+                hit.image = o.image;
+                if (o.pos + 1 == local) {
+                    // Trailing half of the object: the link is on the object itself.
+                    hit.link = LinkAt(leaf, o.pos);
+                }
+            }
+        }
+    }
+    return hit;
+}
+
+// ============================================================================
+// Mouse
+// ============================================================================
+
+void Viewer::SetStatus(const std::wstring& text) {
+    if (text == status_) return;
+    status_ = text;
+    Invalidate();
+}
+
+void Viewer::SetHoverLink(Block* leaf, int link) {
+    if (link == hover_link_ && leaf == hover_link_leaf_) return;
+    // Underline the hovered link in its text layout.
+    auto set_underline = [this](Block* lf, int ln, bool on) {
+        if (!lf || ln < 0) return;
+        IDWriteTextLayout* tl = layout_.TextLayout(lf);
+        if (!tl) return;
+        for (const StyleRun& r : lf->runs) {
+            if (r.link == ln && !(r.flags & kUnderline)) tl->SetUnderline(on, DWRITE_TEXT_RANGE{r.start, r.length});
+        }
+    };
+    set_underline(hover_link_leaf_, hover_link_, false);
+    hover_link_ = link;
+    hover_link_leaf_ = link >= 0 ? leaf : nullptr;
+    set_underline(hover_link_leaf_, hover_link_, true);
+    if (link >= 0 && doc_ && static_cast<size_t>(link) < doc_->links.size()) {
+        const Link& l = doc_->links[static_cast<size_t>(link)];
+        std::wstring text = l.url;
+        if (!l.title.empty() && l.url.rfind(L"#fn", 0) != 0) text = l.title + L"  —  " + l.url;
+        SetStatus(text);
+    } else {
+        SetStatus(L"");
+    }
+    Invalidate();
+}
+
+void Viewer::OnLButtonDown(int px, int py, bool dbl) {
+    SetFocus(hwnd_);
+    const float x = px / Scale(), y = py / Scale();
+    const float dy = y + scroll_y_;
+    mouse_down_ = true;
+    dragged_ = false;
+    down_pt_ = POINT{px, py};
+    down_link_ = -1;
+    down_summary_ = nullptr;
+    SetCapture(hwnd_);
+
+    // Scrollbar.
+    if (MaxScroll() > 0.5f) {
+        const D2D1_RECT_F track = ScrollbarTrack();
+        if (x >= track.left - 4.f) {
+            const D2D1_RECT_F thumb = ScrollbarThumb();
+            if (y >= thumb.top && y <= thumb.bottom) {
+                thumb_drag_ = true;
+                thumb_drag_offset_ = y - thumb.top;
+            } else {
+                repeat_dir_ = y < thumb.top ? -1 : 1;
+                ScrollBy(repeat_dir_ * (ViewHeight() - LineStep()), true);
+                SetTimer(hwnd_, kTimerRepeat, 300, nullptr);
+            }
+            Invalidate();
+            return;
+        }
+    }
+    const Hit hit = HitTest(x, dy);
+    // Copy button of a code block.
+    if (hit.code && hover_block_ == hit.code) {
+        const D2D1_RECT_F r = Renderer::CopyButtonRect(hit.code, layout_.metrics());
+        if (x >= r.left && x <= r.right && dy >= r.top && dy <= r.bottom) {
+            CopyCode(hit.code);
+            return;
+        }
+    }
+    // Horizontal scrollbar of a wide block.
+    if (hit.wide) {
+        const D2D1_RECT_F track = Renderer::HScrollbarRect(hit.wide, layout_.metrics(), false);
+        if (dy >= track.top - 4.f && dy <= track.bottom + 2.f) {
+            hscroll_drag_ = hit.wide;
+            hscroll_drag_start_x_ = x;
+            hscroll_drag_start_scroll_ = hit.wide->scroll_x;
+            return;
+        }
+    }
+    const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+    // Click counting for triple clicks.
+    const DWORD now = GetTickCount();
+    if (dbl || (now - last_click_time_ < GetDoubleClickTime() && std::abs(px - last_click_pt_.x) < 4 &&
+                std::abs(py - last_click_pt_.y) < 4)) {
+        ++click_count_;
+    } else {
+        click_count_ = 1;
+    }
+    last_click_time_ = now;
+    last_click_pt_ = POINT{px, py};
+
+    if (click_count_ >= 3 && hit.leaf) {
+        SelectLeaf(hit.leaf);
+        return;
+    }
+    if (click_count_ == 2 && hit.leaf) {
+        SelectWordAt(hit);
+        return;
+    }
+    down_link_ = hit.link;
+    down_summary_ = hit.summary;
+    if (shift && selection_.end >= selection_.start && hit.leaf) {
+        selection_ = TextRange{std::min(anchor_, hit.pos), std::max(anchor_, hit.pos)};
+    } else if (hit.leaf) {
+        anchor_ = hit.pos;
+        selection_ = TextRange{hit.pos, hit.pos};
+    }
+    selecting_ = hit.leaf != nullptr;
+    Invalidate();
+}
+
+void Viewer::OnMouseMove(int px, int py) {
+    last_mouse_ = POINT{px, py};
+    if (!tracking_mouse_) {
+        TRACKMOUSEEVENT tme{sizeof tme, TME_LEAVE, hwnd_, 0};
+        TrackMouseEvent(&tme);
+        tracking_mouse_ = true;
+    }
+    const float x = px / Scale(), y = py / Scale();
+    const float dy = y + scroll_y_;
+    if (thumb_drag_) {
+        const D2D1_RECT_F track = ScrollbarTrack();
+        const D2D1_RECT_F thumb = ScrollbarThumb();
+        const float th = track.bottom - track.top - (thumb.bottom - thumb.top);
+        const float pos = th > 0 ? (y - thumb_drag_offset_ - track.top) / th : 0.f;
+        ScrollTo(pos * MaxScroll(), false);
+        return;
+    }
+    if (hscroll_drag_) {
+        Block* b = hscroll_drag_;
+        const float track_w = b->w - 4.f;
+        const float ratio = b->content_w / std::max(track_w, 1.f);
+        b->scroll_x = std::clamp(hscroll_drag_start_scroll_ + (x - hscroll_drag_start_x_) * ratio, 0.f,
+                                 b->content_w - b->w);
+        Invalidate();
+        return;
+    }
+    if (mouse_down_ && selecting_) {
+        if (std::abs(px - down_pt_.x) > 3 || std::abs(py - down_pt_.y) > 3) dragged_ = true;
+        if (dragged_) {
+            const Hit hit = HitTest(x, dy);
+            if (hit.leaf) {
+                selection_ = TextRange{std::min(anchor_, hit.pos), std::max(anchor_, hit.pos)};
+                hits_.clear();
+                current_hit_ = -1;
+            }
+            const float vh = ViewHeight();
+            if (y < 0 || y > vh) SetTimer(hwnd_, kTimerAutoScroll, 30, nullptr);
+            else KillTimer(hwnd_, kTimerAutoScroll);
+            Invalidate();
+        }
+        return;
+    }
+    // Hover state.
+    const bool over_bar = MaxScroll() > 0.5f && x >= ViewWidth() - 16.f;
+    if (over_bar != scrollbar_hover_) {
+        scrollbar_hover_ = over_bar;
+        Invalidate();
+    }
+    const Hit hit = over_bar ? Hit{} : HitTest(x, dy);
+    Block* hb = hit.code ? hit.code : hit.wide;
+    bool copy_hover = false;
+    if (hit.code) {
+        const D2D1_RECT_F r = Renderer::CopyButtonRect(hit.code, layout_.metrics());
+        copy_hover = x >= r.left && x <= r.right && dy >= r.top && dy <= r.bottom;
+    }
+    if (hb != hover_block_ || copy_hover != copy_hover_) {
+        hover_block_ = hb;
+        copy_hover_ = copy_hover;
+        Invalidate();
+    }
+    SetHoverLink(hit.leaf, copy_hover ? -1 : hit.link);
+}
+
+void Viewer::OnLButtonUp(int px, int py) {
+    ReleaseCapture();
+    KillTimer(hwnd_, kTimerAutoScroll);
+    KillTimer(hwnd_, kTimerRepeat);
+    repeat_dir_ = 0;
+    const bool was_click = mouse_down_ && !dragged_;
+    mouse_down_ = false;
+    selecting_ = false;
+    if (thumb_drag_ || hscroll_drag_) {
+        thumb_drag_ = false;
+        hscroll_drag_ = nullptr;
+        Invalidate();
+        return;
+    }
+    if (!was_click) return;
+    const Hit hit = HitTest(px / Scale(), py / Scale() + scroll_y_);
+    if (down_link_ >= 0 && hit.link == down_link_ && click_count_ == 1) {
+        selection_ = {};
+        OpenLink(down_link_);
+    } else if (down_summary_ && hit.summary == down_summary_ && click_count_ == 1) {
+        selection_ = {};
+        ToggleDetails(down_summary_);
+    }
+    down_link_ = -1;
+    down_summary_ = nullptr;
+}
+
+void Viewer::SelectWordAt(const Hit& hit) {
+    Block* leaf = hit.leaf;
+    const std::wstring& t = leaf->text;
+    uint32_t p = hit.pos - leaf->text_start;
+    if (p >= t.size() && p > 0) --p;
+    if (t.empty()) return;
+    uint32_t a = p, b = p;
+    if (IsWordChar(t[p])) {
+        while (a > 0 && IsWordChar(t[a - 1])) --a;
+        while (b < t.size() && IsWordChar(t[b])) ++b;
+    } else {
+        b = p + 1;
+    }
+    anchor_ = leaf->text_start + a;
+    selection_ = TextRange{leaf->text_start + a, leaf->text_start + b};
+    selecting_ = false;
+    Invalidate();
+}
+
+void Viewer::SelectLeaf(Block* leaf) {
+    anchor_ = leaf->text_start;
+    selection_ = TextRange{leaf->text_start, leaf->text_end()};
+    selecting_ = false;
+    Invalidate();
+}
+
+void Viewer::ToggleDetails(Block* summary) {
+    Block* details = summary->parent;
+    if (!details || details->type != BlockType::Details) return;
+    details->open = !details->open;
+    LayoutEngine::UpdateVisibility(details, details->visible);
+    const float y_before = summary->y - scroll_y_;
+    Relayout(false);
+    scroll_y_ = std::clamp(summary->y - y_before, 0.f, MaxScroll());
+    Relayout(true);
+    Invalidate();
+}
+
+// ============================================================================
+// Links & navigation
+// ============================================================================
+
+void Viewer::OpenLink(int link_index) {
+    if (!doc_ || link_index < 0 || static_cast<size_t>(link_index) >= doc_->links.size()) return;
+    const std::wstring url(Trim(doc_->links[static_cast<size_t>(link_index)].url));
+    if (url.empty()) return;
+    if (url[0] == L'#') {
+        JumpToAnchor(url.substr(1));
+        return;
+    }
+    if (StartsWithNoCase(url, L"http://") || StartsWithNoCase(url, L"https://") ||
+        StartsWithNoCase(url, L"mailto:") || StartsWithNoCase(url, L"ftp://") || StartsWithNoCase(url, L"tel:") ||
+        StartsWithNoCase(url, L"xmpp:")) {
+        ShellExecuteW(hwnd_, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return;
+    }
+    if (StartsWithNoCase(url, L"www.")) {
+        ShellExecuteW(hwnd_, L"open", (L"http://" + url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return;
+    }
+    // Local file (relative to the document) with an optional #fragment.
+    std::wstring target = url;
+    std::wstring fragment;
+    const size_t hash = target.find(L'#');
+    if (hash != std::wstring::npos) {
+        fragment = target.substr(hash + 1);
+        target.resize(hash);
+    }
+    bool remote = false;
+    const std::wstring path = ResolveResourceUrl(doc_->base_dir, target, &remote);
+    if (path.empty() || remote || StartsWithNoCase(path, L"data:")) return;  // javascript: etc.
+    NavigateTo(path, fragment);
+}
+
+void Viewer::NavigateTo(const std::wstring& path, const std::wstring& fragment) {
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        MessageBeep(MB_ICONWARNING);
+        SetStatus(std::wstring(Tr(L"File not found: ", L"Файл не найден: ")) + path);
+        return;
+    }
+    if (!(attrs & FILE_ATTRIBUTE_DIRECTORY) && IsMarkdownPath(path)) {
+        history_.push_back(HistoryEntry{path_, scroll_y_});
+        std::vector<HistoryEntry> saved = std::move(history_);
+        Load(path, flags_, true);
+        history_ = std::move(saved);
+        if (!fragment.empty()) JumpToAnchor(fragment);
+        return;
+    }
+    ShellExecuteW(hwnd_, L"open", path.c_str(), nullptr, DirectoryOf(path).c_str(), SW_SHOWNORMAL);
+}
+
+void Viewer::GoBack() {
+    if (history_.empty()) return;
+    HistoryEntry e = history_.back();
+    history_.pop_back();
+    std::vector<HistoryEntry> saved = std::move(history_);
+    Load(e.path, flags_, true);
+    history_ = std::move(saved);
+    ScrollTo(e.scroll, false);
+}
+
+bool Viewer::JumpToAnchor(const std::wstring& fragment) {
+    if (!doc_) return false;
+    if (fragment.empty() || EqualsNoCase(fragment, L"top")) {
+        ScrollTo(0, true);
+        return true;
+    }
+    const Anchor* a = doc_->FindAnchor(fragment);
+    if (!a || !a->block) {
+        MessageBeep(MB_ICONWARNING);
+        return false;
+    }
+    // Open collapsed <details> around the target.
+    bool changed = false;
+    for (Block* p = a->block->parent; p; p = p->parent) {
+        if (p->type == BlockType::Details && !p->open) {
+            p->open = true;
+            changed = true;
+        }
+    }
+    if (changed) {
+        LayoutEngine::UpdateVisibility(doc_->root, true);
+        Relayout(false);
+    }
+    // Lay out around the target exactly, then scroll to it.
+    Block* target = a->block;
+    scroll_y_ = std::clamp(target->y - 8.f, 0.f, MaxScroll());
+    Relayout(false);
+    float y = target->y;
+    if (target->IsLeaf() && a->pos > 0) {
+        if (IDWriteTextLayout* tl = layout_.TextLayout(target)) {
+            DWRITE_HIT_TEST_METRICS m{};
+            FLOAT px, py;
+            if (SUCCEEDED(tl->HitTestTextPosition(a->pos, FALSE, &px, &py, &m))) y = layout_.TextOrigin(target).y + m.top;
+        }
+    }
+    ScrollTo(y - layout_.metrics().em * 0.5f, false);
+    Relayout(true);
+    Invalidate();
+    return true;
+}
+
+// ============================================================================
+// Selection & clipboard
+// ============================================================================
+
+std::wstring Viewer::TextInRange(uint32_t a, uint32_t b) const {
+    std::wstring out;
+    if (!doc_ || b <= a) return out;
+    const Block* prev = nullptr;
+    for (const Block* leaf : doc_->leaves) {
+        if (leaf->text_end() < a) continue;
+        if (leaf->text_start >= b) break;
+        if (!leaf->visible) continue;
+        if (prev) {
+            const bool same_row = prev->parent && leaf->parent && prev->parent->parent &&
+                                  prev->parent->type == BlockType::TableCell && leaf->parent->type == BlockType::TableCell &&
+                                  prev->parent->parent == leaf->parent->parent;
+            out += same_row ? L"\t" : L"\r\n";
+        }
+        const uint32_t s0 = std::max(a, leaf->text_start) - leaf->text_start;
+        const uint32_t s1 = std::min<uint32_t>(b, leaf->text_end()) - leaf->text_start;
+        for (uint32_t i = s0; i < s1 && i < leaf->text.size(); ++i) {
+            const wchar_t c = leaf->text[i];
+            if (c == 0xFFFC) {
+                for (const InlineObject& o : leaf->objects) {
+                    if (o.pos == i && o.image >= 0) out += doc_->images[static_cast<size_t>(o.image)].alt;
+                }
+            } else if (c == 0x2028 || c == L'\n') {
+                out += L"\r\n";
+            } else if (c != 0x200B) {
+                out.push_back(c);
+            }
+        }
+        prev = leaf;
+    }
+    return out;
+}
+
+void Viewer::CopySelection() {
+    if (selection_.end <= selection_.start) return;
+    CopyTextToClipboard(hwnd_, TextInRange(selection_.start, selection_.end));
+}
+
+void Viewer::CopyCode(Block* code) {
+    std::wstring text;
+    for (wchar_t c : code->text) {
+        if (c == L'\n') text += L"\r\n";
+        else text.push_back(c);
+    }
+    CopyTextToClipboard(hwnd_, text);
+    copied_block_ = code;
+    SetTimer(hwnd_, kTimerCopied, 1500, nullptr);
+    Invalidate();
+}
+
+void Viewer::SetZoom(int percent) {
+    percent = std::clamp(percent, 30, 400);
+    if (percent == zoom_percent_) return;
+    zoom_percent_ = percent;
+    GlobalSettings().zoom_percent = percent;
+    SaveSettings();
+    ApplySettings(true);
+    SetStatus(std::wstring(Tr(L"Zoom: ", L"Масштаб: ")) + std::to_wstring(percent) + L"%");
+    SetTimer(hwnd_, kTimerCopied, 1200, nullptr);
+}
+
+// ============================================================================
+// Search (ListSearchText)
+// ============================================================================
+
+bool Viewer::Search(const std::wstring& text, int flags) {
+    if (!doc_ || text.empty()) return false;
+    const bool match_case = (flags & lcs_matchcase) != 0;
+    const bool whole = (flags & lcs_wholewords) != 0;
+    const bool backwards = (flags & lcs_backwards) != 0;
+    const std::wstring global = doc_->GlobalText();
+    if (!match_case && !folded_valid_) {
+        folded_text_ = ToLower(global);
+        if (folded_text_.size() != global.size()) folded_text_ = global;  // length-changing folds: fall back
+        folded_valid_ = true;
+    }
+    const std::wstring& hay = match_case ? global : folded_text_;
+    const std::wstring needle = match_case ? text : ToLower(text);
+    if (needle.size() > hay.size()) return false;
+
+    auto is_match = [&](size_t pos) {
+        if (hay.compare(pos, needle.size(), needle) != 0) return false;
+        if (!whole) return true;
+        const bool left_ok = pos == 0 || !IsWordChar(global[pos - 1]);
+        const size_t end = pos + needle.size();
+        const bool right_ok = end >= global.size() || !IsWordChar(global[end]);
+        return left_ok && right_ok;
+    };
+
+    // All matches (for highlighting), capped.
+    const bool new_query = text != search_text_ || (flags & lcs_findfirst);
+    if (new_query) {
+        hits_.clear();
+        for (size_t pos = hay.find(needle); pos != std::wstring::npos && hits_.size() < 20000;
+             pos = hay.find(needle, pos + 1)) {
+            if (is_match(pos)) hits_.push_back(TextRange{static_cast<uint32_t>(pos), static_cast<uint32_t>(pos + needle.size())});
+        }
+        search_text_ = text;
+    }
+    if (hits_.empty()) {
+        current_hit_ = -1;
+        Invalidate();
+        return false;
+    }
+
+    // Starting point.
+    uint32_t from;
+    if (flags & lcs_findfirst) {
+        Block* first = LeafAtY(scroll_y_);
+        from = first ? first->text_start : 0;
+        if (backwards) from = selection_.start;
+    } else {
+        from = backwards ? selection_.start : (selection_.end > selection_.start ? selection_.start + 1 : selection_.end);
+    }
+    int found = -1;
+    if (!backwards) {
+        auto it = std::lower_bound(hits_.begin(), hits_.end(), from,
+                                   [](const TextRange& r, uint32_t p) { return r.start < p; });
+        if (it != hits_.end()) found = static_cast<int>(it - hits_.begin());
+    } else {
+        auto it = std::lower_bound(hits_.begin(), hits_.end(), from,
+                                   [](const TextRange& r, uint32_t p) { return r.start < p; });
+        if (it != hits_.begin()) found = static_cast<int>(it - hits_.begin()) - 1;
+    }
+    if (found < 0) {
+        Invalidate();
+        return false;
+    }
+    current_hit_ = found;
+    const TextRange hit = hits_[static_cast<size_t>(found)];
+    selection_ = hit;
+    anchor_ = hit.start;
+    Block* leaf = doc_->LeafAt(hit.start);
+    if (leaf) {
+        bool opened = false;
+        for (Block* p = leaf->parent; p; p = p->parent) {
+            if (p->type == BlockType::Details && !p->open) {
+                p->open = true;
+                opened = true;
+            }
+        }
+        if (opened) {
+            LayoutEngine::UpdateVisibility(doc_->root, true);
+            Relayout(true);
+        }
+        // Horizontal scroll inside wide code blocks / tables.
+        for (Block* p = leaf; p; p = p->parent) {
+            if (p->content_w > 0) {
+                if (IDWriteTextLayout* tl = layout_.TextLayout(leaf)) {
+                    DWRITE_HIT_TEST_METRICS m{};
+                    FLOAT px, py;
+                    if (SUCCEEDED(tl->HitTestTextPosition(hit.start - leaf->text_start, FALSE, &px, &py, &m))) {
+                        const float x = layout_.TextOrigin(leaf).x + px - p->x;
+                        if (x < p->scroll_x || x > p->scroll_x + p->w - 40.f) {
+                            p->scroll_x = std::clamp(x - p->w * 0.3f, 0.f, p->content_w - p->w);
+                        }
+                    }
+                }
+            }
+        }
+        ScrollIntoView(leaf, hit.start - leaf->text_start, true);
+    }
+    Invalidate();
+    return true;
+}
+
+// ============================================================================
+// Commands from Total Commander
+// ============================================================================
+
+bool Viewer::Command(int command, int parameter) {
+    switch (command) {
+    case lc_copy:
+        CopySelection();
+        return true;
+    case lc_selectall:
+        if (doc_ && !doc_->leaves.empty()) {
+            selection_ = TextRange{0, doc_->text_length};
+            anchor_ = 0;
+            Invalidate();
+        }
+        return true;
+    case lc_setpercent:
+        ScrollTo(MaxScroll() * static_cast<float>(std::clamp(parameter, 0, 100)) / 100.f, false);
+        return true;
+    case lc_newparams:
+        flags_ = parameter;
+        ApplySettings(true);
+        return true;
+    default:
+        return false;
+    }
+}
+
+// ============================================================================
+// Context menu
+// ============================================================================
+
+void Viewer::OnContextMenu(int sx, int sy) {
+    POINT pt{sx, sy};
+    if (sx == -1 && sy == -1) {
+        pt = POINT{20, 20};
+        ClientToScreen(hwnd_, &pt);
+    }
+    POINT cp = pt;
+    ScreenToClient(hwnd_, &cp);
+    const Hit hit = HitTest(cp.x / Scale(), cp.y / Scale() + scroll_y_);
+    const Settings& s = GlobalSettings();
+
+    HMENU menu = CreatePopupMenu();
+    HMENU theme = CreatePopupMenu();
+    const bool has_sel = selection_.end > selection_.start;
+    AppendMenuW(menu, MF_STRING | (has_sel ? 0 : MF_GRAYED), kMenuCopy, Tr(L"&Copy\tCtrl+C", L"&Копировать\tCtrl+C"));
+    if (hit.link >= 0) {
+        AppendMenuW(menu, MF_STRING, kMenuOpenLink, Tr(L"&Open link", L"&Открыть ссылку"));
+        AppendMenuW(menu, MF_STRING, kMenuCopyLink, Tr(L"Copy &link address", L"Копировать &адрес ссылки"));
+    }
+    if (hit.image >= 0) AppendMenuW(menu, MF_STRING, kMenuCopyImage, Tr(L"Copy &image address", L"Копировать адрес &изображения"));
+    if (hit.code) AppendMenuW(menu, MF_STRING, kMenuCopyCode, Tr(L"Copy co&de block", L"Копировать &блок кода"));
+    AppendMenuW(menu, MF_STRING, kMenuSelectAll, Tr(L"Select &all\tCtrl+A", L"Выделить &всё\tCtrl+A"));
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    if (!history_.empty()) AppendMenuW(menu, MF_STRING, kMenuBack, Tr(L"&Back\tBackspace", L"&Назад\tBackspace"));
+    AppendMenuW(menu, MF_STRING, kMenuZoomIn, Tr(L"Zoom &in\tCtrl++", L"&Увеличить\tCtrl++"));
+    AppendMenuW(menu, MF_STRING, kMenuZoomOut, Tr(L"Zoom &out\tCtrl+-", L"У&меньшить\tCtrl+-"));
+    AppendMenuW(menu, MF_STRING | (zoom_percent_ == 100 ? MF_GRAYED : 0), kMenuZoomReset,
+                Tr(L"&Reset zoom\tCtrl+0", L"&Сбросить масштаб\tCtrl+0"));
+    AppendMenuW(theme, MF_STRING | (s.theme == ThemeMode::Auto ? MF_CHECKED : 0), kMenuThemeAuto,
+                Tr(L"&Automatic", L"&Автоматически"));
+    AppendMenuW(theme, MF_STRING | (s.theme == ThemeMode::Light ? MF_CHECKED : 0), kMenuThemeLight, Tr(L"&Light", L"&Светлая"));
+    AppendMenuW(theme, MF_STRING | (s.theme == ThemeMode::Dark ? MF_CHECKED : 0), kMenuThemeDark, Tr(L"&Dark", L"&Тёмная"));
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(theme), Tr(L"&Theme", L"&Тема"));
+    AppendMenuW(menu, MF_STRING | (layout_.config().wrap_code ? MF_CHECKED : 0), kMenuWrap,
+                Tr(L"&Wrap long code lines", L"&Переносить длинные строки кода"));
+    AppendMenuW(menu, MF_STRING | (s.max_width == 0 ? MF_CHECKED : 0), kMenuFullWidth,
+                Tr(L"&Full-width text", L"Текст на всю &ширину"));
+    AppendMenuW(menu, MF_STRING | (s.remote_images ? MF_CHECKED : 0), kMenuRemote,
+                Tr(L"Load &remote images", L"Загружать &изображения из сети"));
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kMenuReload, Tr(L"Re&load\tF5", L"Пере&загрузить\tF5"));
+    AppendMenuW(menu, MF_STRING, kMenuOpenExternal, Tr(L"Open in default &editor", L"Открыть в &редакторе"));
+    AppendMenuW(menu, MF_STRING, kMenuAbout, L"mdview " MDVIEW_VERSION L"…");
+
+    const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
+    DestroyMenu(menu);
+    Settings& ws = GlobalSettings();
+    switch (cmd) {
+    case kMenuCopy: CopySelection(); break;
+    case kMenuOpenLink: OpenLink(hit.link); break;
+    case kMenuCopyLink:
+        if (doc_ && hit.link >= 0) CopyTextToClipboard(hwnd_, doc_->links[static_cast<size_t>(hit.link)].url);
+        break;
+    case kMenuCopyImage: CopyTextToClipboard(hwnd_, images_.ResolvedUrl(hit.image)); break;
+    case kMenuCopyCode: if (hit.code) CopyCode(hit.code); break;
+    case kMenuSelectAll: Command(lc_selectall, 0); break;
+    case kMenuBack: GoBack(); break;
+    case kMenuZoomIn: SetZoom(zoom_percent_ + 10); break;
+    case kMenuZoomOut: SetZoom(zoom_percent_ - 10); break;
+    case kMenuZoomReset: SetZoom(100); break;
+    case kMenuThemeAuto: ws.theme = ThemeMode::Auto; SaveSettings(); ApplySettings(true); break;
+    case kMenuThemeLight: ws.theme = ThemeMode::Light; SaveSettings(); ApplySettings(true); break;
+    case kMenuThemeDark: ws.theme = ThemeMode::Dark; SaveSettings(); ApplySettings(true); break;
+    case kMenuWrap:
+        ws.wrap_code = layout_.config().wrap_code ? 0 : 1;
+        SaveSettings();
+        ApplySettings(true);
+        break;
+    case kMenuFullWidth:
+        ws.max_width = ws.max_width == 0 ? Settings{}.max_width : 0;
+        SaveSettings();
+        ApplySettings(true);
+        break;
+    case kMenuRemote:
+        ws.remote_images = !ws.remote_images;
+        SaveSettings();
+        if (!path_.empty()) {
+            const float y = scroll_y_;
+            Load(path_, flags_, true);
+            ScrollTo(y, false);
+        }
+        break;
+    case kMenuReload:
+        if (!path_.empty()) {
+            const float y = scroll_y_;
+            Load(path_, flags_, true);
+            ScrollTo(y, false);
+        }
+        break;
+    case kMenuOpenExternal:
+        if (!path_.empty()) ShellExecuteW(hwnd_, L"edit", path_.c_str(), nullptr, nullptr, SW_SHOWNORMAL) ;
+        break;
+    case kMenuAbout: {
+        const std::wstring text = std::wstring(L"mdview " MDVIEW_VERSION L"\n\n") +
+                                  Tr(L"GitHub Flavored Markdown viewer for Total Commander.",
+                                     L"Просмотр GitHub Flavored Markdown для Total Commander.") +
+                                  L"\nDirect2D + DirectWrite, md4c.\n\n" + Tr(L"Settings: ", L"Настройки: ") +
+                                  SettingsPath();
+        MessageBoxW(hwnd_, text.c_str(), L"mdview", MB_OK | MB_ICONINFORMATION);
+        break;
+    }
+    default: break;
+    }
+}
+
+// ============================================================================
+// Timers & window procedure
+// ============================================================================
+
+void Viewer::OnTimer(UINT_PTR id) {
+    switch (id) {
+    case kTimerRefine: {
+        if (!doc_ || !layout_.HasEstimates()) {
+            KillTimer(hwnd_, kTimerRefine);
+            return;
+        }
+        if (mouse_down_ || anim_) return;  // don't disturb interaction
+        if (layout_.Refine(6.0)) {
+            const float old_max = MaxScroll();
+            Relayout(true);
+            if (std::fabs(old_max - MaxScroll()) > 0.5f) Invalidate();
+        }
+        if (!layout_.HasEstimates()) KillTimer(hwnd_, kTimerRefine);
+        break;
+    }
+    case kTimerCopied:
+        KillTimer(hwnd_, kTimerCopied);
+        copied_block_ = nullptr;
+        if (hover_link_ < 0) SetStatus(L"");
+        Invalidate();
+        break;
+    case kTimerAutoScroll: {
+        const float y = last_mouse_.y / Scale();
+        const float vh = ViewHeight();
+        const float d = y < 0 ? y : (y > vh ? y - vh : 0.f);
+        if (d == 0) {
+            KillTimer(hwnd_, kTimerAutoScroll);
+            return;
+        }
+        ScrollTo(scroll_y_ + d * 0.5f, false);
+        OnMouseMove(last_mouse_.x, last_mouse_.y);
+        break;
+    }
+    case kTimerRepeat: {
+        SetTimer(hwnd_, kTimerRepeat, 60, nullptr);
+        POINT pt;
+        GetCursorPos(&pt);
+        ScreenToClient(hwnd_, &pt);
+        const D2D1_RECT_F thumb = ScrollbarThumb();
+        const float y = pt.y / Scale();
+        if ((repeat_dir_ < 0 && y < thumb.top) || (repeat_dir_ > 0 && y > thumb.bottom)) {
+            ScrollBy(repeat_dir_ * (ViewHeight() - LineStep()), false);
+        }
+        break;
+    }
+    default: break;
+    }
+}
+
+LRESULT CALLBACK Viewer::StaticProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    Viewer* self = reinterpret_cast<Viewer*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (msg == WM_NCCREATE) {
+        self = static_cast<Viewer*>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+        self->hwnd_ = hwnd;
+    }
+    if (!self) return DefWindowProcW(hwnd, msg, wp, lp);
+    if (msg == WM_NCDESTROY) {
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        const LRESULT r = DefWindowProcW(hwnd, msg, wp, lp);
+        delete self;
+        return r;
+    }
+    try {
+        return self->Proc(msg, wp, lp);
+    } catch (...) {
+        // Never let an exception cross into Total Commander.
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+}
+
+LRESULT Viewer::Proc(UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == ImageLoadedMessage()) {
+        if (images_.CompletePending()) {
+            layout_.InvalidateMeasurements();
+            Relayout(true);
+        }
+        Invalidate();
+        return 0;
+    }
+    switch (msg) {
+    case WM_PAINT:
+        OnPaint();
+        return 0;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_SIZE:
+        if (rt_) {
+            RECT rc{};
+            GetClientRect(hwnd_, &rc);
+            rt_->Resize(D2D1::SizeU(std::max<LONG>(rc.right, 1), std::max<LONG>(rc.bottom, 1)));
+        }
+        if (doc_ && layout_.laid_out() && std::fabs(laid_out_width_ - ViewWidth()) > 0.01f) {
+            Relayout(true);
+        } else {
+            scroll_y_ = std::clamp(scroll_y_, 0.f, MaxScroll());
+        }
+        UpdatePercent();
+        Invalidate();
+        return 0;
+    case WM_DPICHANGED_AFTERPARENT: {
+        const ScrollAnchor a = CaptureAnchor();
+        dpi_ = GetDpiForWindow(hwnd_);
+        if (rt_) rt_->SetDpi(static_cast<float>(dpi_), static_cast<float>(dpi_));
+        Relayout(false);
+        RestoreAnchor(a);
+        Invalidate();
+        return 0;
+    }
+    case WM_MOUSEWHEEL:
+        OnMouseWheel(GET_WHEEL_DELTA_WPARAM(wp), false);
+        return 0;
+    case WM_MOUSEHWHEEL:
+        OnMouseWheel(GET_WHEEL_DELTA_WPARAM(wp), true);
+        return 0;
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+        if (msg == WM_SYSKEYDOWN && wp != VK_LEFT) break;
+        OnKeyDown(wp);
+        return 0;
+    case WM_LBUTTONDOWN:
+        OnLButtonDown(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), false);
+        return 0;
+    case WM_LBUTTONDBLCLK:
+        OnLButtonDown(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), true);
+        return 0;
+    case WM_LBUTTONUP:
+        OnLButtonUp(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+        return 0;
+    case WM_MOUSEMOVE:
+        OnMouseMove(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+        return 0;
+    case WM_MOUSELEAVE:
+        tracking_mouse_ = false;
+        if (!mouse_down_) {
+            hover_block_ = nullptr;
+            copy_hover_ = false;
+            scrollbar_hover_ = false;
+            SetHoverLink(nullptr, -1);
+            Invalidate();
+        }
+        return 0;
+    case WM_CAPTURECHANGED:
+        if (reinterpret_cast<HWND>(lp) != hwnd_) {
+            mouse_down_ = false;
+            selecting_ = false;
+            thumb_drag_ = false;
+            hscroll_drag_ = nullptr;
+            KillTimer(hwnd_, kTimerAutoScroll);
+            KillTimer(hwnd_, kTimerRepeat);
+        }
+        return 0;
+    case WM_SETCURSOR:
+        if (LOWORD(lp) == HTCLIENT) {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd_, &pt);
+            LPCWSTR cursor = IDC_ARROW;
+            if (!(MaxScroll() > 0.5f && pt.x / Scale() >= ViewWidth() - 16.f)) {
+                const Hit hit = HitTest(pt.x / Scale(), pt.y / Scale() + scroll_y_);
+                if (hit.link >= 0 || hit.summary || copy_hover_) cursor = IDC_HAND;
+                else if (hit.on_text) cursor = IDC_IBEAM;
+            }
+            SetCursor(LoadCursorW(nullptr, cursor));
+            return TRUE;
+        }
+        break;
+    case WM_CONTEXTMENU:
+        OnContextMenu(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+        return 0;
+    case WM_TIMER:
+        OnTimer(wp);
+        return 0;
+    case WM_SETFOCUS:
+        if (parent_) PostMessageW(parent_, WM_COMMAND, MAKEWPARAM(0, itm_focus), reinterpret_cast<LPARAM>(hwnd_));
+        Invalidate();
+        return 0;
+    case WM_KILLFOCUS:
+        Invalidate();
+        return 0;
+    case WM_GETDLGCODE:
+        return DLGC_WANTARROWS | DLGC_WANTCHARS;
+    case WM_SETTINGCHANGE:
+        if (GlobalSettings().theme == ThemeMode::Auto && !Host().tc_reports_dark_mode()) ApplySettings(true);
+        break;
+    default:
+        break;
+    }
+    return DefWindowProcW(hwnd_, msg, wp, lp);
+}
+
+bool Viewer::Print(const wchar_t* /*printer*/, const RECT* /*margins*/) { return false; }
+
+// ============================================================================
+// Public API
+// ============================================================================
+
+HWND CreateViewer(HWND parent, const wchar_t* path, int show_flags) {
+    auto viewer = std::make_unique<Viewer>();
+    if (!viewer->Create(parent, show_flags)) {
+        if (HWND h = viewer->hwnd()) {
+            DestroyWindow(h);  // WM_NCDESTROY deletes the viewer
+            viewer.release();
+        }
+        return nullptr;
+    }
+    Viewer* v = viewer.release();  // owned by the window from now on
+    HWND hwnd = v->hwnd();
+    v->Load(path, show_flags);
+    return hwnd;
+}
+
+Viewer* ViewerFromHwnd(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) return nullptr;
+    wchar_t cls[64] = {};
+    GetClassNameW(hwnd, cls, static_cast<int>(std::size(cls)));
+    if (wcscmp(cls, kClassName) != 0) return nullptr;
+    return reinterpret_cast<Viewer*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+}
+
+bool ViewerLoadFile(HWND hwnd, const wchar_t* path, int show_flags) {
+    Viewer* v = ViewerFromHwnd(hwnd);
+    return v && v->Load(path, show_flags);
+}
+
+bool ViewerSearch(HWND hwnd, const wchar_t* text, int flags) {
+    Viewer* v = ViewerFromHwnd(hwnd);
+    return v && v->Search(text ? text : L"", flags);
+}
+
+bool ViewerCommand(HWND hwnd, int command, int parameter) {
+    Viewer* v = ViewerFromHwnd(hwnd);
+    return v && v->Command(command, parameter);
+}
+
+bool ViewerPrint(HWND hwnd, const wchar_t* printer, const RECT* margins) {
+    Viewer* v = ViewerFromHwnd(hwnd);
+    return v && v->Print(printer, margins);
+}
+
+}  // namespace mdv

@@ -70,3 +70,8 @@ Testing/
 
 # custom
 .vs/
+
+# build output
+out/
+dist/
+__pycache__/

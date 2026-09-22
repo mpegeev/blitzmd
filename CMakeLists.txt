@@ -1,88 +1,88 @@
-cmake_minimum_required(VERSION 3.28)
+cmake_minimum_required(VERSION 3.25)
 
-# Static CRT — должно быть до project() и до FetchContent.
+# Static CRT: the plugin must not depend on any VC++ redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(mdview-wlx LANGUAGES C CXX)
+project(mdview-wlx VERSION 1.0.0 LANGUAGES C CXX RC)
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# CMake по умолчанию подсовывает /W3 для C/C++. Удаляем перед FetchContent,
-# чтобы /w на md4c не выдавал D9025 "overriding /W3 with /w".
-# Свои warning-флаги мы выставим явно ниже на нашем target.
-if(MSVC)
-    foreach(flag_var
-            CMAKE_C_FLAGS CMAKE_CXX_FLAGS
-            CMAKE_C_FLAGS_DEBUG CMAKE_CXX_FLAGS_DEBUG
-            CMAKE_C_FLAGS_RELEASE CMAKE_CXX_FLAGS_RELEASE)
-        string(REGEX REPLACE "/W[0-4]" "" ${flag_var} "${${flag_var}}")
-    endforeach()
+if(NOT MSVC)
+    message(FATAL_ERROR "mdview is a Windows plugin and is built with MSVC.")
 endif()
 
-# ---- md4c via FetchContent --------------------------------------------------
-include(FetchContent)
-set(BUILD_MD2HTML_EXECUTABLE OFF CACHE BOOL "" FORCE)
-set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-    md4c
-    GIT_REPOSITORY https://github.com/mity/md4c.git
-    GIT_TAG release-0.5.2
-)
-FetchContent_MakeAvailable(md4c)
-
-if(TARGET md4c)
-    target_include_directories(md4c PUBLIC
-        $<BUILD_INTERFACE:${md4c_SOURCE_DIR}/src>)
-    if(MSVC)
-        target_compile_options(md4c PRIVATE /w)
+# CMake adds /W3 by default; we set warning levels per target.
+foreach(flag_var CMAKE_C_FLAGS CMAKE_CXX_FLAGS)
+    string(REGEX REPLACE "/W[0-4]" "" ${flag_var} "${${flag_var}}")
+endforeach()
+# Favor small, fast code in Release: whole-program optimization + COMDAT folding.
+string(APPEND CMAKE_C_FLAGS_RELEASE " /Gy /Gw /GL")
+string(APPEND CMAKE_CXX_FLAGS_RELEASE " /Gy /Gw /GL")
+foreach(kind SHARED EXE STATIC)
+    if(kind STREQUAL "STATIC")
+        string(APPEND CMAKE_${kind}_LINKER_FLAGS_RELEASE " /LTCG")
+    else()
+        string(APPEND CMAKE_${kind}_LINKER_FLAGS_RELEASE " /LTCG /OPT:REF /OPT:ICF")
     endif()
-endif()
+endforeach()
 
-# ---- our plugin -------------------------------------------------------------
-add_library(mdview SHARED
-    src/plugin.cpp
-    src/plugin.def
+# ---- md4c (vendored, see third_party/md4c/VERSION.txt) ----------------------
+add_library(md4c STATIC
+    third_party/md4c/md4c.c
+    third_party/md4c/entity.c
 )
+target_include_directories(md4c PUBLIC third_party/md4c)
+target_compile_options(md4c PRIVATE /w /utf-8)
 
+# md4c's own HTML renderer; only used by the test tool as a reference.
+add_library(md4c_html STATIC third_party/md4c/md4c-html.c)
+target_link_libraries(md4c_html PUBLIC md4c)
+target_compile_options(md4c_html PRIVATE /w /utf-8)
+
+# ---- core: parsing, layout and rendering (shared by plugin and tests) -------
+set(MDVIEW_HIGHLIGHT_SOURCE src/core/highlight.cpp CACHE FILEPATH "Syntax highlighter implementation")
+add_library(mdview_core STATIC
+    src/core/util.cpp
+    src/core/document.cpp
+    src/core/html.cpp
+    src/core/parser.cpp
+    ${MDVIEW_HIGHLIGHT_SOURCE}
+    src/core/emoji.cpp
+    src/core/theme.cpp
+    src/core/settings.cpp
+    src/core/images.cpp
+    src/core/svg.cpp
+    src/core/layout.cpp
+    src/core/render.cpp
+    src/core/icons.cpp
+    src/core/viewer.cpp
+    src/core/offscreen.cpp
+)
+target_include_directories(mdview_core PUBLIC src)
+target_link_libraries(mdview_core PUBLIC md4c
+    d2d1 dwrite windowscodecs winhttp shlwapi uxtheme comctl32 shell32 ole32 oleaut32 user32 gdi32)
+
+set(MDVIEW_CXX_OPTIONS /W4 /permissive- /utf-8 /Zc:__cplusplus /Zc:inline /EHsc /GR- /MP)
+set(MDVIEW_DEFINITIONS UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00
+    MDVIEW_VERSION="${PROJECT_VERSION}")
+target_compile_options(mdview_core PRIVATE ${MDVIEW_CXX_OPTIONS})
+target_compile_definitions(mdview_core PUBLIC ${MDVIEW_DEFINITIONS})
+
+# ---- the Lister plugin DLL --------------------------------------------------
+add_library(mdview SHARED src/plugin.cpp src/plugin.def src/plugin.rc)
+target_link_libraries(mdview PRIVATE mdview_core)
+target_compile_options(mdview PRIVATE ${MDVIEW_CXX_OPTIONS})
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set_target_properties(mdview PROPERTIES SUFFIX ".wlx64" PREFIX "")
+    set_target_properties(mdview PROPERTIES PREFIX "" SUFFIX ".wlx64")
 else()
-    set_target_properties(mdview PROPERTIES SUFFIX ".wlx" PREFIX "")
+    set_target_properties(mdview PROPERTIES PREFIX "" SUFFIX ".wlx")
 endif()
 
-target_link_libraries(mdview PRIVATE comctl32 md4c)
-
-if(MSVC)
-    target_compile_options(mdview PRIVATE
-        /W4 /permissive-
-        /std:c++latest
-        /Zc:preprocessor
-        /utf-8
-    )
-    target_compile_definitions(mdview PRIVATE
-        UNICODE _UNICODE
-        WIN32_LEAN_AND_MEAN
-        NOMINMAX
-        _CRT_SECURE_NO_WARNINGS
-    )
-endif()
-
-# ---- Packaging --------------------------------------------------------------
-# After every build, package the plugin into mdview.zip alongside the .wlx64.
-# To install in TC: open the zip via TC and press Enter. TC reads pluginst.inf
-# inside and offers one-click install (copies into TC's plugins dir and
-# registers in wincmd.ini).
-add_custom_command(TARGET mdview POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${CMAKE_SOURCE_DIR}/pluginst.inf
-        $<TARGET_FILE_DIR:mdview>/pluginst.inf
-    COMMAND ${CMAKE_COMMAND} -E tar c
-        mdview.zip --format=zip --
-        $<TARGET_FILE_NAME:mdview>
-        pluginst.inf
-    WORKING_DIRECTORY $<TARGET_FILE_DIR:mdview>
-    COMMENT "Packaging mdview.zip for TC install"
-    VERBATIM
-)
+# ---- test tool: spec conformance, PNG rendering, benchmarks -----------------
+add_executable(mdview_test tests/mdview_test.cpp tests/spec_runner.cpp tests/html_dump.cpp)
+target_link_libraries(mdview_test PRIVATE mdview_core md4c_html)
+target_compile_options(mdview_test PRIVATE ${MDVIEW_CXX_OPTIONS})
+set_target_properties(mdview_test PROPERTIES LINK_FLAGS "/SUBSYSTEM:CONSOLE")

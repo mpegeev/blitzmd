@@ -1,8 +1,18 @@
-; Force clean exported names. Without this, MSVC may emit decorated
-; names like _ListLoad@12 (x86) which TC won't find.
-LIBRARY mdview
+; Undecorated export names for Total Commander (x86 would otherwise export
+; _ListLoad@12 etc.).
+LIBRARY
 EXPORTS
     ListGetDetectString
+    ListSetDefaultParams
     ListLoad
     ListLoadW
+    ListLoadNext
+    ListLoadNextW
     ListCloseWindow
+    ListSearchText
+    ListSearchTextW
+    ListSendCommand
+    ListPrint
+    ListPrintW
+    ListGetPreviewBitmap
+    ListGetPreviewBitmapW

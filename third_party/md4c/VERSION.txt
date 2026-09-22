@@ -1,0 +1,15 @@
+md4c v0.6.0 (commit 7fc1815a5eeba2af7d6120a76202bf59f3b6e6e4)
+https://github.com/mity/md4c — MIT license, see LICENSE.md
+
+Local patches (search md4c.c for "mdview patch"), all aimed at matching
+github.com (cmark-gfm) output:
+
+1. Tables: the header row may be the last line of a paragraph (the paragraph
+   is split), and a table is only recognized if the header row has the same
+   number of cells as the delimiter row (GFM spec).
+2. Footnote references inside table cells were counted twice (once while the
+   row was scanned for cell boundaries), producing duplicate back-references.
+3. Extended (permissive) URL/WWW autolinks follow the GFM "extended autolink
+   path" rules: the path runs up to whitespace or '<', then trailing
+   punctuation (?!.,:*_~), unbalanced ')' and a trailing entity-like "&x;"
+   are excluded.
