@@ -177,7 +177,8 @@ private:
     ComPtr<IDWriteTextLayout> BuildTextLayout(Block* b, const LeafStyle& st, float width);
     IDWriteTextFormat* Format(const std::wstring& family, float size, uint16_t weight, bool italic);
     float LineHeightFactor(const std::wstring& family, float css_line_height);
-    void ApplyLineSpacing(IDWriteTextLayout* layout, const std::wstring& family, float size,
+    // Returns the factor by which lines (and inline objects) get scaled.
+    float ApplyLineSpacing(IDWriteTextLayout* layout, const std::wstring& family, float size,
                           float css_line_height);
     const std::wstring& MonoFamily() const { return mono_family_; }
     float FirstBaseline(Block* b) const;

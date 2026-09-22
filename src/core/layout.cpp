@@ -70,24 +70,28 @@ private:
     LONG ref_ = 1;
 };
 
+// An image sitting on the baseline. Proportional line spacing scales every
+// line by `spacing`, inline objects included, which would add leading above
+// tall images (CSS doesn't); the reported size is pre-divided to cancel it.
 class ImageObject final : public InlineObjectBase {
 public:
-    ImageObject(LayoutEngine* engine, int index, float w, float h, float em)
-        : engine_(engine), index_(index), w_(w), h_(h), em_(em) {}
+    ImageObject(LayoutEngine* engine, int index, float w, float h, float em, float spacing)
+        : engine_(engine), index_(index), w_(w), h_(h), em_(em), reported_h_(h / std::max(spacing, 0.5f)) {}
 
     HRESULT STDMETHODCALLTYPE Draw(void*, IDWriteTextRenderer*, FLOAT x, FLOAT y, BOOL, BOOL,
                                    IUnknown*) override {
         DrawContext& dc = engine_->draw_context();
         if (dc.rt && dc.images && w_ > 0 && h_ > 0) {
-            dc.images->Draw(dc.rt, index_, D2D1::RectF(x, y, x + w_, y + h_), dc.palette,
+            const float top = y + reported_h_ - h_;  // y is baseline - reported height
+            dc.images->Draw(dc.rt, index_, D2D1::RectF(x, top, x + w_, top + h_), dc.palette,
                             engine_->dwrite(), em_);
         }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetMetrics(DWRITE_INLINE_OBJECT_METRICS* m) override {
         m->width = w_;
-        m->height = h_;
-        m->baseline = h_;
+        m->height = reported_h_;
+        m->baseline = reported_h_;
         m->supportsSideways = FALSE;
         return S_OK;
     }
@@ -95,7 +99,7 @@ public:
 private:
     LayoutEngine* engine_;
     int index_;
-    float w_, h_, em_;
+    float w_, h_, em_, reported_h_;
 };
 
 // Superscript / subscript text: drawn as a small text layout shifted
@@ -277,8 +281,8 @@ float LayoutEngine::LineHeightFactor(const std::wstring& family, float css_line_
     return css_line_height / std::max(natural, 0.5f);
 }
 
-void LayoutEngine::ApplyLineSpacing(IDWriteTextLayout* layout, const std::wstring& family, float size,
-                                    float css_line_height) {
+float LayoutEngine::ApplyLineSpacing(IDWriteTextLayout* layout, const std::wstring& family, float size,
+                                     float css_line_height) {
     ComPtr<IDWriteTextLayout3> l3;
     if (SUCCEEDED(layout->QueryInterface(IID_PPV_ARGS(&l3)))) {
         DWRITE_LINE_SPACING ls{};
@@ -288,10 +292,11 @@ void LayoutEngine::ApplyLineSpacing(IDWriteTextLayout* layout, const std::wstrin
         ls.leadingBefore = 0.5f;
         ls.fontLineGapUsage = DWRITE_FONT_LINE_GAP_USAGE_ENABLED;
         l3->SetLineSpacing(&ls);
-    } else {
-        layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, size * css_line_height,
-                               size * (css_line_height * 0.5f + 0.42f));
+        return ls.height;
     }
+    layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, size * css_line_height,
+                           size * (css_line_height * 0.5f + 0.42f));
+    return 1.f;
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +377,7 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         break;
     default: break;
     }
-    ApplyLineSpacing(layout.Get(), family, st.size, st.line_height);
+    const float spacing = ApplyLineSpacing(layout.Get(), family, st.size, st.line_height);
     if (st.mono) layout->SetIncrementalTabStop(st.size * 0.6f * 4.f);
 
     ComPtr<IDWriteTextLayout1> l1;
@@ -487,7 +492,7 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         if (o.image < 0 || o.pos >= len || text[o.pos] != kObjectChar) continue;
         D2D1_SIZE_F sz = D2D1::SizeF(line_h, line_h);
         if (images_) sz = images_->LayoutSize(o.image, width >= kHugeWidth ? 0.f : width, line_h);
-        auto* obj = new ImageObject(this, o.image, sz.width, sz.height, st.size);
+        auto* obj = new ImageObject(this, o.image, sz.width, sz.height, st.size, spacing);
         layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, 1});
         obj->Release();
     }
