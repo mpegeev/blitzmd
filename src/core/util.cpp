@@ -231,6 +231,28 @@ bool ReadFileBytes(const wchar_t* path, std::string& out, uint64_t max_bytes) {
     return ok;
 }
 
+bool ReadFilePrefix(const wchar_t* path, std::string& out, uint64_t max_bytes, uint64_t* total) {
+    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER size{};
+    bool ok = GetFileSizeEx(h, &size) && size.QuadPart >= 0;
+    if (ok) {
+        if (total) *total = static_cast<uint64_t>(size.QuadPart);
+        out.resize(static_cast<size_t>(std::min<uint64_t>(static_cast<uint64_t>(size.QuadPart), max_bytes)));
+        size_t done = 0;
+        while (ok && done < out.size()) {
+            DWORD got = 0;
+            ok = ReadFile(h, out.data() + done, static_cast<DWORD>(std::min<size_t>(out.size() - done, 1u << 30)),
+                          &got, nullptr) && got > 0;
+            done += got;
+        }
+        out.resize(done);
+    }
+    CloseHandle(h);
+    return ok;
+}
+
 namespace {
 
 bool IsValidUtf8(std::string_view s) {

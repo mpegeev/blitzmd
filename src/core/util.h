@@ -55,6 +55,10 @@ std::wstring DirectoryOf(std::wstring_view path);
 // Reads a whole file (up to max_bytes). Returns false on failure/too large.
 bool ReadFileBytes(const wchar_t* path, std::string& out, uint64_t max_bytes);
 
+// Reads at most `max_bytes` from the start of a file; `total` receives the
+// file size. Returns false if the file can't be read.
+bool ReadFilePrefix(const wchar_t* path, std::string& out, uint64_t max_bytes, uint64_t* total);
+
 // Converts raw file bytes to UTF-8: handles UTF-8 (with/without BOM),
 // UTF-16 LE/BE (with BOM, or detected heuristically) and falls back to the
 // ANSI code page for text that is not valid UTF-8.

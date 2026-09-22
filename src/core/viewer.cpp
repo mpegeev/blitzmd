@@ -30,7 +30,7 @@ constexpr UINT_PTR kTimerRefine = 1;
 constexpr UINT_PTR kTimerCopied = 2;
 constexpr UINT_PTR kTimerAutoScroll = 3;
 constexpr UINT_PTR kTimerRepeat = 4;
-constexpr uint64_t kMaxFileBytes = 64ull << 20;
+constexpr uint64_t kMaxFileBytes = 32ull << 20;  // larger files: the beginning is shown
 
 // Shared Direct2D factory for all viewer windows (all live on TC's UI thread).
 struct Shared {
@@ -375,8 +375,21 @@ void Viewer::ApplySettings(bool relayout) {
 bool Viewer::Load(const std::wstring& path, int flags, bool keep_history) {
     std::string bytes;
     std::string utf8;
-    if (ReadFileBytes(path.c_str(), bytes, kMaxFileBytes)) {
+    uint64_t total = 0;
+    if (ReadFilePrefix(path.c_str(), bytes, kMaxFileBytes, &total)) {
+        if (total > bytes.size()) {
+            // Huge file: show the beginning (cut at a line break) with a note.
+            const size_t nl = bytes.rfind('\n');
+            if (nl != std::string::npos && nl > bytes.size() / 2) bytes.resize(nl + 1);
+        }
         utf8 = DecodeTextToUtf8(bytes);
+        if (total > bytes.size()) {
+            const std::wstring note = std::wstring(L"> [!WARNING]\n> ") +
+                                      Tr(L"The file is too large; only the first ", L"Файл слишком большой, показаны первые ") +
+                                      std::to_wstring(bytes.size() >> 20) + Tr(L" MB of ", L" МБ из ") +
+                                      std::to_wstring(total >> 20) + Tr(L" MB are shown.\n\n", L" МБ.\n\n");
+            utf8 = WideToUtf8(note) + utf8;
+        }
     } else {
         utf8 = WideToUtf8(std::wstring(L"# ") + Tr(L"Cannot open file", L"Не удалось открыть файл") + L"\n\n`" +
                           path + L"`\n");
