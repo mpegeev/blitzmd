@@ -21,7 +21,10 @@ struct Settings {
     bool emoji_shortcodes = true;
     bool math = true;
     bool syntax_highlight = true;
-    bool hardware = true;                // GPU rendering (Direct2D hardware RT)
+    // GPU rendering. Off by default: for a document viewer software Direct2D
+    // starts faster (no Direct3D device), uses less memory and still draws a
+    // full window in a few milliseconds.
+    bool hardware = false;
     int wrap_code = -1;                  // -1: follow Lister's wrap option, 0/1 forced
 };
 

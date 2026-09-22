@@ -250,6 +250,18 @@ int main(int argc, char** argv) {
         std::printf("ListLoadW %.1f ms, first paint %.1f ms, working set +%.1f MB\n", t1 - t0, t2 - t1,
                     WorkingSetMb() - m0);
         pump(700);
+        {
+            // Scrolling cost: 30 x PageDown with a synchronous repaint each.
+            const double s0 = NowMs();
+            for (int i = 0; i < 30; ++i) {
+                SendMessageW(viewer, WM_KEYDOWN, VK_NEXT, 0);
+                RedrawWindow(viewer, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+            }
+            const double s1 = NowMs();
+            std::printf("scroll: %.2f ms per page (incl. present)\n", (s1 - s0) / 30.0);
+            SendMessageW(viewer, WM_KEYDOWN, VK_HOME, 0);
+            pump(300);
+        }
         if (query) {
             const int r = search(viewer, Utf8ToWide(query).c_str(), 1);
             std::printf("ListSearchTextW(\"%s\") = %d\n", query, r);
