@@ -31,7 +31,10 @@ autolink `www.` / `https://` / e-mail), изображения, HTML-сущно�
   (курсивные переменные, греческие буквы, индексы и степени, дроби, корни, матрицы).
 - Эмодзи-коды `:rocket:` → 🚀 (полная база GitHub gemoji, 1900+ кодов), цветные эмодзи.
 - Якоря заголовков как на GitHub (`#установка`, дубликаты `-1`, `-2`), переходы по ним.
-- Подсветка синтаксиса в блоках кода для ~100 языков и псевдонимов (цвета GitHub).
+- Подсветка синтаксиса в блоках кода: ~70 языков (250+ названий и расширений: C/C++, C#, Java,
+  Kotlin, Swift, Go, Rust, JS/TS, Python, Ruby, PHP, Lua, SQL, Pascal/Delphi, Bash, PowerShell,
+  bat, HTML/XML, CSS, JSON, YAML, TOML, INI, diff, Dockerfile, Makefile, CMake, ассемблер, LaTeX
+  и другие), цвета как на GitHub.
 - Изображения только для тёмной/светлой темы: `#gh-dark-mode-only`, `<picture><source media>`.
 
 **HTML, который используют README**: `<div align="center">`, `<p align>`, `<h1 align>`,
@@ -142,6 +145,8 @@ $t = "out\build\x64-release\mdview_test.exe"
 & $t bench  samples\gfm\09-large-document.md
 & $t fuzz   2000                            # случайные документы: разбор + разметка + отрисовка
 & $t plugin out\build\x64-release\mdview.wlx64 README.md shot.png "поиск"   # сам DLL, как TC
+out\build\x64-release\highlight_test.exe -q   # подсветка синтаксиса: 1.4 млн проверок, фаззинг
+out\build\x64-release\emoji_test.exe          # таблица эмодзи-кодов
 ```
 
 Результат по спецификации GFM: все 604 примера, не связанных с «сырым» HTML, совпадают с
