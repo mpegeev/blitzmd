@@ -177,6 +177,30 @@ bool DecodeRaster(const std::string& bytes, UINT& w, UINT& h, std::vector<uint8_
     return SUCCEEDED(conv->CopyPixels(nullptr, w * 4, static_cast<UINT>(out.size()), out.data()));
 }
 
+// Direct2D drops the whole subtree of elements it doesn't know, and badges
+// (shields.io "flat" style) wrap everything in an <a>: unwrap links.
+void UnwrapLinks(std::string& svg) {
+    std::string out;
+    out.reserve(svg.size());
+    size_t i = 0;
+    while (i < svg.size()) {
+        const bool open = svg.compare(i, 2, "<a") == 0 && i + 2 < svg.size() &&
+                          (svg[i + 2] == ' ' || svg[i + 2] == '>' || svg[i + 2] == '\t' || svg[i + 2] == '\n' ||
+                           svg[i + 2] == '\r');
+        const bool close = svg.compare(i, 4, "</a>") == 0;
+        if (open) {
+            const size_t end = svg.find('>', i);
+            if (end == std::string::npos) break;
+            i = end + 1;
+        } else if (close) {
+            i += 4;
+        } else {
+            out.push_back(svg[i++]);
+        }
+    }
+    svg.swap(out);
+}
+
 std::wstring PickFamily(IDWriteFactory* dw, std::wstring_view list) {
     size_t i = 0;
     while (i < list.size()) {
@@ -205,6 +229,7 @@ std::shared_ptr<SvgImage> SvgImage::Parse(std::string bytes, int depth) {
     img->source_ = std::move(bytes);
     img->depth_ = depth;
     img->ParseStructure();
+    if (img->source_.find("<a") != std::string::npos) UnwrapLinks(img->source_);
     return img;
 }
 
@@ -355,7 +380,33 @@ void SvgImage::ParseStructure() {
                     im.transform = in.m;
                     AddImage(std::move(im), *href);
                 }
-            } else if (n == L"text" && !in.hidden && !in.no_fill) {
+            } else if (n == L"tspan" && text_index >= 0 && !in.hidden &&
+                       (tok.Attr(L"x") || tok.Attr(L"y"))) {
+                // A positioned run starts a text of its own (badges put the
+                // coordinates on the <tspan> only).
+                Text t = texts_[static_cast<size_t>(text_index)];
+                t.text.clear();
+                t.text_length = 0;
+                if (const auto* v = tok.Attr(L"x")) {
+                    size_t i = 0;
+                    ParseNumber(*v, i, t.x);
+                }
+                if (const auto* v = tok.Attr(L"y")) {
+                    size_t i = 0;
+                    ParseNumber(*v, i, t.y);
+                }
+                t.argb = (static_cast<uint32_t>(std::lround(in.fill_opacity * 255.f)) << 24) | in.fill;
+                t.size = in.size;
+                t.weight = in.weight;
+                if (texts_[static_cast<size_t>(text_index)].text.empty()) {
+                    texts_[static_cast<size_t>(text_index)] = std::move(t);
+                } else {
+                    texts_.push_back(std::move(t));
+                    text_index = static_cast<int>(texts_.size() - 1);
+                }
+            } else if (n == L"text" && !in.hidden && !in.no_fill && !tok.Attr(L"filter")) {
+                // (Filtered text is a blurred shadow: drawn crisp it would look
+                // like a dark duplicate, so it is left out.)
                 Text t;
                 if (const auto* v = tok.Attr(L"x")) {
                     size_t i = 0;
@@ -422,6 +473,8 @@ void SvgImage::Draw(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFacto
     }
     D2D1_MATRIX_3X2_F old;
     rt->GetTransform(&old);
+    // Like a browser, nothing is drawn outside the image's viewport.
+    rt->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     const float sx = (rect.right - rect.left) / width_;
     const float sy = (rect.bottom - rect.top) / height_;
     const D2D1_MATRIX_3X2_F place = D2D1::Matrix3x2F::Scale(sx, sy) * D2D1::Matrix3x2F::Translation(rect.left, rect.top);
@@ -497,6 +550,7 @@ void SvgImage::Draw(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFacto
         }
     }
     rt->SetTransform(old);
+    rt->PopAxisAlignedClip();
 }
 
 }  // namespace mdv

@@ -54,9 +54,9 @@ public:
     // pixel decoding and remote downloads asynchronously).
     void LoadAll();
 
-    // Layout size in DIPs of image `index` constrained to `max_w`.
-    // `line_h` sizes placeholders.
-    D2D1_SIZE_F LayoutSize(int index, float max_w, float line_h);
+    // Layout size in DIPs of image `index` constrained to `max_w`, with CSS
+    // sizes multiplied by `zoom`. `line_h` sizes placeholders.
+    D2D1_SIZE_F LayoutSize(int index, float max_w, float line_h, float zoom);
     bool Hidden(int index) const;
     // Draws image `index` into `r` (or a placeholder if not available).
     void Draw(ID2D1RenderTarget* rt, int index, const D2D1_RECT_F& r, Palette* palette,

@@ -218,7 +218,7 @@ void LayoutEngine::SetConfig(const LayoutConfig& cfg) {
     if (dw_ && (mono_family_.empty() || !FontFamilyExists(dw_.Get(), mono_family_.c_str()))) {
         mono_family_ = FontFamilyExists(dw_.Get(), L"Cascadia Mono") ? L"Cascadia Mono" : L"Consolas";
     }
-    const float em = std::clamp(cfg_.font_size, 6.f, 72.f) * std::clamp(cfg_.zoom, 0.25f, 5.f);
+    const float em = std::clamp(cfg_.font_size, 6.f, 72.f) * Zoom();
     m_.em = em;
     m_.block_gap = em;
     m_.code_pad = em;
@@ -499,7 +499,7 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
     for (const InlineObject& o : b->objects) {
         if (o.image < 0 || o.pos >= len || text[o.pos] != kObjectChar) continue;
         D2D1_SIZE_F sz = D2D1::SizeF(line_h, line_h);
-        if (images_) sz = images_->LayoutSize(o.image, width >= kHugeWidth ? 0.f : width, line_h);
+        if (images_) sz = images_->LayoutSize(o.image, width >= kHugeWidth ? 0.f : width, line_h, Zoom());
         auto* obj = new ImageObject(this, o.image, sz.width, sz.height, st.size, spacing,
                                     st.size * MetricsOf(family).descent);
         layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, 1});
@@ -991,7 +991,7 @@ void LayoutEngine::MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& ma
             longest = std::max(longest, word);
             for (const InlineObject& o : b->objects) {
                 if (images_ && o.image >= 0) {
-                    const float iw = images_->LayoutSize(o.image, 0, st.size * st.line_height).width;
+                    const float iw = images_->LayoutSize(o.image, 0, st.size * st.line_height, Zoom()).width;
                     longest = std::max(longest, iw);
                     widest += iw;
                 }

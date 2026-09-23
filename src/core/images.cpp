@@ -866,7 +866,7 @@ bool ImageStore::Hidden(int index) const {
     return (only == 1 && dark_) || (only == 2 && !dark_);
 }
 
-D2D1_SIZE_F ImageStore::LayoutSize(int index, float max_w, float line_h) {
+D2D1_SIZE_F ImageStore::LayoutSize(int index, float max_w, float line_h, float zoom) {
     if (!impl_->doc || index < 0 || static_cast<size_t>(index) >= impl_->entries.size()) {
         return D2D1::SizeF(line_h, line_h);
     }
@@ -876,14 +876,16 @@ D2D1_SIZE_F ImageStore::LayoutSize(int index, float max_w, float line_h) {
     const float nw = static_cast<float>(e.px_w), nh = static_cast<float>(e.px_h);
     const bool known = nw > 0 && nh > 0 && e.state != ImageState::Failed;
     float w = 0, h = 0;
-    if (ref.width > 0) w = ref.width_percent ? (max_w > 0 ? max_w * ref.width / 100.f : 0) : ref.width;
-    if (ref.height > 0 && !ref.height_percent) h = ref.height;
+    // CSS pixels scale with the zoom like text does; `max_w` and `line_h` are
+    // zoomed already.
+    if (ref.width > 0) w = ref.width_percent ? (max_w > 0 ? max_w * ref.width / 100.f : 0) : ref.width * zoom;
+    if (ref.height > 0 && !ref.height_percent) h = ref.height * zoom;
     if (w > 0 && h <= 0) h = known ? w * nh / nw : 0;
     if (h > 0 && w <= 0) w = known ? h * nw / nh : 0;
     if (w <= 0 || h <= 0) {
         if (known) {
-            w = nw;
-            h = nh;
+            w = nw * zoom;
+            h = nh * zoom;
         } else {
             // Placeholder: icon + alt text, one line high.
             const float em = line_h / 1.5f;

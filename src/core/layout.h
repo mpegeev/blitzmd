@@ -12,6 +12,7 @@
 #include <d2d1.h>
 #include <dwrite_3.h>
 
+#include <algorithm>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -184,6 +185,7 @@ private:
     };
     const FamilyMetrics& MetricsOf(const std::wstring& family);
     float LineHeightFactor(const std::wstring& family, float css_line_height);
+    float Zoom() const { return std::clamp(cfg_.zoom, 0.25f, 5.f); }
     // Returns the factor by which lines (and inline objects) get scaled.
     float ApplyLineSpacing(IDWriteTextLayout* layout, const std::wstring& family, float size,
                           float css_line_height);
