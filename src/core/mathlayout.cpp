@@ -34,6 +34,7 @@ constexpr uint32_t kErrorColor = 0xFFD1242F;  // unknown commands (MathJax shows
 constexpr int kMaxAssemblyGlyphs = 1000;      // parts of one stretched glyph
 constexpr int kFormulaAssemblyGlyphs = 4000;  // and of all of a formula's
 constexpr int kMaxShapedTexts = 64;           // DirectWrite layouts of a formula (emoji, complex scripts)
+constexpr size_t kMaxRunGlyphs = 64;          // glyphs drawn in one call
 constexpr float kFarDips = 1e7f;              // > any 20000-character formula at the reference size
 
 // Big-endian reads with bounds checks (0 outside the table).
@@ -1350,8 +1351,9 @@ void MathTypesetter::Draw(ID2D1RenderTarget* rt, const MathBox& box, D2D1_POINT_
         if (g0.group) {
             while (e < glyphs.size() && glyphs[e].group == g0.group && glyphs[e].face == g0.face) ++e;
         } else {
-            while (e < glyphs.size() && !glyphs[e].group && glyphs[e].face == g0.face && glyphs[e].size == g0.size &&
-                   glyphs[e].color == g0.color) {
+            // (In pieces, so the parts of a long formula off screen are skipped.)
+            while (e < glyphs.size() && e - k < kMaxRunGlyphs && !glyphs[e].group && glyphs[e].face == g0.face &&
+                   glyphs[e].size == g0.size && glyphs[e].color == g0.color) {
                 ++e;
             }
         }

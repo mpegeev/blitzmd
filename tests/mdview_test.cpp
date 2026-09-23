@@ -1020,17 +1020,26 @@ int main(int argc, char** ansi_argv) {
                 std::printf("FAIL: 9000 emoji: %zu layouts, %zu glyphs\n", box->texts.size(), box->glyphs.size());
                 ++failures;
             }
-            std::string emoji_md = "$";
-            for (int i = 0; i < 3000; ++i) emoji_md += "\xF0\x9F\x98\x80";
-            emoji_md += "$\n";
-            auto edoc = ParseMarkdown(emoji_md, FullPath("samples/gfm/x.md"));
-            OffscreenOptions opt;
-            opt.width = 800;
-            opt.max_height = 600;
-            OffscreenStats stats;
-            RenderToBitmap(*edoc, opt, &stats);
-            if (stats.render_ms > 500) {
-                std::printf("FAIL: a formula of 3000 emoji renders in %.0f ms\n", stats.render_ms);
+            // As fast as a formula of the emoji that fit on screen (color
+            // emoji are slow to draw on some runners: timed against them).
+            auto render_ms = [](int count) {
+                std::string text = "$";
+                for (int i = 0; i < count; ++i) text += "\xF0\x9F\x98\x80";
+                auto d = ParseMarkdown(text + "$\n", FullPath("samples/gfm/x.md"));
+                OffscreenOptions opt;
+                opt.width = 800;
+                opt.max_height = 600;
+                double best = 1e9;
+                for (int i = 0; i < 3; ++i) {
+                    OffscreenStats stats;
+                    RenderToBitmap(*d, opt, &stats);
+                    best = std::min(best, stats.render_ms);
+                }
+                return best;
+            };
+            const double shown = render_ms(40), all = render_ms(3000);
+            if (all > 2 * shown + 50) {
+                std::printf("FAIL: a formula of 3000 emoji renders in %.0f ms (of 40: %.0f ms)\n", all, shown);
                 ++failures;
             }
         }
