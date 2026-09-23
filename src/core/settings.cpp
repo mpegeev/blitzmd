@@ -76,6 +76,7 @@ void LoadSettings() {
     s.hardware = ReadInt(L"HardwareRendering", d.hardware) != 0;
     s.wrap_code = std::clamp(ReadInt(L"WrapCode", d.wrap_code), -1, 1);
     s.line_numbers = ReadInt(L"LineNumbers", d.line_numbers) != 0;
+    s.auto_reload = ReadInt(L"AutoReload", d.auto_reload) != 0;
     if (s.font_family.empty()) s.font_family = d.font_family;
 }
 
@@ -95,6 +96,7 @@ void SaveSettings() {
     WriteInt(L"HardwareRendering", s.hardware ? 1 : 0);
     WriteInt(L"WrapCode", s.wrap_code);
     WriteInt(L"LineNumbers", s.line_numbers ? 1 : 0);
+    WriteInt(L"AutoReload", s.auto_reload ? 1 : 0);
 }
 
 }  // namespace mdv

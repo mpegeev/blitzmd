@@ -27,6 +27,7 @@ struct Settings {
     bool hardware = false;
     int wrap_code = -1;                  // -1: follow Lister's wrap option, 0/1 forced
     bool line_numbers = false;           // line numbers in code blocks
+    bool auto_reload = true;             // re-read the file when it changes on disk
 };
 
 // Process-wide settings instance.

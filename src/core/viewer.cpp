@@ -32,6 +32,10 @@ constexpr UINT_PTR kTimerCopied = 2;
 constexpr UINT_PTR kTimerAutoScroll = 3;
 constexpr UINT_PTR kTimerRepeat = 4;
 constexpr UINT_PTR kTimerGif = 5;
+constexpr UINT_PTR kTimerReload = 6;    // debounce after a change on disk
+constexpr UINT_PTR kTimerWatchPoll = 7; // network drives: notifications are unreliable
+constexpr UINT kReloadDelayMs = 300;    // editors save in several steps
+constexpr UINT kWatchPollMs = 2000;
 constexpr uint64_t kMaxFileBytes = 32ull << 20;  // larger files: the beginning is shown
 
 // Shared Direct2D factory for all viewer windows (all live on TC's UI thread).
@@ -95,6 +99,12 @@ bool IsImagePath(std::wstring_view p) {
 
 bool IsRussianUi() { return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_RUSSIAN; }
 
+// Posted by the file watch (a thread-pool wait) to the viewer window.
+UINT FileChangedMessage() {
+    static const UINT msg = RegisterWindowMessageW(L"MdViewWlxFileChanged");
+    return msg;
+}
+
 // GetDpiForWindow exists since Windows 10 1607; resolved dynamically so the
 // plugin still loads on older systems.
 UINT WindowDpi(HWND hwnd) {
@@ -132,6 +142,7 @@ enum MenuId : UINT {
     kMenuOpenExternal,
     kMenuReload,
     kMenuLineNumbers,
+    kMenuAutoReload,
     kMenuAbout,
     kMenuTocBase = 1000,
 };
@@ -218,6 +229,14 @@ private:
     void Invalidate() { InvalidateRect(hwnd_, nullptr, FALSE); }
     void ResetInteraction();
 
+    // Auto-reload: watch the file's directory, re-read after a change.
+    void Reload();
+    void StartWatch();
+    void StopWatch();
+    void OnFileChanged();
+    bool FileStamp(uint64_t& write_time, uint64_t& size) const;
+    static void CALLBACK WatchCallback(void* hwnd, BOOLEAN timed_out);
+
     // Scrolling
     void ScrollTo(float y, bool smooth);
     void ScrollBy(float dy, bool smooth) { ScrollTo((anim_ ? anim_to_ : scroll_y_) + dy, smooth); }
@@ -301,6 +320,10 @@ private:
     uint32_t doc_gen_ = 0;             // incremented by every Load()
     bool printing_ = false;            // PrintDocument() is using the blocks
 
+    HANDLE watch_change_ = INVALID_HANDLE_VALUE;  // FindFirstChangeNotification
+    HANDLE watch_wait_ = nullptr;                 // thread-pool wait on it
+    uint64_t file_time_ = 0, file_size_ = 0;      // stamp of the loaded file
+
     std::wstring search_text_;
     std::vector<TextRange> hits_;
     int current_hit_ = -1;
@@ -314,6 +337,7 @@ private:
 // ============================================================================
 
 Viewer::~Viewer() {
+    StopWatch();
     images_.Detach();
     layout_.SetDocument(nullptr);
     rt_.Reset();
@@ -501,7 +525,96 @@ bool Viewer::Load(const std::wstring& path, int flags, bool keep_history) {
     Relayout(false);
     UpdatePercent();
     Invalidate();
+    StartWatch();
     return true;
+}
+
+// ============================================================================
+// Auto-reload
+// ============================================================================
+
+bool Viewer::FileStamp(uint64_t& write_time, uint64_t& size) const {
+    WIN32_FILE_ATTRIBUTE_DATA fa{};
+    if (path_.empty() || !GetFileAttributesExW(ExtendedPath(path_).c_str(), GetFileExInfoStandard, &fa)) return false;
+    write_time = (static_cast<uint64_t>(fa.ftLastWriteTime.dwHighDateTime) << 32) | fa.ftLastWriteTime.dwLowDateTime;
+    size = (static_cast<uint64_t>(fa.nFileSizeHigh) << 32) | fa.nFileSizeLow;
+    return true;
+}
+
+// Thread-pool wait: only tells the window; everything else happens there.
+void CALLBACK Viewer::WatchCallback(void* hwnd, BOOLEAN /*timed_out*/) {
+    PostMessageW(static_cast<HWND>(hwnd), FileChangedMessage(), 0, 0);
+}
+
+void Viewer::StartWatch() {
+    StopWatch();
+    if (path_.empty() || !GlobalSettings().auto_reload) return;
+    FileStamp(file_time_, file_size_);
+    const std::wstring dir = DirectoryOf(path_);
+    watch_change_ = FindFirstChangeNotificationW(
+        ExtendedPath(dir).c_str(), FALSE,
+        FILE_NOTIFY_CHANGE_LAST_WRITE | FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_SIZE);
+    if (watch_change_ != INVALID_HANDLE_VALUE &&
+        !RegisterWaitForSingleObject(&watch_wait_, watch_change_, &Viewer::WatchCallback, hwnd_, INFINITE,
+                                     WT_EXECUTEONLYONCE)) {
+        watch_wait_ = nullptr;
+    }
+    // Change notifications from network shares are unreliable: also poll.
+    const bool unc = dir.size() > 2 && dir[0] == L'\\' && dir[1] == L'\\';
+    const std::wstring root = dir.substr(0, 3);
+    const bool remote = unc || (dir.size() >= 3 && dir[1] == L':' && GetDriveTypeW(root.c_str()) == DRIVE_REMOTE);
+    if (remote || !watch_wait_) SetTimer(hwnd_, kTimerWatchPoll, kWatchPollMs, nullptr);
+}
+
+void Viewer::StopWatch() {
+    if (watch_wait_) {
+        UnregisterWaitEx(watch_wait_, INVALID_HANDLE_VALUE);  // waits for a running callback
+        watch_wait_ = nullptr;
+    }
+    if (watch_change_ != INVALID_HANDLE_VALUE) {
+        FindCloseChangeNotification(watch_change_);
+        watch_change_ = INVALID_HANDLE_VALUE;
+    }
+    if (hwnd_) {
+        KillTimer(hwnd_, kTimerWatchPoll);
+        KillTimer(hwnd_, kTimerReload);
+    }
+}
+
+// Something changed in the directory: re-arm, then re-check the file after
+// things settle down.
+void Viewer::OnFileChanged() {
+    if (watch_wait_) {
+        UnregisterWaitEx(watch_wait_, INVALID_HANDLE_VALUE);
+        watch_wait_ = nullptr;
+    }
+    if (watch_change_ != INVALID_HANDLE_VALUE) {
+        if (FindNextChangeNotification(watch_change_) &&
+            !RegisterWaitForSingleObject(&watch_wait_, watch_change_, &Viewer::WatchCallback, hwnd_, INFINITE,
+                                         WT_EXECUTEONLYONCE)) {
+            watch_wait_ = nullptr;
+        }
+    }
+    SetTimer(hwnd_, kTimerReload, kReloadDelayMs, nullptr);
+}
+
+// Re-reads the file, keeping the reading position on the same paragraph.
+void Viewer::Reload() {
+    if (path_.empty() || printing_) return;
+    const Block* leaf = doc_ ? LeafAtY(scroll_y_) : nullptr;
+    const int32_t leaf_index = leaf ? leaf->leaf_index : -1;
+    const float offset = leaf ? scroll_y_ - leaf->y : 0.f;
+    const float y = scroll_y_;
+    if (!Load(path_, flags_, true)) return;
+    if (leaf_index >= 0 && static_cast<size_t>(leaf_index) < doc_->leaves.size()) {
+        scroll_y_ = std::clamp(doc_->leaves[static_cast<size_t>(leaf_index)]->y + offset, 0.f, MaxScroll());
+        Relayout(true);  // exact layout around it, anchored to that paragraph
+    } else {
+        scroll_y_ = std::clamp(y, 0.f, MaxScroll());
+        Relayout(true);
+    }
+    UpdatePercent();
+    Invalidate();
 }
 
 // ============================================================================
@@ -880,7 +993,7 @@ void Viewer::OnKeyDown(WPARAM vk) {
     case VK_END: ScrollTo(MaxScroll(), true); break;
     case VK_BACK: GoBack(); break;
     case VK_LEFT: if (alt) GoBack(); break;
-    case VK_F5: if (!path_.empty()) { const float y = scroll_y_; Load(path_, flags_, true); ScrollTo(y, false); } break;
+    case VK_F5: Reload(); break;
     case 'A': if (ctrl) Command(lc_selectall, 0); break;
     case 'C': case VK_INSERT: if (ctrl) CopySelection(); break;
     case VK_OEM_PLUS: case VK_ADD: if (ctrl) SetZoom(zoom_percent_ + 10); break;
@@ -1610,6 +1723,8 @@ void Viewer::OnContextMenu(int sx, int sy) {
                 Tr(L"Load &remote images", L"Загружать &изображения из сети"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuReload, Tr(L"Re&load\tF5", L"Пере&загрузить\tF5"));
+    AppendMenuW(menu, MF_STRING | (s.auto_reload ? MF_CHECKED : 0), kMenuAutoReload,
+                Tr(L"Reload when the file &changes", L"Обновлять при &изменении файла"));
     AppendMenuW(menu, MF_STRING, kMenuOpenExternal, Tr(L"Open in default &editor", L"Открыть в &редакторе"));
     AppendMenuW(menu, MF_STRING, kMenuAbout, L"mdview " MDVIEW_VERSION L"…");
 
@@ -1678,12 +1793,11 @@ void Viewer::OnContextMenu(int sx, int sy) {
             ScrollTo(y, false);
         }
         break;
-    case kMenuReload:
-        if (!path_.empty()) {
-            const float y = scroll_y_;
-            Load(path_, flags_, true);
-            ScrollTo(y, false);
-        }
+    case kMenuReload: Reload(); break;
+    case kMenuAutoReload:
+        ws.auto_reload = !ws.auto_reload;
+        SaveSettings();
+        StartWatch();
         break;
     case kMenuOpenExternal:
         if (!path_.empty()) ShellExecuteW(hwnd_, L"edit", path_.c_str(), nullptr, nullptr, SW_SHOWNORMAL) ;
@@ -1739,6 +1853,20 @@ void Viewer::OnTimer(UINT_PTR id) {
         OnMouseMove(last_mouse_.x, last_mouse_.y);
         break;
     }
+    case kTimerReload: {
+        KillTimer(hwnd_, kTimerReload);
+        uint64_t t = 0, size = 0;
+        // Missing for a moment (saved via rename)? The next change retries.
+        if (FileStamp(t, size) && (t != file_time_ || size != file_size_)) Reload();
+        break;
+    }
+    case kTimerWatchPoll: {
+        uint64_t t = 0, size = 0;
+        if (FileStamp(t, size) && (t != file_time_ || size != file_size_)) {
+            SetTimer(hwnd_, kTimerReload, kReloadDelayMs, nullptr);
+        }
+        break;
+    }
     case kTimerGif:
         KillTimer(hwnd_, kTimerGif);
         if (images_.AdvanceAnimations(NowMs())) {
@@ -1786,6 +1914,10 @@ LRESULT CALLBACK Viewer::StaticProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 LRESULT Viewer::Proc(UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == FileChangedMessage()) {
+        if (watch_change_ != INVALID_HANDLE_VALUE || watch_wait_) OnFileChanged();
+        return 0;
+    }
     if (msg == ImageLoadedMessage()) {
         if (images_.CompletePending()) {
             layout_.InvalidateMeasurements();

@@ -370,6 +370,89 @@ int main(int argc, char** argv) {
         std::printf("plugin OK\n");
         return 0;
     }
+    if (cmd == "reload" && argc >= 4) {
+        // reload <mdview.wlx64> <dir>: auto-reload check. Opens <dir>\reload-test.md,
+        // saves it the way editors do (temp file + rename), then searches for
+        // the new text; also checks that AutoReload=0 turns it off.
+        HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
+        using SetParamsFn = void(__stdcall*)(void*);
+        using LoadFn = HWND(__stdcall*)(HWND, const wchar_t*, int);
+        using SearchFn = int(__stdcall*)(HWND, const wchar_t*, int);
+        using CloseFn = void(__stdcall*)(HWND);
+        auto load = dll ? reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW")) : nullptr;
+        auto search = dll ? reinterpret_cast<SearchFn>(GetProcAddress(dll, "ListSearchTextW")) : nullptr;
+        auto close = dll ? reinterpret_cast<CloseFn>(GetProcAddress(dll, "ListCloseWindow")) : nullptr;
+        auto set_params = dll ? reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams")) : nullptr;
+        if (!load || !search || !close || !set_params) {
+            std::fprintf(stderr, "cannot load plugin\n");
+            return 1;
+        }
+        const std::wstring dir = FullPath(argv[3]);
+        CreateDirectoryW(dir.c_str(), nullptr);
+        const std::wstring file = dir + L"\\reload-test.md";
+        const std::wstring ini = dir + L"\\mdview.ini";
+        struct {
+            int size;
+            DWORD lo, hi;
+            char ini[MAX_PATH];
+        } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
+        strncpy_s(dp.ini, WideToUtf8(dir + L"\\lsplugin.ini").c_str(), _TRUNCATE);
+        auto write = [](const std::wstring& path, const std::string& text) {
+            HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD n = 0;
+            WriteFile(h, text.data(), static_cast<DWORD>(text.size()), &n, nullptr);
+            CloseHandle(h);
+        };
+        auto save_like_editor = [&](const std::string& text) {
+            const std::wstring tmp = file + L".tmp~";
+            write(tmp, text);
+            DeleteFileW(file.c_str());
+            MoveFileW(tmp.c_str(), file.c_str());
+        };
+        auto pump = [](int ms) {
+            const double end = NowMs() + ms;
+            MSG msg;
+            while (NowMs() < end) {
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
+                Sleep(5);
+            }
+        };
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"MdViewReloadHost";
+        RegisterClassW(&wc);
+        HWND host = CreateWindowExW(0, wc.lpszClassName, L"reload test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40,
+                                    800, 600, nullptr, nullptr, wc.hInstance, nullptr);
+        int failures = 0;
+        for (int enabled = 1; enabled >= 0; --enabled) {
+            write(ini, enabled ? "[mdview]\r\nAutoReload=1\r\n" : "[mdview]\r\nAutoReload=0\r\n");
+            set_params(&dp);  // settings load once per process: first round only
+            write(file, "# Reload test\n\nfirst version\n");
+            HWND v = load(host, file.c_str(), 0);
+            pump(300);
+            const std::string marker = enabled ? "second-version-marker" : "third-version-marker";
+            save_like_editor("# Reload test\n\n" + marker + "\n");
+            pump(1500);
+            const bool found = search(v, Utf8ToWide(marker).c_str(), 1) == 0;
+            std::printf("AutoReload=%d: new text %s\n", enabled, found ? "shown" : "not shown");
+            if (found != (enabled == 1)) ++failures;
+            close(v);
+            if (enabled) {
+                // Settings are cached per process: flip the switch as the menu would.
+                FreeLibrary(dll);
+                dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
+                load = reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW"));
+                search = reinterpret_cast<SearchFn>(GetProcAddress(dll, "ListSearchTextW"));
+                close = reinterpret_cast<CloseFn>(GetProcAddress(dll, "ListCloseWindow"));
+                set_params = reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams"));
+            }
+        }
+        DestroyWindow(host);
+        FreeLibrary(dll);
+        std::printf(failures ? "reload FAILED\n" : "reload OK\n");
+        return failures ? 1 : 0;
+    }
     if (cmd == "text") {
         // text <file.md>: the plain text "Select all + Copy" puts on the clipboard.
         std::string md;
