@@ -533,7 +533,9 @@ void Viewer::ResetInteraction() {
     hover_object_ = nullptr;
     hover_button_ = -1;
     pan_object_ = nullptr;
+    wheel_object_ = nullptr;
     full_.Close();
+    esc_held_ = false;
     HookKeys(false);
     full_pan_ = false;
     full_backdrop_down_ = false;
@@ -1303,7 +1305,9 @@ void Viewer::OnLButtonDown(int px, int py, bool dbl) {
         const int b = ZoomButtonAt(t, x, y);
         mouse_down_ = false;  // not a click on the page
         if (b >= 0) {
-            FullViewButton(t.kinds[static_cast<size_t>(b)]);
+            // (A double click on the image's button that opened the view may
+            // land on its x in a narrow window: the view stays.)
+            if (!(dbl && t.kinds[static_cast<size_t>(b)] == ZoomButton::Close)) FullViewButton(t.kinds[static_cast<size_t>(b)]);
             return;
         }
         mouse_down_ = true;
@@ -1892,7 +1896,10 @@ void Viewer::FullViewButton(ZoomButton button) {
     const D2D1_RECT_F v = ViewRect();
     const float cx = (v.left + v.right) * 0.5f, cy = (v.top + v.bottom) * 0.5f;
     const unsigned off = FullViewButtonsOff(full_);
-    if ((button == ZoomButton::ZoomOut && (off & 1u)) || (button == ZoomButton::ZoomIn && (off & 2u))) return;
+    if ((button == ZoomButton::ZoomOut && (off & 1u)) || (button == ZoomButton::ZoomIn && (off & 2u)) ||
+        (button == ZoomButton::Reset && (off & 4u))) {
+        return;
+    }
     switch (button) {
     case ZoomButton::ZoomIn: full_.ZoomAt(kButtonZoomStep, cx, cy, v); break;
     case ZoomButton::ZoomOut: full_.ZoomAt(1.f / kButtonZoomStep, cx, cy, v); break;
