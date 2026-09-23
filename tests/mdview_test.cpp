@@ -15,6 +15,7 @@
 #include <shellapi.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -23,6 +24,10 @@
 
 #include "core/texmath.h"
 #include "core/flags.h"
+#include "core/images.h"
+#include "core/layout.h"
+#include "core/mathlayout.h"
+#include "core/theme.h"
 #include "core/offscreen.h"
 #include "core/parser.h"
 #include "core/print.h"
@@ -98,6 +103,55 @@ double WorkingSetMb() {
     GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc);
     return static_cast<double>(pmc.WorkingSetSize) / (1024.0 * 1024.0);
 }
+
+// Records where a text layout puts its inline objects (nothing is drawn).
+class ObjectRecorder final : public IDWriteTextRenderer {
+public:
+    struct Placed {
+        float y = 0;  // top of the object's box
+        DWRITE_INLINE_OBJECT_METRICS metrics{};
+        DWRITE_OVERHANG_METRICS overhang{};
+    };
+    std::vector<Placed> placed;
+
+    ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+    ULONG STDMETHODCALLTYPE Release() override { return 1; }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void** p) override {
+        *p = nullptr;
+        return E_NOINTERFACE;
+    }
+    HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* disabled) override {
+        *disabled = TRUE;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetCurrentTransform(void*, DWRITE_MATRIX* m) override {
+        *m = DWRITE_MATRIX{1, 0, 0, 1, 0, 0};
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* p) override {
+        *p = 1;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawGlyphRun(void*, FLOAT, FLOAT, DWRITE_MEASURING_MODE, const DWRITE_GLYPH_RUN*,
+                                           const DWRITE_GLYPH_RUN_DESCRIPTION*, IUnknown*) override {
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawUnderline(void*, FLOAT, FLOAT, const DWRITE_UNDERLINE*, IUnknown*) override {
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawStrikethrough(void*, FLOAT, FLOAT, const DWRITE_STRIKETHROUGH*, IUnknown*) override {
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawInlineObject(void*, FLOAT, FLOAT y, IDWriteInlineObject* obj, BOOL, BOOL,
+                                               IUnknown*) override {
+        Placed p;
+        p.y = y;
+        obj->GetMetrics(&p.metrics);
+        obj->GetOverhangMetrics(&p.overhang);
+        placed.push_back(p);
+        return S_OK;
+    }
+};
 
 }  // namespace
 
@@ -749,6 +803,282 @@ int main(int argc, char** ansi_argv) {
         std::printf(failures ? "flags FAILED\n" : "flags OK\n");
         return failures ? 1 : 0;
     }
+    if (cmd == "math") {
+        // math <file.md> [iterations]: TeX parsing, layout of the file's
+        // formulas, hostile input and a TeX fuzzer (no crash, bounded time).
+        int failures = 0;
+        struct Case {
+            const char* tex;
+            const char* dump;
+        };
+        const Case cases[] = {
+            {"x^2_i", "list(scripts(g:𝑥,list(g:𝑖),list(g:2)))"},
+            {"\\frac12", "list(frac(list(g:1),list(g:2)))"},
+            {"a-b", "list(g:𝑎,g:−,g:𝑏)"},
+            {"\\sum_{i=1}^n", "list(scripts(g:∑,list(g:𝑖,g:=,g:1),list(g:𝑛)))"},
+            {"\\left( x \\middle| y \\right.", "list(fenced:(|.(list(g:𝑥),list(g:𝑦)))"},
+            {"\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}",
+             "list(array:c[()](list(list(g:1),list(g:2)),list(list(g:3),list(g:4))))"},
+            {"\\begin{cases} 1 & x \\\\ 0 & y \\end{cases}",
+             "list(array:ll[{.](list(list(g:1),list(g:𝑥)),list(list(g:0),list(g:𝑦))))"},
+            {"\\text{if } x", "list(list(text:if ),g:𝑥)"},
+            {"\\color{red} x + \\textcolor{blue}{y}", "list(g:𝑥#ff0000,g:+#ff0000,g:𝑦#0000ff)"},
+            {"\\foo{x}", "list(text:\\foo!,list(g:𝑥))"},
+            {"f'(x)", "list(scripts(g:𝑓,list,list(g:′)),g:(,g:𝑥,g:))"},
+            {"x'^2", "list(scripts(g:𝑥,list,list(g:′,g:2)))"},
+            {"\\sum_{\\substack{i=1\\\\j=2}}",
+             "list(scripts(g:∑,list(array:c(list(list(g:𝑖,g:=,g:1)),list(list(g:𝑗,g:=,g:2)))),list))"},
+            {"\\operatorname{\\mathbb{E}}", "list(list(g:𝔼))"},
+            {"\\boldsymbol{\\Sigma\\mu}", "list(g:𝚺,g:𝝁)"},
+            {"\\begin{matrix} a \\\\ [0,1) \\end{matrix} + z",
+             "list(array:c(list(list(g:𝑎)),list(list(g:[,g:0,g:,,g:1,g:)))),g:+,g:𝑧)"},
+            {"a \\\\[4pt] b", "list(array:c(list(list(g:𝑎)),list(list(g:𝑏))))"},
+            {"\\not x \\not}", "list(g:𝑥̸,g:/)"},
+            {"\\hspace{nan}x", "list(space:0,g:𝑥)"},
+            {"\\xrightarrow[\\{]{f} y", "list(arrow:→(list(g:𝑓),list(g:{)),g:𝑦)"},
+            {"\\not= \\not\\in", "list(g:≠,g:∉)"},
+            {"{a \\over b}", "list(list(frac(list(g:𝑎),list(g:𝑏))))"},
+            {"\\sqrt[3]{x}", "list(sqrt(list(g:𝑥),list(g:3)))"},
+            {"\\overbrace{x}^{n}", "list(scripts(over:⏞(list(g:𝑥),list),list,list(g:𝑛)))"},
+            {"\\mathbb{R}\\mathbf{v}\\boldsymbol{\\alpha}", "list(g:ℝ,g:𝐯,g:𝜶)"},
+            {"a \\\\ b", "list(array:c(list(list(g:𝑎)),list(list(g:𝑏))))"},
+            {"\\binom{n}{k}", "list(frac[()](list(g:𝑛),list(g:𝑘)))"},
+            {"\\big( \\Bigr]", "list(delim:(,delim:])"},
+            {"\\alpha\\Gamma\\partial", "list(g:𝛼,g:Γ,g:𝜕)"},
+            {"\\lim_{x\\to 0}", "list(scripts(text:lim,list(g:𝑥,g:→,g:0),list))"},
+        };
+        for (const Case& c : cases) {
+            const std::string got = WideToUtf8(DumpMath(ParseTex(Utf8ToWide(c.tex))));
+            if (got != c.dump) {
+                std::printf("FAIL: %s\n  got      %s\n  expected %s\n", c.tex, got.c_str(), c.dump);
+                ++failures;
+            }
+        }
+        ComPtr<IDWriteFactory> dw;
+        DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(dw.GetAddressOf()));
+        MathTypesetter ts;
+        if (!dw || !ts.Init(dw.Get())) {
+            std::printf("math FAILED: no math font\n");
+            return 1;
+        }
+        auto finite = [](float v) { return std::isfinite(v) && std::fabs(v) < 1e7f; };
+        auto sane = [&](const MathBox& b) {
+            if (!finite(b.width) || !finite(b.ascent) || !finite(b.descent) || b.width < 0) return false;
+            for (const auto& g : b.glyphs) {
+                if (!finite(g.x) || !finite(g.y) || !(g.size > 0)) return false;
+            }
+            for (const auto& r : b.rules) {
+                if (!finite(r.x) || !finite(r.y) || !finite(r.w) || !finite(r.h)) return false;
+            }
+            return true;
+        };
+        // Every formula of the file, in both styles.
+        std::string md;
+        if (!LoadMarkdown(argv[2], md)) return 1;
+        auto doc = ParseMarkdown(md, FullPath(argv[2]));
+        for (const MathRef& m : doc->maths) {
+            for (bool display : {false, true}) {
+                auto box = ts.Layout(m.tex, display, 16.f);
+                if (!sane(*box) || box->width <= 0 || box->glyphs.empty()) {
+                    std::printf("FAIL: layout of %s\n", WideToUtf8(m.tex).c_str());
+                    ++failures;
+                }
+            }
+        }
+        std::printf("%zu formulas of %s laid out\n", doc->maths.size(), argv[2]);
+        {
+            // Only a formula too wide for its column makes a leaf scroll
+            // horizontally: never plain text, centered images or tables.
+            const std::string wide_md =
+                "A plain paragraph of ordinary words that wraps at many different widths, "
+                "with trailing spaces at its line ends and nothing else in it at all.\n\n"
+                "<p align=\"center\"><img src=\"img/badge-build-passing.svg\"> <img src=\"img/badge-coverage.svg\"> "
+                "<img src=\"img/badge-build-passing.svg\"> <img src=\"img/badge-coverage.svg\"></p>\n\n"
+                "| a | b |\n|---|---|\n| cell text that wraps | \xF0\x9F\x87\xBA\xF0\x9F\x87\xB8 flag and more words |\n\n"
+                "Inline $x^2 + y^2$ math in a sentence that also wraps around at some widths.\n\n"
+                "$$\\sum_{k=1}^{n} a_k + b_k + c_k + d_k + e_k + f_k + g_k + h_k + i_k + j_k + k_k + l_k + m_k$$\n";
+            auto wdoc = ParseMarkdown(wide_md, FullPath("samples/gfm/x.md"));
+            Palette palette;
+            ImageStore images;
+            images.Attach(wdoc.get(), nullptr, false, false);
+            images.LoadAll();
+            LayoutEngine le;
+            le.Init(dw.Get(), &palette, &images);
+            LayoutConfig cfg;
+            cfg.max_content_width = 0;
+            le.SetConfig(cfg);
+            le.SetDocument(wdoc.get());
+            int wide_formula = 0;
+            for (int w = 280; w <= 960; w += 3) {
+                le.Layout(static_cast<float>(w), 0, 1e6f);
+                for (const Block* leaf : wdoc->leaves) {
+                    const bool display = !leaf->objects.empty() && leaf->objects[0].math >= 0 &&
+                                         wdoc->maths[static_cast<size_t>(leaf->objects[0].math)].display;
+                    if (leaf->content_w > 0 && !display) {
+                        std::printf("FAIL: \"%s...\" scrolls at width %d\n", WideToUtf8(leaf->text.substr(0, 20)).c_str(), w);
+                        ++failures;
+                    }
+                    if (leaf->content_w > 0 && display) ++wide_formula;
+                }
+            }
+            if (!wide_formula) {
+                std::printf("FAIL: the long display formula never scrolls\n");
+                ++failures;
+            }
+        }
+        {
+            // However tall, a formula stays inside its line (so its leaf and
+            // the space before the next one): in a paragraph, in a heading
+            // (tighter lines), in <sup>, on wrapped lines.
+            std::string rows;
+            for (int i = 0; i < 60; ++i) rows += "a_{" + std::to_string(i) + "} & b \\\\ ";
+            const std::string tall_md =
+                "$$\\begin{pmatrix}" + rows + "\\end{pmatrix}$$\n\n# Heading $\\begin{pmatrix}" + rows.substr(0, 150) +
+                "\\end{pmatrix}$\n\nText $\\frac{\\frac{a}{b}}{\\frac{c}{d}}$ and <sup>$\\sqrt{\\frac{x}{y}}$</sup> "
+                "text wrapping at some widths $\\left(\\begin{matrix}1\\\\2\\\\3\\end{matrix}\\right)$ more words "
+                "$\\int_0^1 x\\,dx$ and a few more words after it.\n";
+            auto tdoc = ParseMarkdown(tall_md, FullPath("samples/gfm/x.md"));
+            Palette palette;
+            ImageStore images;
+            images.Attach(tdoc.get(), nullptr, false, false);
+            LayoutEngine le;
+            le.Init(dw.Get(), &palette, &images);
+            LayoutConfig cfg;
+            cfg.max_content_width = 0;
+            le.SetConfig(cfg);
+            le.SetDocument(tdoc.get());
+            size_t checked = 0;
+            for (int w : {300, 520, 800}) {
+                le.Layout(static_cast<float>(w), 0, 1e6f);
+                for (const Block* leaf : tdoc->leaves) {
+                    LeafState* st = le.State(leaf);
+                    if (!st || !st->layout) continue;
+                    UINT32 count = 0;
+                    st->layout->GetLineMetrics(nullptr, 0, &count);
+                    std::vector<DWRITE_LINE_METRICS> lines(count);
+                    if (!count || FAILED(st->layout->GetLineMetrics(lines.data(), count, &count))) continue;
+                    ObjectRecorder rec;
+                    st->layout->Draw(nullptr, &rec, 0, 0);
+                    for (const ObjectRecorder::Placed& p : rec.placed) {
+                        // The line holding the object's baseline.
+                        const float baseline = p.y + p.metrics.baseline;
+                        float top = 0, line_bottom = 0;
+                        for (const DWRITE_LINE_METRICS& lm : lines) {
+                            line_bottom = top + lm.height;
+                            if (baseline <= line_bottom) break;
+                            top = line_bottom;
+                        }
+                        const float ink_top = p.y - p.overhang.top;
+                        const float ink_bottom = p.y + p.metrics.height + p.overhang.bottom;
+                        ++checked;
+                        if (ink_top < top - 0.5f || ink_bottom > line_bottom + 0.5f) {
+                            std::printf("FAIL: formula ink %.1f..%.1f outside its line %.1f..%.1f (width %d)\n", ink_top,
+                                        ink_bottom, top, line_bottom, w);
+                            ++failures;
+                        }
+                    }
+                }
+            }
+            if (checked < 6) {
+                std::printf("FAIL: only %zu formulas placed\n", checked);
+                ++failures;
+            }
+        }
+        // Hostile input: deep nesting, huge and malformed sources.
+        auto repeat = [](const wchar_t* s, int n) {
+            std::wstring r;
+            for (int i = 0; i < n; ++i) r += s;
+            return r;
+        };
+        const std::wstring hostile[] = {
+            std::wstring(20000, L'{'), repeat(L"\\sqrt", 5000), repeat(L"x^", 5000), repeat(L"\\left(", 3000),
+            repeat(L"\\begin{matrix}", 500), repeat(L"\\frac", 5000), repeat(L"\\text{", 2000),
+            repeat(L"\\textbf{", 3000), std::wstring(30000, L'x'), repeat(L"&\\\\", 3000), repeat(L"\\overbrace{", 1000),
+            repeat(L"\\mathbb{", 1000), repeat(L"\\text{$", 1000), repeat(L"{\\over", 2000), repeat(L"\\sqrt[", 2000),
+            repeat(L"\\substack{", 500), repeat(L"\\xrightarrow[", 500), repeat(L"\\qquad", 3000),
+            L"\\hspace{1e30em}\\kern-1e30mu", L"\\color{#zzz}x\\color[rgb]{9,9}y", L"\\big", L"\\left", L"\\right)",
+            L"\\end{x}", L"}}}}", L"\\\\", L"^_^_", L"\\frac{", L"\\begin{array}{", L"\\operatorname*", L"\\not",
+            L"\\", L"\\text{\\", L"\\sqrt[\\frac]{}", L"\\begin{pmatrix}\\left( & \\right) \\\\ } \\end{pmatrix}",
+            repeat(L"\\not", 5000) + L"=", repeat(L"\\not{", 3000), L"x \\hspace{nan} y \\kern-3em z",
+            L"\\color[rgb]{nan,0,0} x \\kern-30em", L"\\sqrt{\\begin{matrix}" + repeat(L"x\\\\", 60) + L"\\end{matrix}}",
+            L"\\text{\u0645\u0631\u062d\u0628\u0627 \U0001F600 \u05e9\u05dc\u05d5\u05dd}", repeat(L"x'", 3000),
+        };
+        for (const std::wstring& h : hostile) {
+            const double t0 = NowMs();
+            auto box = ts.Layout(h, true, 16.f);
+            const double ms = NowMs() - t0;
+            if (!sane(*box) || ms > 3000) {
+                std::printf("FAIL: hostile input %s... (%.0f ms)\n", WideToUtf8(h.substr(0, 30)).c_str(), ms);
+                ++failures;
+            }
+        }
+        {
+            // Emoji are DirectWrite layouts, a draw call each: a bounded number
+            // per formula, and only those on screen drawn.
+            auto box = ts.Layout(repeat(L"\U0001F600", 9000), false, 16.f);
+            if (box->texts.size() > 64 || box->glyphs.size() < 8000) {
+                std::printf("FAIL: 9000 emoji: %zu layouts, %zu glyphs\n", box->texts.size(), box->glyphs.size());
+                ++failures;
+            }
+            // As fast as a formula of the emoji that fit on screen (color
+            // emoji are slow to draw on some runners: timed against them).
+            auto render_ms = [](int count) {
+                std::string text = "$";
+                for (int i = 0; i < count; ++i) text += "\xF0\x9F\x98\x80";
+                auto d = ParseMarkdown(text + "$\n", FullPath("samples/gfm/x.md"));
+                OffscreenOptions opt;
+                opt.width = 800;
+                opt.max_height = 600;
+                double best = 1e9;
+                for (int i = 0; i < 3; ++i) {
+                    OffscreenStats stats;
+                    RenderToBitmap(*d, opt, &stats);
+                    best = std::min(best, stats.render_ms);
+                }
+                return best;
+            };
+            const double shown = render_ms(40), all = render_ms(3000);
+            if (all > 2 * shown + 50) {
+                std::printf("FAIL: a formula of 3000 emoji renders in %.0f ms (of 40: %.0f ms)\n", all, shown);
+                ++failures;
+            }
+        }
+        // Fuzz: random formulas from TeX fragments.
+        static const wchar_t* kPieces[] = {
+            L"x", L"2", L"+", L"-", L"=", L"^", L"_", L"{", L"}", L"\\frac", L"\\sqrt", L"[", L"]", L"\\left(",
+            L"\\right)", L"\\middle|", L"\\begin{pmatrix}", L"\\end{pmatrix}", L"\\begin{cases}", L"\\end{cases}",
+            L"\\begin{aligned}", L"\\end{aligned}", L"&", L"\\\\", L"\\sum", L"\\int", L"\\limits", L"\\text{a b}",
+            L"\\mathbb{R}", L"\\hat", L"\\widehat", L"\\overbrace", L"\\underbrace", L"\\overset", L"\\color{red}",
+            L"\\textcolor{blue}", L"\\boxed", L"\\phantom", L"\\not", L"\\big(", L"\\Bigg]", L"\\alpha", L"\\foo",
+            L"'", L"\\,", L"\\quad", L"\\over", L"\\binom", L"\\xrightarrow", L"\\operatorname", L"\\displaystyle",
+            L"\\scriptstyle", L" ", L"\\mathrm{d}", L"\\lim", L"\\to", L"\\infty", L"\\vec", L"\\dot", L"\\{", L"\\}",
+            L"\\|", L"$", L"%", L"#", L"\\substack{a\\\\b}", L"\\hspace{2em}", L"\\mathstrut", L"\U0001D465",
+            L"日本", L"\\text{$x$}", L"\\overline", L"\\underline", L"\\bmod", L"\\pmod", L"\\left.",
+            L"\\right\\}", L"\\begin{array}{lcr}", L"\\end{array}", L"\\tag{1}", L"\\iff", L"\\prod", L"\\oint",
+        };
+        uint32_t seed = 4242;
+        auto rnd = [&seed] {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            return seed;
+        };
+        const int iterations = argc >= 4 ? std::atoi(argv[3]) : 3000;
+        const double f0 = NowMs();
+        for (int it = 0; it < iterations; ++it) {
+            std::wstring tex;
+            const int n = 1 + static_cast<int>(rnd() % 60);
+            for (int k = 0; k < n; ++k) tex += kPieces[rnd() % std::size(kPieces)];
+            auto box = ts.Layout(tex, (rnd() & 1) != 0, 8.f + static_cast<float>(rnd() % 40));
+            if (!sane(*box)) {
+                std::printf("FAIL: fuzz %s\n", WideToUtf8(tex).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d random formulas in %.0f ms\n", iterations, NowMs() - f0);
+        std::printf(failures ? "math FAILED\n" : "math OK\n");
+        return failures ? 1 : 0;
+    }
     if (cmd == "text") {
         // text <file.md>: the plain text "Select all + Copy" puts on the clipboard.
         std::string md;
@@ -799,16 +1129,8 @@ int main(int argc, char** ansi_argv) {
         return 0;
     }
     if (cmd == "tex") {
-        // tex "<TeX source>": shows the Unicode conversion used for math.
-        std::vector<MathPiece> pieces;
-        TexToUnicode(Utf8ToWide(argv[2]), true, pieces);
-        for (const auto& p : pieces) {
-            std::string t = WideToUtf8(p.text);
-            for (char& c : t) {
-                if (c == '\n') c = '|';
-            }
-            std::printf("[%s%s]%s\n", (p.flags & kSup) ? "sup" : "", (p.flags & kSub) ? "sub" : "", t.c_str());
-        }
+        // tex "<TeX source>": the parsed formula tree.
+        std::printf("%s\n", WideToUtf8(DumpMath(ParseTex(Utf8ToWide(argv[2])))).c_str());
         return 0;
     }
     if (cmd == "fuzz") {
@@ -838,6 +1160,9 @@ int main(int argc, char** ansi_argv) {
             "\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82 ", "\xE6\x97\xA5\xE6\x9C\xAC ",
             "\xD9\x85\xD8\xB1\xD8\xAD\xD8\xA8\xD8\xA7 ", "\xF0\x9F\x9A\x80", "\xE2\x80\xA8", "\xEF\xBF\xBC",
             "\xC3", "\xFF", "\xED\xA0\x80", "\r\n", "\r", "[link]: /url\n", "[link]", "<https://a.b>",
+            // TeX inside $...$ (typeset by mathlayout).
+            "$\\frac{a}{b}$", "$$\\sum_{i=1}^n$$", "\\left(", "\\right)", "\\begin{pmatrix}",
+            "\\end{pmatrix}", "&", "\\\\", "\\sqrt[", "^{", "_{", "\\text{", "\\color{red}", "```math\n",
             // Regional indicators (flags pair them up) and tag characters.
             "\xF0\x9F\x87\xBA", "\xF0\x9F\x87\xB8", "\xF0\x9F\x87\xA6", "\xF0\x9F\x8F\xB4",
             "\xF3\xA0\x81\xA7\xF3\xA0\x81\xA2", "\xF3\xA0\x81\xBF", ":us:",

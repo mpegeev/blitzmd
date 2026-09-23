@@ -5,12 +5,14 @@
 
 #include "core/highlight.h"
 #include "core/images.h"
+#include "core/mathlayout.h"
 
 namespace mdv {
 namespace {
 
 constexpr float kHugeWidth = 100000.f;
 constexpr wchar_t kObjectChar = 0xFFFC;
+constexpr float kMathRefSize = 64.f;  // formulas are typeset once at this size and scaled
 
 bool IsStrongRtl(wchar_t c) {
     return (c >= 0x0590 && c <= 0x08FF) || (c >= 0xFB1D && c <= 0xFDFF) || (c >= 0xFE70 && c <= 0xFEFF);
@@ -21,11 +23,17 @@ bool IsStrongLtr(wchar_t c) {
            (c >= 0x0900 && c <= 0x1FFF) || (c >= 0x3040 && c <= 0xD7FF);
 }
 
-// Paragraph direction from the first strong character (like dir="auto").
-bool DetectRtl(const std::wstring& t) {
-    for (wchar_t c : t) {
-        if (IsStrongRtl(c)) return true;
-        if (IsStrongLtr(c)) return false;
+// Paragraph direction from the first strong character (like dir="auto");
+// the letters of a formula's TeX source don't count.
+bool DetectRtl(const Block* b) {
+    const std::wstring& t = b->text;
+    for (size_t i = 0; i < t.size(); ++i) {
+        for (const InlineObject& o : b->objects) {
+            if (o.math >= 0 && o.pos == i) i += o.length;
+        }
+        if (i >= t.size()) break;
+        if (IsStrongRtl(t[i])) return true;
+        if (IsStrongLtr(t[i])) return false;
     }
     return false;
 }
@@ -190,6 +198,60 @@ private:
     float size_, ascent_, descent_;
 };
 
+// A formula (mathlayout.h) over its TeX source. It sits on the baseline like
+// text and reports the paragraph strut, so only a formula taller than the
+// text makes its line taller, and then just as tall as the formula (no extra
+// leading).
+class MathObject final : public InlineObjectBase {
+public:
+    MathObject(LayoutEngine* engine, std::shared_ptr<const MathBox> box, float scale, float raise, float strut_ascent,
+               float strut_descent, float spacing)
+        : engine_(engine), box_(std::move(box)), scale_(scale), raise_(raise) {
+        // With proportional spacing s (leading split evenly) DirectWrite puts
+        // a line's baseline s * ascent + (s - 1) / 2 * descent below its top,
+        // and its bottom s * (ascent + descent): the metrics that make the
+        // line hold the formula's height above and depth below the baseline.
+        const float s = std::max(spacing, 0.5f);
+        descent_ = std::max(strut_descent, (box_->descent * scale_ - raise_) * 2.f / (s + 1.f));
+        ascent_ = std::max(strut_ascent, (box_->ascent * scale_ + raise_ - (s - 1.f) * 0.5f * descent_) / s);
+    }
+
+    HRESULT STDMETHODCALLTYPE Draw(void*, IDWriteTextRenderer*, FLOAT x, FLOAT y, BOOL, BOOL,
+                                   IUnknown* effect) override {
+        DrawContext& dc = engine_->draw_context();
+        MathTypesetter* math = engine_->math();
+        if (!dc.rt || !math) return S_OK;
+        ID2D1Brush* brush = dc.default_brush;
+        ComPtr<ID2D1Brush> effect_brush;
+        if (effect && SUCCEEDED(effect->QueryInterface(IID_PPV_ARGS(&effect_brush)))) brush = effect_brush.Get();
+        math->Draw(dc.rt, *box_, D2D1::Point2F(x, y + ascent_ - raise_), scale_, brush);  // y: baseline - ascent
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetMetrics(DWRITE_INLINE_OBJECT_METRICS* m) override {
+        m->width = box_->width * scale_;
+        m->height = ascent_ + descent_;
+        m->baseline = ascent_;
+        m->supportsSideways = FALSE;
+        return S_OK;
+    }
+    // The formula beyond the reported box (into the line's leading).
+    HRESULT STDMETHODCALLTYPE GetOverhangMetrics(DWRITE_OVERHANG_METRICS* o) override {
+        *o = DWRITE_OVERHANG_METRICS{};
+        o->top = box_->ascent * scale_ + raise_ - ascent_;
+        o->bottom = box_->descent * scale_ - raise_ - descent_;
+        return S_OK;
+    }
+
+private:
+    LayoutEngine* engine_;
+    std::shared_ptr<const MathBox> box_;
+    float scale_, raise_, ascent_ = 0, descent_ = 0;
+};
+
+bool HasMath(const Block* b) {
+    return std::any_of(b->objects.begin(), b->objects.end(), [](const InlineObject& o) { return o.math >= 0; });
+}
+
 // Font size of a run (inline code, <small>, <big>...).
 float RunFontSize(float size, uint32_t f) {
     if (f & kSmall) size *= 0.85f;
@@ -247,6 +309,7 @@ void LayoutEngine::SetDocument(Document* doc) {
     doc_ = doc;
     leaves_.clear();
     tables_.clear();
+    math_boxes_.clear();
     if (doc_) {
         leaves_.resize(doc_->leaves.size());
         UpdateVisibility(doc_->root, true);
@@ -284,6 +347,36 @@ void LayoutEngine::SetConfig(const LayoutConfig& cfg) {
     labels_.clear();
     numbers_.clear();
     InvalidateMeasurements();
+}
+
+MathTypesetter* LayoutEngine::math() {
+    if (!math_ && !math_failed_ && dw_) {
+        math_ = std::make_unique<MathTypesetter>();
+        if (!math_->Init(dw_.Get())) {
+            math_.reset();
+            math_failed_ = true;
+        }
+    }
+    return math_.get();
+}
+
+std::shared_ptr<const MathBox> LayoutEngine::MathFormula(int32_t index, bool create) {
+    if (!doc_ || index < 0 || static_cast<size_t>(index) >= doc_->maths.size()) return nullptr;
+    auto it = math_boxes_.find(index);
+    if (it != math_boxes_.end()) return it->second;
+    MathTypesetter* m = create ? math() : nullptr;
+    if (!m) return nullptr;
+    if (math_boxes_.size() >= 50000) math_boxes_.clear();  // a bound, a few KB each
+    const MathRef& ref = doc_->maths[static_cast<size_t>(index)];
+    auto box = m->Layout(ref.tex, ref.display, kMathRefSize);
+    math_boxes_.emplace(index, box);
+    return box;
+}
+
+float LayoutEngine::MathSize(const std::wstring& family, float size) {
+    // Like MathJax, math is scaled so its x-height matches the text's.
+    MathTypesetter* m = math();
+    return m ? size * std::clamp(MetricsOf(family).x_height / m->XHeight(), 0.85f, 1.3f) : size;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +419,7 @@ const LayoutEngine::FamilyMetrics& LayoutEngine::MetricsOf(const std::wstring& f
                 const float upem = fm.designUnitsPerEm;
                 m.ascent = fm.ascent / upem;
                 m.descent = (fm.descent + fm.lineGap) / upem;
+                if (fm.xHeight > 0) m.x_height = fm.xHeight / upem;
             }
         }
     }
@@ -403,7 +497,7 @@ LeafStyle LayoutEngine::ResolveStyle(const Block* b, const Ctx& ctx) const {
     if (ctx.header_cell) st.weight = 600;
     if (b->base_flags & kBold) st.weight = 600;
     if (b->base_flags & kItalic) st.italic = true;
-    st.rtl = b->type != BlockType::CodeBlock && DetectRtl(b->text);
+    st.rtl = b->type != BlockType::CodeBlock && DetectRtl(b);
     return st;
 }
 
@@ -500,12 +594,12 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         const size_t nr = b->runs.size();
         while (i < nr) {
             const uint32_t kind = b->runs[i].flags & (kSup | kSub);
-            if (!kind || kind == (kSup | kSub)) {
+            if (!kind || kind == (kSup | kSub) || (b->runs[i].flags & kMath)) {  // formulas raise themselves
                 ++i;
                 continue;
             }
             size_t j = i;
-            while (j + 1 < nr && (b->runs[j + 1].flags & (kSup | kSub)) == kind) ++j;
+            while (j + 1 < nr && (b->runs[j + 1].flags & (kSup | kSub)) == kind && !(b->runs[j + 1].flags & kMath)) ++j;
             const uint32_t s0 = b->runs[i].start;
             const uint32_t s1 = std::min<uint32_t>(b->runs[j].start + b->runs[j].length, len);
             if (s1 > s0) {
@@ -537,20 +631,42 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         }
     }
 
-    // Images, and flag emoji over their characters.
+    // Images, and flag emoji and formulas over their characters.
     const float line_h = st.size * st.line_height;
     for (const InlineObject& o : b->objects) {
-        if (o.image < 0 || o.pos >= len || o.length > len - o.pos) continue;
-        if (o.length > 1) {
-            float size = st.size;
-            for (const StyleRun& r : b->runs) {
-                if (r.start <= o.pos && o.pos < r.start + r.length) {
-                    size = RunFontSize(st.size, r.flags);
-                    break;
-                }
+        if (o.pos >= len || o.length > len - o.pos) continue;
+        uint32_t run_flags = 0;
+        for (const StyleRun& r : b->runs) {
+            if (r.start <= o.pos && o.pos < r.start + r.length) {
+                run_flags = r.flags;
+                break;
+            }
+        }
+        auto run_size = [&] { return RunFontSize(st.size, run_flags); };
+        if (o.math >= 0) {
+            const std::shared_ptr<const MathBox> box = MathFormula(o.math);
+            if (!box) continue;  // no math font: the source stays visible
+            // In <sup>/<sub>: smaller, and raised or lowered like the text there.
+            float size = run_size(), raise = 0;
+            if ((run_flags & (kSup | kSub)) == kSup || (run_flags & (kSup | kSub)) == kSub) {
+                size = st.size * 0.75f;
+                raise = (run_flags & kSup) ? size * 0.5f : -size * 0.25f;
+            }
+            float scale = MathSize(family, size) / kMathRefSize;
+            // Too wide for the line: shrink a little; beyond that it scrolls.
+            if (width < kHugeWidth && width > 0 && box->width * scale > width) {
+                scale = std::max(scale * 0.75f, width / box->width);
             }
             const FamilyMetrics& fm = MetricsOf(family);
-            auto* obj = new EmojiObject(this, o.image, size, st.size * fm.ascent, st.size * fm.descent);
+            auto* obj = new MathObject(this, box, scale, raise, st.size * fm.ascent, st.size * fm.descent, spacing);
+            layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, o.length});
+            obj->Release();
+            continue;
+        }
+        if (o.image < 0) continue;
+        if (o.length > 1) {
+            const FamilyMetrics& fm = MetricsOf(family);
+            auto* obj = new EmojiObject(this, o.image, run_size(), st.size * fm.ascent, st.size * fm.descent);
             layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, o.length});
             obj->Release();
             continue;
@@ -563,10 +679,19 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, 1});
         obj->Release();
     }
+    if (width < kHugeWidth && !st.rtl && HasMath(b)) {
+        // Wider than its column even after shrinking (a formula): it starts at
+        // the column's start and scrolls, rather than overflowing both sides.
+        // (Trailing spaces hang past a wrapped line's end: they don't count.)
+        DWRITE_TEXT_METRICS tm{};
+        if (SUCCEEDED(layout->GetMetrics(&tm)) && tm.width > width + 0.5f) {
+            layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+        }
+    }
     return layout;
 }
 
-float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width) const {
+float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width) {
     const LeafStyle& st = s.style;
     const float line_h = st.size * st.line_height;
     const std::wstring& t = b->text;
@@ -589,19 +714,34 @@ float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width
         lines += std::max(1.f, std::ceil(col / per_line));
         return lines * line_h;
     }
-    float total;
-    if (s.nowrap_w > 0) {
-        total = s.nowrap_w;
-    } else {
-        float units = 0;
-        for (wchar_t c : t) units += (c >= 0x1100) ? 1.f : 0.52f;
-        total = units * st.size;
+    // Formulas count with their typeset size where known: display ones are
+    // typeset for it (they change the height most), inline ones not yet
+    // typeset are guessed from their source.
+    float formulas_w = 0, extra_h = 0, units = 0, breaks = 0;
+    size_t next = 0;
+    for (size_t i = 0; i < t.size(); ++i) {
+        const wchar_t c = t[i];
+        if (next < b->objects.size() && b->objects[next].pos == i) {
+            const InlineObject& o = b->objects[next++];
+            if (o.math >= 0) {
+                const bool display = doc_->maths[static_cast<size_t>(o.math)].display;
+                if (const auto box = MathFormula(o.math, display)) {
+                    const float k = MathSize(st.mono ? mono_family_ : cfg_.font_family, st.size) / kMathRefSize;
+                    formulas_w += box->width * k;
+                    extra_h += std::max(0.f, (box->ascent + box->descent) * k - line_h);
+                } else {
+                    formulas_w += 0.3f * st.size * static_cast<float>(o.length);
+                }
+                i += o.length - 1;
+                continue;
+            }
+        }
+        if (c == 0x2028) breaks += 1.f;
+        units += (c >= 0x1100) ? 1.f : 0.52f;
     }
-    float lines = std::max(1.f, std::ceil(total / std::max(width, 1.f) * 1.04f));
-    for (wchar_t c : t) {
-        if (c == 0x2028) lines += 1.f;
-    }
-    return lines * line_h;
+    const float total = s.nowrap_w > 0 ? s.nowrap_w : units * st.size + formulas_w;
+    const float lines = std::max(1.f, std::ceil(total / std::max(width, 1.f) * 1.04f)) + breaks;
+    return lines * line_h + extra_h;
 }
 
 float LayoutEngine::MeasureLeaf(Block* b, float width, bool exact) {
@@ -626,6 +766,7 @@ float LayoutEngine::MeasureLeaf(Block* b, float width, bool exact) {
     }
     DWRITE_TEXT_METRICS tm{};
     s.layout->GetMetrics(&tm);
+    s.overflow_w = width < kHugeWidth && !s.style.rtl && tm.width > width + 0.5f && HasMath(b) ? tm.width : 0.f;
     s.text_h = tm.height;
     s.width = width;
     s.exact = true;
@@ -948,9 +1089,16 @@ float LayoutEngine::LayoutLeaf(Block* b, float x, float y, float w, const Ctx& c
     } else {
         const float est = EstimateLeaf(b, s, tw);
         const bool is_near = y < exact_y1_ && y + est + pad_t + pad_b > exact_y0_;
-        th = MeasureLeaf(b, tw, is_near || !b->objects.empty() || s.layout != nullptr);
+        // Images can't be estimated (their sizes vary too much): measured right away.
+        const bool images = std::any_of(b->objects.begin(), b->objects.end(),
+                                        [](const InlineObject& o) { return o.image >= 0 && o.length == 1; });
+        th = MeasureLeaf(b, tw, is_near || images || s.layout != nullptr);
     }
     if (!s.exact) ++estimated_count_;
+    // A formula too wide for its column even after shrinking: the leaf
+    // scrolls horizontally like code, with room for the scrollbar below.
+    const bool wide_text = b->type != BlockType::CodeBlock && s.exact && s.overflow_w > tw + 0.5f;
+    if (wide_text) pad_b += std::max(4.f, m_.em * 0.3f) + 6.f;
     s.tx = x + pad_l;
     s.ty = y + pad_t;
     b->h = th + pad_t + pad_b;
@@ -959,6 +1107,7 @@ float LayoutEngine::LayoutLeaf(Block* b, float x, float y, float w, const Ctx& c
         const float cw = s.nowrap_w + pad_l + pad_r;
         if (cw > w + 0.5f) b->content_w = cw;
     }
+    if (wide_text) b->content_w = s.overflow_w + pad_l + pad_r;
     if (b->content_w <= 0) b->scroll_x = 0;
     else b->scroll_x = std::clamp(b->scroll_x, 0.f, std::max(0.f, b->content_w - w));
     return b->h;
@@ -974,7 +1123,7 @@ float LayoutEngine::LayoutList(Block* b, float x, float y, float w, const Ctx& c
     for (const Block* p = b; p && !p->children.empty();) {
         p = p->children.front();
         if (p->IsLeaf()) {
-            b->rtl = DetectRtl(p->text);
+            b->rtl = DetectRtl(p);
             break;
         }
     }
@@ -1033,7 +1182,22 @@ void LayoutEngine::MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& ma
             const LeafStyle st = ResolveStyle(b, ctx);
             const float cw = st.mono ? st.size * 0.6f : st.size * 0.52f;
             float line = 0, word = 0, longest = 0, widest = 0;
-            for (wchar_t c : b->text) {
+            size_t next = 0;  // objects are in text order
+            const std::wstring& family = st.mono ? MonoFamily() : cfg_.font_family;
+            for (size_t i = 0; i < b->text.size(); ++i) {
+                while (next < b->objects.size() && b->objects[next].pos < i) ++next;
+                if (next < b->objects.size() && b->objects[next].pos == i && b->objects[next].math >= 0) {
+                    // A formula counts with its typeset width, not its source.
+                    const auto box = MathFormula(b->objects[next].math);
+                    if (box) {
+                        const float fw = box->width * MathSize(family, st.size) / kMathRefSize;
+                        word += fw;
+                        line += fw;
+                        i += b->objects[next].length - 1;
+                        continue;
+                    }
+                }
+                const wchar_t c = b->text[i];
                 const float adv = (c >= 0x1100 && !st.mono) ? st.size : cw;
                 if (c == L'\n' || c == 0x2028) {
                     widest = std::max(widest, line);

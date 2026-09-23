@@ -151,8 +151,9 @@ void AddFlagImages(Document& doc) {
                 continue;
             }
             while (run < leaf->runs.size() && leaf->runs[run].start + leaf->runs[run].length <= i) ++run;
+            // Superscripts stay letters; formulas are objects of their own.
             const bool raised = run < leaf->runs.size() && leaf->runs[run].start <= i &&
-                                (leaf->runs[run].flags & (kSup | kSub));
+                                (leaf->runs[run].flags & (kSup | kSub | kMath));
             if (!raised && Find(key)) {
                 if (usable < 0) usable = Api().ok();
                 if (!usable) return;  // letters, as Windows shows them

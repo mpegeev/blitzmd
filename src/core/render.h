@@ -43,6 +43,7 @@ public:
 
 private:
     void DrawBlock(Block* b);
+    void DrawLeafScrolled(Block* b);
     void DrawChildren(Block* b);
     void DrawLeaf(Block* b);
     void DrawCodeBlock(Block* b);

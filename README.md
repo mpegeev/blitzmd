@@ -27,8 +27,13 @@ autolink `www.` / `https://` / e-mail), изображения, HTML-сущно�
 **Расширения GitHub**
 - Alerts: `> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]` — с иконками Octicons.
 - Сноски `[^1]`, включая многоабзацные (с кодом и списками внутри), с обратными ссылками ↩.
-- Формулы `$…$`, `$$…$$` и блоки ```` ```math ````: TeX переводится в Unicode-математику
-  (курсивные переменные, греческие буквы, индексы и степени, дроби, корни, матрицы).
+- Формулы `$…$`, `` $`…`$ ``, `$$…$$` и блоки ```` ```math ```` свёрстаны по правилам TeX
+  шрифтом Cambria Math (его таблица OpenType MATH), как MathJax на GitHub: дроби, корни,
+  индексы и пределы у `\sum` / `\int` / `\lim`, растягиваемые скобки `\left…\right`, матрицы и
+  `cases` / `aligned`, акценты и фигурные скобки сверху/снизу, `\text`, `\mathbb` / `\mathcal` /
+  `\mathbf`…, пробелы, `\color`, `\boxed`. Выключные формулы по центру (слишком широкие
+  уменьшаются), строчные стоят на базовой линии текста. Неизвестные команды видны как есть
+  (красным, как в MathJax); копирование и поиск дают исходный TeX.
 - Эмодзи-коды `:rocket:` → 🚀 (полная база GitHub gemoji, 1900+ кодов), цветные эмодзи.
 - Флаги стран 🇷🇺 🇺🇸 🇯🇵 и 🏴󠁧󠁢󠁥󠁮󠁧󠁿 🏴󠁧󠁢󠁳󠁣󠁴󠁿 🏴󠁧󠁢󠁷󠁬󠁳󠁿: в шрифте эмодзи Windows их нет (видны две буквы), поэтому mdview рисует
   их из встроенного набора Twemoji (262 флага, +190 КБ к DLL) размером с соседние эмодзи.
@@ -179,6 +184,8 @@ $t = "out\build\x64-release\mdview_test.exe"
 out\build\x64-release\highlight_test.exe -q   # подсветка синтаксиса: 1.4 млн проверок, фаззинг
 out\build\x64-release\emoji_test.exe          # таблица эмодзи-кодов
 & $t flags samples\gfm\17-flags.md            # флаги: распознавание и встроенный набор
+& $t math samples\gfm\18-math.md              # формулы: разбор TeX, вёрстка, фаззинг
+& $t tex "\frac{a}{b}"                        # дерево разобранной формулы
 ```
 
 Результат по спецификации GFM: все 604 примера, не связанных с «сырым» HTML, совпадают с
@@ -209,7 +216,8 @@ src/plugin.cpp        экспорт WLX: ListLoad(W), ListLoadNext(W), ListSear
                       ListSendCommand, ListPrint(W), ListGetPreviewBitmap(W), ...
 src/core/parser.*     md4c → дерево блоков; HTML-подмножество GitHub, эмодзи, якоря, сноски
 src/core/html.*       токенизатор HTML
-src/core/texmath.*    TeX → Unicode
+src/core/texmath.*    разбор TeX-формул в дерево атомов
+src/core/mathlayout.* вёрстка формул по правилам TeX с таблицей OpenType MATH (Cambria Math)
 src/core/flags.*      флаги-эмодзи из встроенного набора Twemoji (src/twemoji-flags.bin,
                       собирается scripts/gen_flags.py)
 src/core/highlight.*  подсветка синтаксиса

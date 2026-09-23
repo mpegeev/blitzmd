@@ -184,6 +184,7 @@ private:
         int image = -1;
         Block* code = nullptr;      // code block under the point
         Block* summary = nullptr;   // <summary> under the point
+        uint32_t cluster = 0;       // on_text: start of the character (cluster) under the point
         Block* wide = nullptr;      // horizontally scrollable block under the point
     };
     struct ScrollAnchor {
@@ -246,7 +247,9 @@ private:
 
     // Hit testing & interaction
     Hit HitTest(float x, float y) const;  // document coordinates
-    uint32_t LeafPosFromPoint(Block* leaf, float x, float y, bool* inside, uint32_t* run_link) const;
+    uint32_t LeafPosFromPoint(Block* leaf, float x, float y, bool* inside, uint32_t* run_link,
+                              uint32_t* cluster = nullptr) const;
+    TextRange WholeObjects(TextRange r) const;
     float ScrollXOf(const Block* b) const;
     int LinkAt(Block* leaf, uint32_t local) const;
     D2D1_RECT_F ScrollbarTrack() const;
@@ -1033,7 +1036,8 @@ float Viewer::ScrollXOf(const Block* b) const {
     return sx;
 }
 
-uint32_t Viewer::LeafPosFromPoint(Block* leaf, float x, float y, bool* inside, uint32_t* run_link) const {
+uint32_t Viewer::LeafPosFromPoint(Block* leaf, float x, float y, bool* inside, uint32_t* run_link,
+                                  uint32_t* cluster) const {
     auto& self = const_cast<Viewer&>(*this);
     IDWriteTextLayout* tl = self.layout_.TextLayout(leaf);
     if (inside) *inside = false;
@@ -1046,6 +1050,7 @@ uint32_t Viewer::LeafPosFromPoint(Block* leaf, float x, float y, bool* inside, u
     if (inside) *inside = in != FALSE;
     uint32_t pos = m.textPosition + (trailing ? m.length : 0);
     pos = std::min<uint32_t>(pos, static_cast<uint32_t>(leaf->text.size()));
+    if (cluster) *cluster = leaf->text_start + std::min<uint32_t>(m.textPosition, static_cast<uint32_t>(leaf->text.size()));
     if (run_link && in) {
         const int l = LinkAt(leaf, m.textPosition);
         *run_link = static_cast<uint32_t>(l);
@@ -1110,13 +1115,13 @@ Viewer::Hit Viewer::HitTest(float x, float y) const {
     hit.leaf = leaf;
     bool inside = false;
     uint32_t link = static_cast<uint32_t>(-1);
-    hit.pos = LeafPosFromPoint(leaf, x, y, &inside, &link);
+    hit.pos = LeafPosFromPoint(leaf, x, y, &inside, &link, &hit.cluster);
     hit.on_text = inside && b == leaf;
     if (hit.on_text) {
         hit.link = static_cast<int>(link);
         const uint32_t local = hit.pos - leaf->text_start;
         for (const InlineObject& o : leaf->objects) {
-            if (o.length != 1) continue;  // flag emoji behave as text
+            if (o.length != 1 || o.image < 0) continue;  // flag emoji and formulas behave as text
             if (o.pos == local || o.pos + 1 == local) {
                 hit.image = o.image;
                 if (o.pos + 1 == local) {
@@ -1356,6 +1361,17 @@ void Viewer::SelectWordAt(const Hit& hit) {
     if (p >= t.size() && p > 0) --p;
     if (t.empty()) return;
     uint32_t a = p, b = p;
+    // On a formula or flag (either half of it): all of it.
+    const uint32_t at = hit.on_text && hit.cluster >= leaf->text_start ? hit.cluster - leaf->text_start : p;
+    for (const InlineObject& o : leaf->objects) {
+        if (o.length > 1 && at >= o.pos && at < o.pos + o.length) {
+            anchor_ = leaf->text_start + o.pos;
+            selection_ = TextRange{leaf->text_start + o.pos, leaf->text_start + o.pos + o.length};
+            selecting_ = false;
+            Invalidate();
+            return;
+        }
+    }
     if (IsWordChar(t[p])) {
         while (a > 0 && IsWordChar(t[a - 1])) --a;
         while (b < t.size() && IsWordChar(t[b])) ++b;
@@ -1505,7 +1521,25 @@ bool Viewer::JumpToAnchor(const std::wstring& fragment) {
 
 void Viewer::CopySelection() {
     if (!doc_ || selection_.end <= selection_.start) return;
-    CopyTextToClipboard(hwnd_, doc_->PlainText(selection_.start, selection_.end));
+    const TextRange r = WholeObjects(selection_);  // a search hit inside a formula copies all of it
+    CopyTextToClipboard(hwnd_, doc_->PlainText(r.start, r.end));
+}
+
+// `r` grown to cover the formulas and flags it touches (they are drawn,
+// and so selected, as one piece).
+TextRange Viewer::WholeObjects(TextRange r) const {
+    for (const uint32_t p : {r.start, r.end > r.start ? r.end - 1 : r.start}) {
+        const Block* leaf = doc_ ? doc_->LeafAt(p) : nullptr;
+        if (!leaf || p < leaf->text_start) continue;
+        const uint32_t local = p - leaf->text_start;
+        for (const InlineObject& o : leaf->objects) {
+            if (o.length > 1 && local >= o.pos && local < o.pos + o.length) {
+                r.start = std::min(r.start, leaf->text_start + o.pos);
+                r.end = std::max(r.end, leaf->text_start + o.pos + o.length);
+            }
+        }
+    }
+    return r;
 }
 
 void Viewer::CopyCode(Block* code) {
@@ -1709,7 +1743,26 @@ void Viewer::OnContextMenu(int sx, int sy) {
             HMENU contents = CreatePopupMenu();
             for (size_t i = 0; i < toc.size(); ++i) {
                 std::wstring label(static_cast<size_t>((toc[i]->level - min_level) * 4), L' ');
-                for (wchar_t c : toc[i]->text) {
+                const Block* h = toc[i];
+                for (size_t k = 0; k < h->text.size(); ++k) {
+                    const InlineObject* math = nullptr;
+                    for (const InlineObject& o : h->objects) {
+                        if (o.math >= 0 && o.pos == k && static_cast<size_t>(o.math) < doc_->maths.size()) math = &o;
+                    }
+                    if (math) {  // a formula: its TeX without the $ delimiters
+                        for (wchar_t m : Trim(doc_->maths[static_cast<size_t>(math->math)].tex)) {
+                            if (m == L'&') label += L"&&";
+                            else label.push_back(IsSpace(m) ? L' ' : m);
+                            if (label.size() > 90) break;
+                        }
+                        if (label.size() > 90) {
+                            label += L"…";
+                            break;
+                        }
+                        k += math->length - 1;
+                        continue;
+                    }
+                    const wchar_t c = h->text[k];
                     if (c == 0xFFFC || c == 0x200B) continue;
                     if (c == L'&') label += L"&&";
                     else label.push_back(c == 0x2028 ? L' ' : c);

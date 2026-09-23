@@ -138,11 +138,27 @@ void Renderer::DrawChildren(Block* b) {
     }
 }
 
+// A leaf wider than its column (a long formula) scrolls horizontally.
+void Renderer::DrawLeafScrolled(Block* b) {
+    if (b->content_w <= 0) {
+        DrawLeaf(b);
+        return;
+    }
+    rt_->PushAxisAlignedClip(D2D1::RectF(b->x, b->y, b->x + b->w, b->y + b->h), D2D1_ANTIALIAS_MODE_ALIASED);
+    D2D1_MATRIX_3X2_F old;
+    rt_->GetTransform(&old);
+    rt_->SetTransform(D2D1::Matrix3x2F::Translation(-b->scroll_x, 0) * old);
+    DrawLeaf(b);
+    rt_->SetTransform(old);
+    rt_->PopAxisAlignedClip();
+    DrawHScrollbar(b);
+}
+
 void Renderer::DrawBlock(Block* b) {
     const Metrics& m = layout_->metrics();
     switch (b->type) {
     case BlockType::Paragraph:
-        DrawLeaf(b);
+        DrawLeafScrolled(b);
         break;
     case BlockType::Summary: {
         const LeafState* s = layout_->State(b);
@@ -155,11 +171,11 @@ void Renderer::DrawBlock(Block* b) {
             DrawDisclosure(rt_, D2D1::RectF(b->x + em * 0.25f, cy - sz * 0.5f, b->x + em * 0.25f + sz, cy + sz * 0.5f),
                            open, Brush(s->style.color));
         }
-        DrawLeaf(b);
+        DrawLeafScrolled(b);
         break;
     }
     case BlockType::Heading:
-        DrawLeaf(b);
+        DrawLeafScrolled(b);
         if (b->level <= 2) {
             const float y = Snap(b->y + b->h - Hairline());
             rt_->FillRectangle(D2D1::RectF(b->x, y, b->x + b->w, y + Hairline()), Brush(kColorBorderMuted));
@@ -322,21 +338,32 @@ void Renderer::DrawLeaf(Block* b) {
 
     const uint32_t a = b->text_start;
     const uint32_t e = b->text_end();
+    // A formula or flag is drawn in one piece: a range touching it covers all of it.
+    auto whole = [b](uint32_t& s0, uint32_t& s1) {
+        for (const InlineObject& o : b->objects) {
+            if (o.length > 1 && s0 < o.pos + o.length && s1 > o.pos) {
+                s0 = std::min(s0, o.pos);
+                s1 = std::max(s1, o.pos + o.length);
+            }
+        }
+    };
     if (st_->hits && !st_->hits->empty()) {
         const auto& hits = *st_->hits;
         auto it = std::lower_bound(hits.begin(), hits.end(), a,
                                    [](const TextRange& r, uint32_t pos) { return r.end <= pos; });
         for (; it != hits.end() && it->start < e; ++it) {
-            const uint32_t s0 = std::max(it->start, a) - a;
-            const uint32_t s1 = std::min(it->end, e) - a;
+            uint32_t s0 = std::max(it->start, a) - a;
+            uint32_t s1 = std::min(it->end, e) - a;
+            whole(s0, s1);
             const bool current = st_->current_hit >= 0 && &*it == &hits[static_cast<size_t>(st_->current_hit)];
             FillRanges(tl, o, s0, s1 - s0, Brush(current ? kColorSearchCurrent : kColorSearch));
         }
     }
     const TextRange& sel = st_->selection;
     if (sel.end > sel.start && sel.start < e && sel.end > a) {
-        const uint32_t s0 = std::max(sel.start, a) - a;
-        const uint32_t s1 = std::min(sel.end, e) - a;
+        uint32_t s0 = std::max(sel.start, a) - a;
+        uint32_t s1 = std::min(sel.end, e) - a;
+        whole(s0, s1);
         FillRanges(tl, o, s0, s1 - s0, Brush(kColorSelection));
     }
 
@@ -347,6 +374,7 @@ void Renderer::DrawLeaf(Block* b) {
     // Selected images get a tinted overlay (the selection is behind them).
     if (sel.end > sel.start && !b->objects.empty()) {
         for (const InlineObject& obj : b->objects) {
+            if (obj.image < 0) continue;  // formulas are text: the selection is behind them
             const uint32_t pos = a + obj.pos;
             if (pos >= sel.start && pos < sel.end) FillRanges(tl, o, obj.pos, obj.length, Brush(kColorSelection));
         }
