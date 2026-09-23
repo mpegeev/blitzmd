@@ -45,8 +45,14 @@ if ($Package) {
         Copy-Item (Join-Path $built[$a] $name) $stage
     }
     # Total Commander's auto-installer expects a Windows text file (CRLF, ANSI),
-    # whatever line endings the checkout has.
-    $inf = (Get-Content (Join-Path $root 'pluginst.inf')) -join "`r`n"
+    # whatever line endings the checkout has. The version is the one in
+    # CMakeLists.txt (project(... VERSION x.y.z)).
+    $cmake = Get-Content (Join-Path $root 'CMakeLists.txt') -Raw
+    if ($cmake -notmatch 'project\(mdview-wlx VERSION ([0-9.]+)') { throw 'No version in CMakeLists.txt' }
+    $version = $matches[1]
+    $inf = (Get-Content (Join-Path $root 'pluginst.inf') | ForEach-Object {
+        if ($_ -match '^version=') { "version=$version" } else { $_ }
+    }) -join "`r`n"
     [System.IO.File]::WriteAllText((Join-Path $stage 'pluginst.inf'), $inf + "`r`n", [System.Text.Encoding]::ASCII)
     Copy-Item (Join-Path $root 'README.md') $stage
     Copy-Item (Join-Path $root 'LICENSE') $stage

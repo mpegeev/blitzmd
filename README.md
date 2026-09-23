@@ -145,7 +145,14 @@ powershell -File scripts\build.ps1 -Arch all -Package
 
 ## Тестирование
 
-Инструмент `mdview_test.exe` собирается вместе с плагином:
+Весь набор тестов (его же запускает CI):
+
+```powershell
+powershell -File scripts\test.ps1                                          # x64
+powershell -File scripts\test.ps1 -Build out\build\x86-release -Quick     # x86, без фаззинга
+```
+
+Отдельные проверки — инструмент `mdview_test.exe`, который собирается вместе с плагином:
 
 ```powershell
 $t = "out\build\x64-release\mdview_test.exe"
@@ -170,6 +177,19 @@ AddressSanitizer (`-DMDVIEW_ASAN=ON`) и фаззинг чисты.
 `samples/gfm/` — набор документов для визуальной проверки: обзор всей спецификации, README
 в стиле GitHub, alerts/сноски/формулы, 45+ языков кода, таблицы, списки, типографика
 на 15+ языках (включая RTL), пограничные случаи и документ на 2.5 МБ.
+
+## Непрерывная сборка и выпуск версии
+
+GitHub Actions (`.github/workflows/ci.yml`) на каждый push и pull request собирает x64 и x86,
+запускает `scripts\test.ps1` и прикладывает к запуску готовый `mdview.zip`.
+
+Выпуск версии:
+
+1. Поменять номер в `CMakeLists.txt` (`project(mdview-wlx VERSION x.y.z ...)`) — он попадает и
+   в ресурс версии DLL, и в `pluginst.inf` при упаковке.
+2. Закоммитить, поставить тег и отправить его: `git tag vx.y.z` и `git push origin vx.y.z`.
+3. CI проверит, что тег совпадает с версией, соберёт, прогонит тесты и опубликует
+   GitHub Release с `mdview.zip`, который TC устанавливает сам.
 
 ## Архитектура
 
