@@ -733,18 +733,25 @@ struct Placed {
     bool loop = false;                // has a self loop (drawn right of it)
 };
 
+// A subgraph is laid out on its own when no edge crosses its border (then
+// its direction applies and it is one node of its parent's layout), or else
+// as a cluster of its parent's layout, like Mermaid does.
 struct ClusterBox {
-    float w = 0, h = 0;               // outer box
+    bool isolated = false;
+    int level = -1;                   // isolated: its own level; else the one it is a cluster of
+    int graph_index = -1;             // not isolated: its index among that level's clusters
+    float w = 0, h = 0;               // isolated: the outer box
     float content_w = 0, content_h = 0;
     float top = 0;                    // title band
     SceneBuilder::Measured title;
-    D2D1_POINT_2F center{};           // absolute
+    D2D1_RECT_F rect{};               // absolute, once placed
     Style style;
 };
 
 struct Level {
-    int cluster = -1;
-    std::vector<Ref> items;           // nodes and subgraphs directly in it
+    int cluster = -1;                 // -1: the whole graph
+    std::vector<Ref> items;           // nodes and isolated subgraphs laid out in it
+    std::vector<int> clusters;        // subgraphs drawn as its clusters (parents first)
     std::vector<int> edges;           // edges whose ends meet here
     LayeredLayout layout;
     std::vector<int> edge_slot;       // edge -> index in the layered graph's edges
@@ -756,18 +763,15 @@ public:
 
     std::shared_ptr<DiagramScene> Build() {
         MeasureAll();
-        // Levels: the graph and each subgraph, children before parents.
-        const size_t nc = p_.clusters.size();
-        levels_.resize(nc + 1);
-        for (size_t i = 0; i < nc; ++i) levels_[i + 1].cluster = static_cast<int>(i);
-        for (size_t n = 0; n < p_.nodes.size(); ++n) levels_[static_cast<size_t>(p_.nodes[n].cluster + 1)].items.push_back(Ref{static_cast<int>(n), false});
-        for (size_t c = 0; c < nc; ++c) levels_[static_cast<size_t>(p_.clusters[c].parent + 1)].items.push_back(Ref{static_cast<int>(c), true});
+        Classify();
         AssignEdges();
-        // Depth order: deepest first.
-        std::vector<int> order(nc);
-        for (size_t i = 0; i < nc; ++i) order[i] = static_cast<int>(i);
-        std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return Depth(a) > Depth(b); });
-        for (int c : order) LayoutLevel(static_cast<size_t>(c) + 1);
+        // Deepest levels first: their sizes are nodes of their parents.
+        std::vector<int> order;
+        for (int li = 1; li < static_cast<int>(levels_.size()); ++li) order.push_back(li);
+        std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+            return Depth(levels_[static_cast<size_t>(a)].cluster) > Depth(levels_[static_cast<size_t>(b)].cluster);
+        });
+        for (int li : order) LayoutLevel(static_cast<size_t>(li));
         LayoutLevel(0);
 
         // The title above, then everything placed from the top.
@@ -780,20 +784,23 @@ public:
         const Level& root = levels_[0];
         const float width = std::max(root.layout.width, title.w) + 2 * kMargin;
         const float left = kMargin + (width - 2 * kMargin - root.layout.width) / 2;
+        origin_.assign(levels_.size(), D2D1::Point2F(0, 0));
         Place(0, left, top);
         const float height = top + root.layout.height + kMargin;
 
         if (title.layout) b_.Text(title, D2D1::Point2F((width - title.w) / 2, kMargin), Role(kDgText));
-        DrawClusters(-1);
+        DrawClusters();
         DrawEdges();
         DrawNodes();
         return b_.Finish(width, height);
     }
 
 private:
+    int Parent(int c) const { return p_.clusters[static_cast<size_t>(c)].parent; }
+
     int Depth(int cluster) const {
         int d = 0;
-        for (int c = cluster; c >= 0 && d <= kMaxNesting; c = p_.clusters[static_cast<size_t>(c)].parent) ++d;
+        for (int c = cluster; c >= 0 && d <= kMaxNesting; c = Parent(c)) ++d;
         return d;
     }
 
@@ -872,55 +879,136 @@ private:
         }
     }
 
-    // The chain of subgraphs around an edge end, innermost first.
-    std::vector<int> Chain(const Ref& r) const {
+    // Subgraphs around an edge end, innermost first (a subgraph end itself
+    // is not inside itself).
+    std::vector<int> Around(const Ref& r) const {
         std::vector<int> out;
-        int c = r.cluster ? r.index : p_.nodes[static_cast<size_t>(r.index)].cluster;
-        for (int guard = 0; c >= 0 && guard <= kMaxNesting + 1; ++guard) {
-            out.push_back(c);
-            c = p_.clusters[static_cast<size_t>(c)].parent;
-        }
+        int c = r.cluster ? Parent(r.index) : p_.nodes[static_cast<size_t>(r.index)].cluster;
+        for (int guard = 0; c >= 0 && guard <= kMaxNesting + 1; ++guard, c = Parent(c)) out.push_back(c);
         return out;
     }
 
-    // What stands for `r` among the items of `level` (a subgraph around it,
-    // or itself).
-    Ref Representative(const Ref& r, int level_cluster) const {
-        if (!r.cluster && p_.nodes[static_cast<size_t>(r.index)].cluster == level_cluster) return r;
-        int c = r.cluster ? r.index : p_.nodes[static_cast<size_t>(r.index)].cluster;
-        for (int guard = 0; c >= 0 && guard <= kMaxNesting + 1; ++guard) {
-            if (p_.clusters[static_cast<size_t>(c)].parent == level_cluster) return Ref{c, true};
-            c = p_.clusters[static_cast<size_t>(c)].parent;
+    // Which subgraphs are laid out on their own, and the levels.
+    void Classify() {
+        const size_t nc = p_.clusters.size();
+        std::vector<char> crossed(nc, 0);
+        for (const Edge& e : p_.edges) {
+            const std::vector<int> a = Around(e.from), b = Around(e.to);
+            for (const auto* side : {&a, &b}) {
+                const auto* other = side == &a ? &b : &a;
+                for (int c : *side) {
+                    const bool is_end = (e.from.cluster && e.from.index == c) || (e.to.cluster && e.to.index == c);
+                    if (!is_end && std::find(other->begin(), other->end(), c) == other->end()) crossed[static_cast<size_t>(c)] = 1;
+                }
+            }
         }
-        return Ref{-1, false};
+        levels_.assign(1, Level{});
+        for (size_t c = 0; c < nc; ++c) {
+            ClusterBox& box = boxes_[c];
+            box.isolated = !crossed[c];
+            if (box.isolated) {
+                box.level = static_cast<int>(levels_.size());
+                levels_.push_back(Level{});
+                levels_.back().cluster = static_cast<int>(c);
+            }
+        }
+        for (size_t n = 0; n < p_.nodes.size(); ++n) {
+            const Ref r{static_cast<int>(n), false};
+            levels_[static_cast<size_t>(Container(r))].items.push_back(r);
+        }
+        for (size_t c = 0; c < nc; ++c) {
+            const Ref r{static_cast<int>(c), true};
+            const int level = Container(r);
+            if (boxes_[c].isolated) {
+                levels_[static_cast<size_t>(level)].items.push_back(r);
+            } else {
+                boxes_[c].level = level;
+                boxes_[c].graph_index = static_cast<int>(levels_[static_cast<size_t>(level)].clusters.size());
+                levels_[static_cast<size_t>(level)].clusters.push_back(static_cast<int>(c));
+            }
+        }
+    }
+
+    // The level an item is laid out in: that of the innermost isolated
+    // subgraph around it (or the graph's).
+    int Container(const Ref& r) const {
+        int c = r.cluster ? Parent(r.index) : p_.nodes[static_cast<size_t>(r.index)].cluster;
+        for (int guard = 0; c >= 0 && guard <= kMaxNesting + 1; ++guard, c = Parent(c)) {
+            if (boxes_[static_cast<size_t>(c)].isolated) return boxes_[static_cast<size_t>(c)].level;
+        }
+        return 0;
+    }
+
+    // Levels holding an edge end, innermost first.
+    std::vector<int> Levels(const Ref& r) const {
+        std::vector<int> out;
+        int li = (r.cluster && !boxes_[static_cast<size_t>(r.index)].isolated) ? boxes_[static_cast<size_t>(r.index)].level : Container(r);
+        for (int guard = 0; guard <= kMaxNesting + 2; ++guard) {
+            out.push_back(li);
+            if (li == 0) break;
+            li = Container(Ref{levels_[static_cast<size_t>(li)].cluster, true});
+        }
+        return out;
     }
 
     void AssignEdges() {
         for (size_t i = 0; i < p_.edges.size(); ++i) {
             const Edge& e = p_.edges[i];
-            // The innermost subgraph holding both ends (not an end itself).
-            std::vector<int> a = Chain(e.from), b = Chain(e.to);
-            if (e.from.cluster) a.erase(a.begin());
-            if (e.to.cluster) b.erase(b.begin());
-            int level = -1;
+            const std::vector<int> a = Levels(e.from), b = Levels(e.to);
+            int level = 0;
             for (int x : a) {
                 if (std::find(b.begin(), b.end(), x) != b.end()) {
                     level = x;
                     break;
                 }
             }
-            levels_[static_cast<size_t>(level + 1)].edges.push_back(static_cast<int>(i));
+            levels_[static_cast<size_t>(level)].edges.push_back(static_cast<int>(i));
         }
+    }
+
+    // The item of `level` standing for an edge end: itself, the isolated
+    // subgraph around it, or, for a cluster, some item inside it.
+    Ref Representative(const Ref& r, int level) const {
+        if (!(r.cluster && !boxes_[static_cast<size_t>(r.index)].isolated) && Container(r) == level) return r;
+        if (r.cluster && !boxes_[static_cast<size_t>(r.index)].isolated && boxes_[static_cast<size_t>(r.index)].level == level) {
+            for (const Ref& item : levels_[static_cast<size_t>(level)].items) {
+                const std::vector<int> around = Around(item);
+                if (std::find(around.begin(), around.end(), r.index) != around.end()) return item;
+            }
+            return Ref{-1, false};
+        }
+        int c = r.cluster ? r.index : p_.nodes[static_cast<size_t>(r.index)].cluster;
+        for (int guard = 0; c >= 0 && guard <= kMaxNesting + 1; ++guard, c = Parent(c)) {
+            if (boxes_[static_cast<size_t>(c)].isolated && Container(Ref{c, true}) == level) return Ref{c, true};
+        }
+        return Ref{-1, false};
+    }
+
+    // The innermost cluster of `level` around an item (-1: none).
+    int GraphCluster(const Ref& item, int level) const {
+        int c = item.cluster ? Parent(item.index) : p_.nodes[static_cast<size_t>(item.index)].cluster;
+        for (int guard = 0; c >= 0 && guard <= kMaxNesting + 1; ++guard, c = Parent(c)) {
+            const ClusterBox& box = boxes_[static_cast<size_t>(c)];
+            if (box.isolated) return -1;
+            if (box.level == level) return box.graph_index;
+        }
+        return -1;
     }
 
     Placed& P(int node) { return placed_[static_cast<size_t>(node)]; }
 
+    RankDir LevelDir(const Level& lv) const {
+        for (int c = lv.cluster; c >= 0; c = Parent(c)) {
+            if (p_.clusters[static_cast<size_t>(c)].has_dir) return p_.clusters[static_cast<size_t>(c)].dir;
+        }
+        return p_.dir;
+    }
+
     void LayoutLevel(size_t li) {
         Level& lv = levels_[li];
         LayeredGraph g;
-        g.dir = lv.cluster >= 0 && p_.clusters[static_cast<size_t>(lv.cluster)].has_dir
-                    ? p_.clusters[static_cast<size_t>(lv.cluster)].dir
-                    : (lv.cluster >= 0 ? InheritedDir(lv.cluster) : p_.dir);
+        g.dir = LevelDir(lv);
+        g.cluster_pad = kClusterPad;
         std::map<std::pair<int, bool>, int> slot;
         for (size_t k = 0; k < lv.items.size(); ++k) {
             const Ref& r = lv.items[k];
@@ -933,19 +1021,31 @@ private:
                 n.w = P(r.index).w;
                 n.h = P(r.index).h;
             }
+            n.cluster = GraphCluster(r, static_cast<int>(li));
             g.nodes.push_back(n);
+        }
+        for (int c : lv.clusters) {
+            LayeredGraph::Cluster gc;
+            const int parent = Parent(c);
+            gc.parent = parent >= 0 && !boxes_[static_cast<size_t>(parent)].isolated && boxes_[static_cast<size_t>(parent)].level == static_cast<int>(li)
+                            ? boxes_[static_cast<size_t>(parent)].graph_index
+                            : -1;
+            const ClusterBox& box = boxes_[static_cast<size_t>(c)];
+            if (box.title.layout) {
+                gc.title_w = box.title.w + 8;
+                gc.title_h = box.title.h;
+            }
+            g.clusters.push_back(gc);
         }
         lv.edge_slot.assign(p_.edges.size(), -1);
         for (int ei : lv.edges) {
             const Edge& e = p_.edges[static_cast<size_t>(ei)];
-            const Ref a = Representative(e.from, lv.cluster), b = Representative(e.to, lv.cluster);
+            const Ref a = Representative(e.from, static_cast<int>(li)), b = Representative(e.to, static_cast<int>(li));
             const auto ia = slot.find({a.index, a.cluster}), ib = slot.find({b.index, b.cluster});
             if (ia == slot.end() || ib == slot.end()) continue;
             const int sa = ia->second, sb = ib->second;
             if (sa == sb) {
-                if (!a.cluster && !e.from.cluster && !e.to.cluster && e.from.index == e.to.index) {
-                    P(e.from.index).loop = true;  // drawn beside the node
-                }
+                if (!e.from.cluster && !e.to.cluster && e.from.index == e.to.index) P(e.from.index).loop = true;
                 continue;
             }
             LayeredGraph::Edge ge;
@@ -976,17 +1076,9 @@ private:
         }
     }
 
-    RankDir InheritedDir(int cluster) const {
-        for (int c = p_.clusters[static_cast<size_t>(cluster)].parent; c >= 0; c = p_.clusters[static_cast<size_t>(c)].parent) {
-            if (p_.clusters[static_cast<size_t>(c)].has_dir) return p_.clusters[static_cast<size_t>(c)].dir;
-        }
-        return p_.dir;
-    }
-
     // Absolute positions: level `li`'s layout with its top left at (x, y).
     void Place(size_t li, float x, float y) {
         Level& lv = levels_[li];
-        origin_.resize(levels_.size());
         origin_[li] = D2D1::Point2F(x, y);
         for (size_t k = 0; k < lv.items.size(); ++k) {
             const Ref& r = lv.items[k];
@@ -994,19 +1086,27 @@ private:
             const D2D1_POINT_2F abs = D2D1::Point2F(x + c.x, y + c.y);
             if (r.cluster) {
                 ClusterBox& box = boxes_[static_cast<size_t>(r.index)];
-                box.center = abs;
-                const float left = abs.x - box.w / 2 + kClusterPad + (box.w - 2 * kClusterPad - box.content_w) / 2;
-                const float top = abs.y - box.h / 2 + kClusterPad + box.top;
-                Place(static_cast<size_t>(r.index) + 1, left, top);
+                box.rect = D2D1::RectF(abs.x - box.w / 2, abs.y - box.h / 2, abs.x + box.w / 2, abs.y + box.h / 2);
+                const float left = box.rect.left + kClusterPad + (box.w - 2 * kClusterPad - box.content_w) / 2;
+                const float top = box.rect.top + kClusterPad + box.top;
+                Place(static_cast<size_t>(box.level), left, top);
             } else {
                 // A node with a loop sits left of its widened slot.
                 P(r.index).center = D2D1::Point2F(abs.x - (P(r.index).loop ? kLoopReach : 0.f), abs.y);
             }
         }
+        for (size_t k = 0; k < lv.clusters.size(); ++k) {
+            const D2D1_RECT_F& r = lv.layout.clusters[k];
+            boxes_[static_cast<size_t>(lv.clusters[k])].rect = D2D1::RectF(x + r.left, y + r.top, x + r.right, y + r.bottom);
+        }
     }
 
     D2D1_POINT_2F CenterOf(const Ref& r) const {
-        return r.cluster ? boxes_[static_cast<size_t>(r.index)].center : placed_[static_cast<size_t>(r.index)].center;
+        if (r.cluster) {
+            const D2D1_RECT_F& b = boxes_[static_cast<size_t>(r.index)].rect;
+            return D2D1::Point2F((b.left + b.right) / 2, (b.top + b.bottom) / 2);
+        }
+        return placed_[static_cast<size_t>(r.index)].center;
     }
 
     std::vector<D2D1_POINT_2F> Outline(int node) const {
@@ -1029,8 +1129,8 @@ private:
     // Where a line from inside `r` towards `toward` leaves its shape.
     D2D1_POINT_2F Clip(const Ref& r, D2D1_POINT_2F toward) const {
         if (r.cluster) {
-            const ClusterBox& box = boxes_[static_cast<size_t>(r.index)];
-            return ClipRect(box.center, box.w, box.h, toward);
+            const D2D1_RECT_F& b = boxes_[static_cast<size_t>(r.index)].rect;
+            return ClipRect(CenterOf(r), b.right - b.left, b.bottom - b.top, toward);
         }
         const Placed& pl = placed_[static_cast<size_t>(r.index)];
         switch (p_.nodes[static_cast<size_t>(r.index)].shape) {
@@ -1051,22 +1151,24 @@ private:
         }
     }
 
-    void DrawClusters(int parent) {
-        for (size_t i = 0; i < p_.clusters.size(); ++i) {
-            if (p_.clusters[i].parent != parent) continue;
-            const ClusterBox& box = boxes_[i];
-            const D2D1_RECT_F r = D2D1::RectF(box.center.x - box.w / 2, box.center.y - box.h / 2, box.center.x + box.w / 2,
-                                              box.center.y + box.h / 2);
+    void DrawClusters() {
+        std::vector<int> order(p_.clusters.size());
+        for (size_t i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
+        std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return Depth(a) < Depth(b); });
+        for (int i : order) {
+            const ClusterBox& box = boxes_[static_cast<size_t>(i)];
+            const D2D1_RECT_F& r = box.rect;
+            if (r.right <= r.left || r.bottom <= r.top) continue;
             const Style& st = box.style;
             b_.Rect(r, 0, st.fill.role != kDgNone ? st.fill : Role(kDgClusterFill),
                     st.stroke.role != kDgNone ? st.stroke : Role(kDgClusterStroke), st.stroke_width >= 0 ? st.stroke_width : 1.f,
                     st.dash == 1 ? 1 : 0);
             if (box.title.layout) {
-                const Label& l = p_.clusters[i].title;
-                b_.Text(box.title, D2D1::Point2F(box.center.x - box.title.w / 2, r.top + kClusterPad / 2 + 2),
+                const Label& l = p_.clusters[static_cast<size_t>(i)].title;
+                const float y = r.top + (box.isolated ? kClusterPad / 2 + 2 : kClusterPad / 2);
+                b_.Text(box.title, D2D1::Point2F((r.left + r.right) / 2 - box.title.w / 2, y),
                         st.color.role != kDgNone ? st.color : Role(kDgText), l.pos, l.len);
             }
-            DrawClusters(static_cast<int>(i));
         }
     }
 
@@ -1077,14 +1179,14 @@ private:
             const D2D1_POINT_2F o = origin_[li];
             for (int ei : lv.edges) {
                 const Edge& e = p_.edges[static_cast<size_t>(ei)];
-                const int slot = lv.edge_slot[static_cast<size_t>(ei)];
+                const int slot = lv.edge_slot.empty() ? -1 : lv.edge_slot[static_cast<size_t>(ei)];
                 Style st = p_.default_link;
                 if (auto it = p_.link_styles.find(static_cast<size_t>(ei)); it != p_.link_styles.end()) st.Merge(it->second);
                 const DgColor color = st.stroke.role != kDgNone ? st.stroke : Role(kDgLine);
                 const float width = st.stroke_width >= 0 ? st.stroke_width : (e.stroke == 1 ? 3.5f : 2.f);
                 const uint8_t dash = e.stroke == 2 ? 2 : (st.dash == 1 ? 1 : 0);
                 if (slot < 0) {
-                    if (!e.from.cluster && !e.to.cluster && e.from.index == e.to.index) {
+                    if (!e.from.cluster && !e.to.cluster && e.from.index == e.to.index && e.stroke != 3) {
                         DrawLoop(e, static_cast<size_t>(ei), color, width, dash, st);
                     }
                     continue;
@@ -1096,7 +1198,6 @@ private:
                 pts.push_back(CenterOf(e.to));
                 pts.front() = Clip(e.from, pts[1]);
                 pts.back() = Clip(e.to, pts[pts.size() - 2]);
-                // Drop bends swallowed by the end shapes.
                 const D2D1_POINT_2F tip_end = pts.back(), tip_start = pts.front();
                 const D2D1_POINT_2F before_end = pts[pts.size() - 2], after_start = pts[1];
                 if (e.end != Marker::None) pts.back() = Retreat(pts.back(), before_end, MarkerLength(e.end));
@@ -1170,7 +1271,7 @@ private:
                 b_.Rect(r, 0, fill, stroke, sw, dash);
                 b_.Begin(D2D1::Point2F(r.left + 8, r.top));
                 b_.LineTo(D2D1::Point2F(r.left + 8, r.bottom));
-                b_.Begin(D2D1::Point2F(r.right - 8, r.top));
+                b_.MoveTo(D2D1::Point2F(r.right - 8, r.top));
                 b_.LineTo(D2D1::Point2F(r.right - 8, r.bottom));
                 b_.End(Role(kDgNone), stroke, sw, dash);
                 break;

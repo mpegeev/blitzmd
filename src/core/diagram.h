@@ -110,8 +110,10 @@ public:
     void Rect(const D2D1_RECT_F& r, float radius, DgColor fill, DgColor stroke, float stroke_width = 1,
               uint8_t dash = 0);
     void Ellipse(const D2D1_RECT_F& r, DgColor fill, DgColor stroke, float stroke_width = 1, uint8_t dash = 0);
-    // Paths: Begin, then points; End adds it with its paint.
+    // Paths: Begin, then points (MoveTo starts another part); End adds it
+    // with its paint.
     void Begin(D2D1_POINT_2F p);
+    void MoveTo(D2D1_POINT_2F p);
     void LineTo(D2D1_POINT_2F p);
     void CubicTo(D2D1_POINT_2F c1, D2D1_POINT_2F c2, D2D1_POINT_2F p);
     void Close();

@@ -6,6 +6,7 @@
 #include "core/highlight.h"
 #include "core/images.h"
 #include "core/mathlayout.h"
+#include "core/mermaid.h"
 #include "core/zoom.h"
 
 namespace mdv {
@@ -30,7 +31,7 @@ bool DetectRtl(const Block* b) {
     const std::wstring& t = b->text;
     for (size_t i = 0; i < t.size(); ++i) {
         for (const InlineObject& o : b->objects) {
-            if (o.math >= 0 && o.pos == i) i += o.length;
+            if ((o.math >= 0 || o.diagram >= 0) && o.pos == i) i += o.length;
         }
         if (i >= t.size()) break;
         if (IsStrongRtl(t[i])) return true;
@@ -79,6 +80,25 @@ private:
     LONG ref_ = 1;
 };
 
+constexpr float kMinZoomable = 40.f;  // DIPs: badges and icons are left alone
+
+// Lists a zoomable object's box, in view coordinates, for the viewer's mouse
+// handling.
+void RecordDrawn(DrawContext& dc, InlineObject* object, const D2D1_RECT_F& box) {
+    D2D1_MATRIX_3X2_F m;
+    dc.rt->GetTransform(&m);
+    if (m._12 != 0 || m._21 != 0) return;
+    const D2D1_RECT_F v = D2D1::RectF(box.left * m._11 + m._31, box.top * m._22 + m._32, box.right * m._11 + m._31,
+                                      box.bottom * m._22 + m._32);
+    const D2D1_RECT_F seen = D2D1::RectF(std::max(v.left, dc.clip.left), std::max(v.top, dc.clip.top),
+                                         std::min(v.right, dc.clip.right), std::min(v.bottom, dc.clip.bottom));
+    if (seen.right <= seen.left || seen.bottom <= seen.top) return;
+    try {  // nothing may unwind through DirectWrite
+        dc.drawn->push_back(DrawnObject{dc.leaf, object, v, seen});
+    } catch (...) {
+    }
+}
+
 // An image sitting on the baseline, with the line's strut descent below it
 // (the gap under inline images in CSS). Proportional line spacing scales
 // every line by `spacing`, inline objects included, which would add leading
@@ -99,7 +119,7 @@ public:
         const ImageEntry* e = dc.images->Entry(index_);
         const bool zoomable = dc.interactive && e && e->state == ImageState::Ready && w_ >= kMinZoomable &&
                               h_ >= kMinZoomable;
-        if (zoomable && dc.drawn) RecordDrawn(dc, box);
+        if (zoomable && dc.drawn) RecordDrawn(dc, object_, box);
         if (zoomable && IsZoomed(*object_)) {
             dc.rt->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
             dc.images->Draw(dc.rt, index_, ZoomedRect(box, *object_), dc.palette, engine_->dwrite(), em_);
@@ -118,28 +138,61 @@ public:
     }
 
 private:
-    static constexpr float kMinZoomable = 40.f;  // DIPs: badges and icons are left alone
-
-    // Lists the box, in view coordinates, for the viewer's mouse handling.
-    void RecordDrawn(DrawContext& dc, const D2D1_RECT_F& box) {
-        D2D1_MATRIX_3X2_F m;
-        dc.rt->GetTransform(&m);
-        if (m._12 != 0 || m._21 != 0) return;
-        const D2D1_RECT_F v = D2D1::RectF(box.left * m._11 + m._31, box.top * m._22 + m._32,
-                                          box.right * m._11 + m._31, box.bottom * m._22 + m._32);
-        const D2D1_RECT_F seen = D2D1::RectF(std::max(v.left, dc.clip.left), std::max(v.top, dc.clip.top),
-                                             std::min(v.right, dc.clip.right), std::min(v.bottom, dc.clip.bottom));
-        if (seen.right <= seen.left || seen.bottom <= seen.top) return;
-        try {  // nothing may unwind through DirectWrite
-            dc.drawn->push_back(DrawnObject{dc.leaf, object_, v, seen});
-        } catch (...) {
-        }
-    }
-
     LayoutEngine* engine_;
     InlineObject* object_;
     int index_;
     float w_, h_, em_, baseline_, descent_;
+};
+
+// A diagram (mermaid.h) over its source, drawn like an image on the
+// baseline: its scene scaled into the box, zoomable, with search hits and the
+// selection on the labels they touch.
+class DiagramObject final : public InlineObjectBase {
+public:
+    DiagramObject(LayoutEngine* engine, InlineObject* object, std::shared_ptr<const DiagramScene> scene, float w,
+                  float h, float spacing, float strut_descent)
+        : engine_(engine), object_(object), scene_(std::move(scene)), w_(w), h_(h),
+          baseline_(h / std::max(spacing, 0.5f)), descent_(strut_descent) {}
+
+    HRESULT STDMETHODCALLTYPE Draw(void*, IDWriteTextRenderer*, FLOAT x, FLOAT y, BOOL, BOOL,
+                                   IUnknown*) override {
+        DrawContext& dc = engine_->draw_context();
+        if (!dc.rt || !scene_ || w_ <= 0 || h_ <= 0) return S_OK;
+        const float top = y + baseline_ - h_;
+        const D2D1_RECT_F box = D2D1::RectF(x, top, x + w_, top + h_);
+        // Highlights in the diagram's own positions.
+        local_.clear();
+        for (DiagramHighlight hl : dc.diagram_highlights) {
+            if (hl.end <= object_->pos || hl.start >= object_->pos + object_->length) continue;
+            hl.start = std::max(hl.start, object_->pos) - object_->pos;
+            hl.end = std::min(hl.end, object_->pos + object_->length) - object_->pos;
+            local_.push_back(hl);
+        }
+        const bool zoomable = dc.interactive && w_ >= kMinZoomable && h_ >= kMinZoomable;
+        if (zoomable && dc.drawn) RecordDrawn(dc, object_, box);
+        if (zoomable && IsZoomed(*object_)) {
+            dc.rt->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            DrawDiagram(dc.rt, *scene_, ZoomedRect(box, *object_), dc.dark, &local_, dc.highlight_brushes);
+            dc.rt->PopAxisAlignedClip();
+        } else {
+            DrawDiagram(dc.rt, *scene_, box, dc.dark, &local_, dc.highlight_brushes);
+        }
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetMetrics(DWRITE_INLINE_OBJECT_METRICS* m) override {
+        m->width = w_;
+        m->height = baseline_ + descent_;
+        m->baseline = baseline_;
+        m->supportsSideways = FALSE;
+        return S_OK;
+    }
+
+private:
+    LayoutEngine* engine_;
+    InlineObject* object_;
+    std::shared_ptr<const DiagramScene> scene_;
+    float w_, h_, baseline_, descent_;
+    std::vector<DiagramHighlight> local_;
 };
 
 // Superscript / subscript text: drawn as a small text layout shifted
@@ -340,6 +393,7 @@ void LayoutEngine::SetDocument(Document* doc) {
     leaves_.clear();
     tables_.clear();
     math_boxes_.clear();
+    diagrams_.clear();
     if (doc_) {
         leaves_.resize(doc_->leaves.size());
         UpdateVisibility(doc_->root, true);
@@ -350,6 +404,7 @@ void LayoutEngine::SetDocument(Document* doc) {
 }
 
 void LayoutEngine::SetConfig(const LayoutConfig& cfg) {
+    if (cfg.font_family != cfg_.font_family) diagrams_.clear();  // their text is in it
     cfg_ = cfg;
     if (cfg_.font_family.empty() || (dw_ && !FontFamilyExists(dw_.Get(), cfg_.font_family.c_str()))) {
         cfg_.font_family = L"Segoe UI";
@@ -401,6 +456,18 @@ std::shared_ptr<const MathBox> LayoutEngine::MathFormula(int32_t index, bool cre
     auto box = m->Layout(ref.tex, ref.display, kMathRefSize);
     math_boxes_.emplace(index, box);
     return box;
+}
+
+std::shared_ptr<const DiagramScene> LayoutEngine::Diagram(int32_t index) {
+    if (!doc_ || !dw_ || index < 0 || static_cast<size_t>(index) >= doc_->diagrams.size()) return nullptr;
+    auto it = diagrams_.find(index);
+    if (it != diagrams_.end()) return it->second;
+    if (diagrams_.size() >= 2000) diagrams_.clear();
+    std::wstring error;
+    std::shared_ptr<const DiagramScene> scene =
+        LayoutMermaid(doc_->diagrams[static_cast<size_t>(index)].source, dw_.Get(), cfg_.font_family, kDiagramRefSize, &error);
+    diagrams_.emplace(index, scene);
+    return scene;
 }
 
 float LayoutEngine::MathSize(const std::wstring& family, float size) {
@@ -673,6 +740,18 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
             }
         }
         auto run_size = [&] { return RunFontSize(st.size, run_flags); };
+        if (o.diagram >= 0) {
+            // As wide as the text makes it, shrunk to the column if wider.
+            const std::shared_ptr<const DiagramScene> scene = Diagram(o.diagram);
+            if (!scene) continue;  // the source stays visible
+            float k = st.size / kDiagramRefSize;
+            if (width < kHugeWidth && width > 0 && scene->width * k > width) k = width / scene->width;
+            auto* obj = new DiagramObject(this, &o, scene, scene->width * k, scene->height * k, spacing,
+                                          st.size * MetricsOf(family).descent);
+            layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, o.length});
+            obj->Release();
+            continue;
+        }
         if (o.math >= 0) {
             const std::shared_ptr<const MathBox> box = MathFormula(o.math);
             if (!box) continue;  // no math font: the source stays visible
@@ -753,6 +832,16 @@ float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width
         const wchar_t c = t[i];
         if (next < b->objects.size() && b->objects[next].pos == i) {
             const InlineObject& o = b->objects[next++];
+            if (o.diagram >= 0) {
+                if (const auto scene = Diagram(o.diagram)) {
+                    float k = st.size / kDiagramRefSize;
+                    if (scene->width * k > width && width > 0) k = width / scene->width;
+                    formulas_w += scene->width * k;
+                    extra_h += std::max(0.f, scene->height * k - line_h);
+                    i += o.length - 1;
+                    continue;
+                }
+            }
             if (o.math >= 0) {
                 const bool display = doc_->maths[static_cast<size_t>(o.math)].display;
                 if (const auto box = MathFormula(o.math, display)) {
@@ -1106,6 +1195,7 @@ float LayoutEngine::LayoutLeaf(Block* b, float x, float y, float w, const Ctx& c
         pad_l = pad_t = pad_r = pad_b = m_.code_pad * ctx.scale;
         s.gutter = GutterWidth(b, st);
         pad_l += s.gutter;
+        if (!b->note.empty()) pad_t += NoteHeight(st.size);  // a line above the code (render.cpp)
     } else if (b->type == BlockType::Heading && b->level <= 2) {
         pad_b = st.size * 0.3f + 1.f;
     } else if (b->type == BlockType::Summary) {

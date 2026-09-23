@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "core/diagram.h"
 #include "core/document.h"
 #include "core/theme.h"
 #include "core/util.h"
@@ -28,6 +29,8 @@ class ImageStore;
 class LayoutEngine;
 class MathTypesetter;
 struct MathBox;
+
+constexpr float kDiagramRefSize = 16.f;  // diagrams are laid out once at this size and scaled
 
 struct LayoutConfig {
     std::wstring font_family = L"Segoe UI";
@@ -115,6 +118,11 @@ struct DrawContext {
     std::vector<DrawnObject>* drawn = nullptr;
     D2D1_RECT_F clip{};
     Block* leaf = nullptr;  // leaf being drawn
+    // Diagrams: the theme, and search hits and the selection in the leaf
+    // being drawn (its positions), shown on the labels they touch.
+    bool dark = false;
+    std::vector<DiagramHighlight> diagram_highlights;
+    ID2D1Brush* highlight_brushes[3] = {};  // search hit, current hit, selection
 };
 
 class LayoutEngine {
@@ -165,9 +173,16 @@ public:
     IDWriteTextLayout* LineNumberLayout(int number, float size, float* baseline);
     // Gap between the line numbers and the code.
     float GutterGap(float size) const { return size * 1.25f; }
+    // A code block's note (Block::note): its line above the code.
+    float NoteHeight(float size) const { return size * 1.6f; }
 
     DrawContext& draw_context() { return draw_ctx_; }
     ImageStore* images() const { return images_; }
+    // Diagram `index` of the document laid out at kDiagramRefSize DIPs per
+    // em (it scales linearly); nullptr if it can't be drawn.
+    std::shared_ptr<const DiagramScene> Diagram(int32_t index);
+    // DIPs per diagram unit at the document's text size.
+    float DiagramScale() const { return m_.em / kDiagramRefSize; }
     // Formula typesetter (created on first use; nullptr without a math font).
     MathTypesetter* math();
     Palette* palette() const { return palette_; }
@@ -246,6 +261,7 @@ private:
     std::unique_ptr<MathTypesetter> math_;
     bool math_failed_ = false;
     std::unordered_map<int32_t, std::shared_ptr<const MathBox>> math_boxes_;
+    std::unordered_map<int32_t, std::shared_ptr<const DiagramScene>> diagrams_;
     float viewport_w_ = 0.f;
     float doc_h_ = 0.f;
     float doc_w_ = 0.f;

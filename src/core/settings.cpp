@@ -72,6 +72,7 @@ void LoadSettings() {
     s.smooth_scroll = ReadInt(L"SmoothScroll", d.smooth_scroll) != 0;
     s.emoji_shortcodes = ReadInt(L"EmojiShortcodes", d.emoji_shortcodes) != 0;
     s.math = ReadInt(L"Math", d.math) != 0;
+    s.mermaid = ReadInt(L"Mermaid", d.mermaid) != 0;
     s.syntax_highlight = ReadInt(L"SyntaxHighlight", d.syntax_highlight) != 0;
     s.hardware = ReadInt(L"HardwareRendering", d.hardware) != 0;
     s.wrap_code = std::clamp(ReadInt(L"WrapCode", d.wrap_code), -1, 1);
@@ -92,6 +93,7 @@ void SaveSettings() {
     WriteInt(L"SmoothScroll", s.smooth_scroll ? 1 : 0);
     WriteInt(L"EmojiShortcodes", s.emoji_shortcodes ? 1 : 0);
     WriteInt(L"Math", s.math ? 1 : 0);
+    WriteInt(L"Mermaid", s.mermaid ? 1 : 0);
     WriteInt(L"SyntaxHighlight", s.syntax_highlight ? 1 : 0);
     WriteInt(L"HardwareRendering", s.hardware ? 1 : 0);
     WriteInt(L"WrapCode", s.wrap_code);

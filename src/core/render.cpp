@@ -371,6 +371,11 @@ void Renderer::DrawLeaf(Block* b) {
             }
         }
     };
+    // A diagram shows hits and the selection on its labels (the leaf is
+    // nothing but its source).
+    DrawContext& dc = layout_->draw_context();
+    dc.diagram_highlights.clear();
+    const bool diagram = std::any_of(b->objects.begin(), b->objects.end(), [](const InlineObject& x) { return x.diagram >= 0; });
     if (st_->hits && !st_->hits->empty()) {
         const auto& hits = *st_->hits;
         auto it = std::lower_bound(hits.begin(), hits.end(), a,
@@ -378,8 +383,12 @@ void Renderer::DrawLeaf(Block* b) {
         for (; it != hits.end() && it->start < e; ++it) {
             uint32_t s0 = std::max(it->start, a) - a;
             uint32_t s1 = std::min(it->end, e) - a;
-            whole(s0, s1);
             const bool current = st_->current_hit >= 0 && &*it == &hits[static_cast<size_t>(st_->current_hit)];
+            if (diagram) {
+                dc.diagram_highlights.push_back(DiagramHighlight{s0, s1, static_cast<uint8_t>(current ? 1 : 0)});
+                continue;
+            }
+            whole(s0, s1);
             FillRanges(tl, o, s0, s1 - s0, Brush(current ? kColorSearchCurrent : kColorSearch));
         }
     }
@@ -387,13 +396,22 @@ void Renderer::DrawLeaf(Block* b) {
     if (sel.end > sel.start && sel.start < e && sel.end > a) {
         uint32_t s0 = std::max(sel.start, a) - a;
         uint32_t s1 = std::min(sel.end, e) - a;
-        whole(s0, s1);
-        FillRanges(tl, o, s0, s1 - s0, Brush(kColorSelection));
+        if (diagram) {
+            dc.diagram_highlights.push_back(DiagramHighlight{s0, s1, 2});
+        } else {
+            whole(s0, s1);
+            FillRanges(tl, o, s0, s1 - s0, Brush(kColorSelection));
+        }
     }
 
-    DrawContext& dc = layout_->draw_context();
     dc.default_brush = Brush(s->style.color);
     dc.leaf = b;
+    if (diagram) {
+        dc.dark = palette_->theme().dark;
+        dc.highlight_brushes[0] = Brush(kColorSearch);
+        dc.highlight_brushes[1] = Brush(kColorSearchCurrent);
+        dc.highlight_brushes[2] = Brush(kColorSelection);
+    }
     rt_->DrawTextLayout(o, tl, dc.default_brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
 
     // Selected images get a tinted overlay (the selection is behind them).
@@ -413,6 +431,19 @@ void Renderer::DrawCodeBlock(Block* b) {
     // With line numbers the code scrolls (horizontally) right of their column.
     const LeafState* s = layout_->State(b);
     const float gutter = s ? s->gutter : 0.f;
+    if (!b->note.empty() && s) {
+        // Why a diagram isn't drawn: a muted line with a warning sign above the code.
+        const float size = s->style.size;
+        const float top = b->y + m.code_pad * 0.6f;
+        const float left = b->x + m.code_pad;
+        PushClip(box);
+        DrawIcon(rt_, icons_, Icon::Alert, D2D1::RectF(left, top + size * 0.15f, left + size * 0.9f, top + size * 1.05f),
+                 Brush(kColorAlertWarning));
+        if (IDWriteTextLayout* tl = layout_->LabelLayout(b->note, size * 0.85f, 400)) {
+            rt_->DrawTextLayout(D2D1::Point2F(left + size * 1.3f, top), tl, Brush(kColorMuted), D2D1_DRAW_TEXT_OPTIONS_NONE);
+        }
+        PopClip();
+    }
     D2D1_RECT_F code_clip = box;
     if (gutter > 0) code_clip.left = s->tx - layout_->GutterGap(s->style.size) * 0.5f;
     PushClip(code_clip);

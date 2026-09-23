@@ -294,7 +294,7 @@ private:
     void UpdateObjectHover(float x, float y);
     void ZoomObjectBy(const DrawnObject& d, float factor, float x, float y);
     void ObjectButton(const DrawnObject& d, ZoomButton button);
-    void ShowZoomStatus(float zoom);
+    void ShowZoomStatus(float zoom, const InlineObject* object);
     bool OpenFullView(Block* leaf, const InlineObject* object);
     void CloseFullView();
     D2D1_RECT_F ViewRect() const { return D2D1::RectF(0, 0, ViewWidth(), ViewHeight()); }
@@ -508,7 +508,7 @@ void Viewer::SettingsChanged(const Settings& old) {
     if (s.hardware != old.hardware) DiscardDeviceResources();
     if (s.auto_reload != old.auto_reload) StartWatch();
     const bool reparse = s.remote_images != old.remote_images || s.emoji_shortcodes != old.emoji_shortcodes ||
-                         s.math != old.math || s.syntax_highlight != old.syntax_highlight;
+                         s.math != old.math || s.mermaid != old.mermaid || s.syntax_highlight != old.syntax_highlight;
     if (reparse && !path_.empty() && !printing_) {
         Reload();
     } else {
@@ -573,6 +573,7 @@ bool Viewer::Load(const std::wstring& path, int flags, bool keep_history) {
     ParseOptions opt;
     opt.emoji_shortcodes = s.emoji_shortcodes;
     opt.math = s.math;
+    opt.mermaid = s.mermaid;
     opt.highlight_code = s.syntax_highlight;
     auto doc = ParseMarkdown(utf8, path, opt);
     utf8.clear();
@@ -1057,7 +1058,7 @@ void Viewer::OnMouseWheel(int delta, bool horizontal, WORD keys, POINT screen) {
         // Full-window view: the wheel zooms (no Ctrl needed).
         if (!horizontal) {
             full_.ZoomAt(factor, mx, my, ViewRect());
-            ShowZoomStatus(full_.scale);
+            ShowZoomStatus(full_.scale, full_.object);
             Invalidate();
         }
         return;
@@ -1815,8 +1816,10 @@ void Viewer::UpdateObjectHover(float x, float y) {
     }
 }
 
-void Viewer::ShowZoomStatus(float zoom) {
-    FlashStatus(std::wstring(Tr(L"Image: ", L"Изображение: ")) + std::to_wstring(std::lround(zoom * 100.f)) + L"%");
+void Viewer::ShowZoomStatus(float zoom, const InlineObject* object) {
+    const bool diagram = object && object->diagram >= 0;
+    FlashStatus(std::wstring(diagram ? Tr(L"Diagram: ", L"Диаграмма: ") : Tr(L"Image: ", L"Изображение: ")) +
+                std::to_wstring(std::lround(zoom * 100.f)) + L"%");
 }
 
 void Viewer::ZoomObjectBy(const DrawnObject& d, float factor, float x, float y) {
@@ -1827,7 +1830,7 @@ void Viewer::ZoomObjectBy(const DrawnObject& d, float factor, float x, float y) 
         pan_view_x_ = d.object->view_x;
         pan_view_y_ = d.object->view_y;
     }
-    ShowZoomStatus(d.object->zoom);
+    ShowZoomStatus(d.object->zoom, d.object);
     Invalidate();
 }
 
@@ -1843,7 +1846,7 @@ void Viewer::ObjectButton(const DrawnObject& d, ZoomButton button) {
     case ZoomButton::ZoomOut: ZoomObjectBy(d, 1.f / kButtonZoomStep, cx, cy); break;
     case ZoomButton::Reset:
         ResetObjectView(*d.object);
-        ShowZoomStatus(1.f);
+        ShowZoomStatus(1.f, d.object);
         Invalidate();
         break;
     case ZoomButton::Expand: OpenFullView(d.leaf, d.object); break;
@@ -1852,16 +1855,26 @@ void Viewer::ObjectButton(const DrawnObject& d, ZoomButton button) {
 }
 
 bool Viewer::OpenFullView(Block* leaf, const InlineObject* object) {
-    if (!object || object->image < 0) return false;
-    const ImageEntry* e = images_.Entry(object->image);
-    if (!e || e->state != ImageState::Ready || e->px_w == 0 || e->px_h == 0) return false;
+    if (!object) return false;
+    float w = 0, h = 0;  // natural size: an image's pixels, a diagram at the text's size
+    if (object->diagram >= 0) {
+        const auto scene = layout_.Diagram(object->diagram);
+        if (!scene) return false;
+        w = scene->width * layout_.DiagramScale();
+        h = scene->height * layout_.DiagramScale();
+    } else {
+        const ImageEntry* e = object->image >= 0 ? images_.Entry(object->image) : nullptr;
+        if (!e || e->state != ImageState::Ready || e->px_w == 0 || e->px_h == 0) return false;
+        w = static_cast<float>(e->px_w);
+        h = static_cast<float>(e->px_h);
+    }
     pan_object_ = nullptr;
     hover_object_ = nullptr;
     hover_button_ = -1;
     hover_block_ = nullptr;
     copy_hover_ = false;
     SetHoverLink(nullptr, -1);
-    full_.Open(leaf, object, static_cast<float>(e->px_w), static_cast<float>(e->px_h), ViewRect());
+    full_.Open(leaf, object, w, h, ViewRect());
     HookKeys(true);
     SetStatus(L"");
     Invalidate();
@@ -1882,7 +1895,11 @@ void Viewer::CloseFullView() {
 
 void Viewer::DrawFullView() {
     const D2D1_RECT_F view = ViewRect();
-    if (full_.object && full_.object->image >= 0) {
+    if (full_.object && full_.object->diagram >= 0) {
+        if (const auto scene = layout_.Diagram(full_.object->diagram)) {
+            DrawDiagram(rt_.Get(), *scene, full_.ContentRect(view), dark_, nullptr, nullptr);
+        }
+    } else if (full_.object && full_.object->image >= 0) {
         images_.Draw(rt_.Get(), full_.object->image, full_.ContentRect(view), &palette_, G().dw.Get(), kFullViewUiEm);
     }
     DrawZoomToolbar(rt_.Get(), renderer_.icons(), palette_, FullViewToolbar(), hover_button_, FullViewButtonsOff(full_));
@@ -1900,7 +1917,7 @@ void Viewer::FullViewButton(ZoomButton button) {
     case ZoomButton::Expand:
     case ZoomButton::Close: CloseFullView(); return;
     }
-    ShowZoomStatus(full_.scale);
+    ShowZoomStatus(full_.scale, full_.object);
     Invalidate();
 }
 
@@ -2046,6 +2063,20 @@ bool Viewer::Search(const std::wstring& text, int flags) {
                 }
             }
         }
+        // A zoomed diagram moves to show the label with the hit.
+        const uint32_t h0 = hit.start - leaf->text_start, h1 = hit.end - leaf->text_start;
+        for (InlineObject& o : leaf->objects) {
+            if (o.diagram < 0 || !IsZoomed(o) || h1 <= o.pos || h0 >= o.pos + o.length) continue;
+            const auto scene = layout_.Diagram(o.diagram);
+            if (!scene) continue;
+            for (const DiagramScene::Text& t : scene->texts) {
+                if (t.src_length == 0 || h0 >= o.pos + t.src_start + t.src_length || h1 <= o.pos + t.src_start) continue;
+                const float fx = (t.origin.x + t.w / 2) / scene->width, fy = (t.origin.y + t.h / 2) / scene->height;
+                o.view_x = std::clamp(fx - 0.5f / o.zoom, 0.f, 1.f - 1.f / o.zoom);
+                o.view_y = std::clamp(fy - 0.5f / o.zoom, 0.f, 1.f - 1.f / o.zoom);
+                break;
+            }
+        }
         ScrollIntoView(leaf, hit.start - leaf->text_start, true);
     }
     Invalidate();
@@ -2120,12 +2151,16 @@ void Viewer::OnContextMenu(int sx, int sy) {
         }
     }
     if (menu_object) {
-        const ImageEntry* e = images_.Entry(menu_object->image);
-        const bool ready = e && e->state == ImageState::Ready && e->px_w && e->px_h;
+        const bool diagram = menu_object->diagram >= 0;
+        const ImageEntry* e = diagram ? nullptr : images_.Entry(menu_object->image);
+        const bool ready = diagram || (e && e->state == ImageState::Ready && e->px_w && e->px_h);
         AppendMenuW(menu, MF_STRING | (ready ? 0 : MF_GRAYED), kMenuViewFull,
-                    Tr(L"View image in the &whole window", L"Показать изображение на всё &окно"));
+                    diagram ? Tr(L"View diagram in the &whole window", L"Показать диаграмму на всё &окно")
+                            : Tr(L"View image in the &whole window", L"Показать изображение на всё &окно"));
         if (IsZoomed(*menu_object)) {
-            AppendMenuW(menu, MF_STRING, kMenuResetView, Tr(L"Reset image &zoom", L"Сбросить &масштаб изображения"));
+            AppendMenuW(menu, MF_STRING, kMenuResetView,
+                        diagram ? Tr(L"Reset diagram &zoom", L"Сбросить &масштаб диаграммы")
+                                : Tr(L"Reset image &zoom", L"Сбросить &масштаб изображения"));
         }
     }
     if (hit.code) AppendMenuW(menu, MF_STRING, kMenuCopyCode, Tr(L"Copy co&de block", L"Копировать &блок кода"));
@@ -2563,6 +2598,7 @@ LRESULT Viewer::Proc(UINT msg, WPARAM wp, LPARAM lp) {
                     if (!((ObjectButtonsOff(*d->object) >> hover_button_) & 1u)) cursor = IDC_HAND;
                 }
                 else if (d && IsZoomed(*d->object)) cursor = IDC_SIZEALL;
+                else if (d && d->object->diagram >= 0) cursor = IDC_ARROW;  // a picture, not text
                 else if (hit.link >= 0 || hit.summary || copy_hover_ || (hit.image >= 0 && hit.on_text)) cursor = IDC_HAND;
                 else if (hit.on_text) cursor = IDC_IBEAM;
             }

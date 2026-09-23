@@ -17,6 +17,7 @@
 #include "core/frontmatter.h"
 #include "core/highlight.h"
 #include "core/html.h"
+#include "core/mermaid.h"
 #include "core/util.h"
 #include "md4c.h"
 
@@ -546,6 +547,30 @@ void Builder::FinalizeCode(Block* b) {
         AddMath(b, tex, tex, true);
         return;
     }
+    if (!b->from_html && opt_.mermaid && EqualsNoCase(b->lang, L"mermaid")) {
+        // A diagram drawn over its source (copy and search see the source);
+        // one mdview can't draw stays code with a note saying why.
+        std::wstring error;
+        if (!Trim(b->text).empty() && CheckMermaid(b->text, &error)) {
+            std::wstring source = std::move(b->text);
+            b->text.clear();
+            b->runs.clear();
+            b->type = BlockType::Paragraph;
+            b->align = Align::Center;
+            InlineObject obj;
+            obj.length = static_cast<uint32_t>(source.size());
+            obj.diagram = static_cast<int32_t>(doc_.diagrams.size());
+            doc_.diagrams.push_back(DiagramRef{source});
+            b->objects.push_back(obj);
+            for (wchar_t& c : source) {
+                if (c == L'\n') c = kLineBreak;
+                else if (c == L'\r' || c == L'\t') c = L' ';
+            }
+            AppendToLeaf(b, source, 0, -1);
+            return;
+        }
+        b->note = std::wstring(Tr(L"Mermaid diagram not shown: ", L"Диаграмма Mermaid не показана: ")) + error;
+    }
     if (b->from_html) {
         // <pre>: keep inline styles, just fix the run coverage after trimming.
         while (!b->runs.empty() && b->runs.back().start >= b->text.size()) b->runs.pop_back();
@@ -922,9 +947,11 @@ void Builder::AppendFootnoteBody(Block* def) {
     const int32_t link_off = static_cast<int32_t>(doc_.links.size());
     const int32_t image_off = static_cast<int32_t>(doc_.images.size());
     const int32_t math_off = static_cast<int32_t>(doc_.maths.size());
+    const int32_t diagram_off = static_cast<int32_t>(doc_.diagrams.size());
     for (Link& l : sub->links) doc_.links.push_back(std::move(l));
     for (ImageRef& im : sub->images) doc_.images.push_back(std::move(im));
     for (MathRef& m : sub->maths) doc_.maths.push_back(std::move(m));
+    for (DiagramRef& d : sub->diagrams) doc_.diagrams.push_back(std::move(d));
     for (auto& up : sub->storage) {
         Block* b = up.get();
         for (StyleRun& r : b->runs) {
@@ -933,6 +960,7 @@ void Builder::AppendFootnoteBody(Block* def) {
         for (InlineObject& o : b->objects) {
             if (o.image >= 0) o.image += image_off;
             if (o.math >= 0) o.math += math_off;
+            if (o.diagram >= 0) o.diagram += diagram_off;
         }
         b->leaf_index = -1;
     }

@@ -448,6 +448,116 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
         }
         return a;
     };
+    // Parts not connected to each other (clusters hold theirs together) are
+    // laid out on their own and put side by side, aligned on their first
+    // rank: a tall node of one doesn't stretch the ranks of the other.
+    {
+        std::vector<int> uf(static_cast<size_t>(n));
+        std::iota(uf.begin(), uf.end(), 0);
+        auto find = [&](int v) {
+            while (uf[static_cast<size_t>(v)] != v) v = uf[static_cast<size_t>(v)] = uf[static_cast<size_t>(uf[static_cast<size_t>(v)])];
+            return v;
+        };
+        auto unite = [&](int a, int b) { uf[static_cast<size_t>(find(a))] = find(b); };
+        for (const auto& e : g.edges) {
+            if (e.from >= 0 && e.to >= 0 && e.from < n && e.to < n) unite(e.from, e.to);
+        }
+        std::vector<int> first_in(static_cast<size_t>(nc), -1);
+        for (int v = 0; v < n; ++v) {
+            int c = cluster_of(v);
+            if (c < 0) continue;
+            while (parent[static_cast<size_t>(c)] >= 0) c = parent[static_cast<size_t>(c)];
+            if (first_in[static_cast<size_t>(c)] < 0) first_in[static_cast<size_t>(c)] = v;
+            else unite(v, first_in[static_cast<size_t>(c)]);
+        }
+        std::vector<int> comp_of(static_cast<size_t>(n), -1), roots;
+        for (int v = 0; v < n; ++v) {
+            const int r = find(v);
+            auto it = std::find(roots.begin(), roots.end(), r);
+            if (it == roots.end()) {
+                comp_of[static_cast<size_t>(v)] = static_cast<int>(roots.size());
+                roots.push_back(r);
+            } else {
+                comp_of[static_cast<size_t>(v)] = static_cast<int>(it - roots.begin());
+            }
+            if (roots.size() > 64) break;  // many parts: one layout (packing them is not worth it)
+        }
+        if (roots.size() > 1 && roots.size() <= 64) {
+            std::vector<LayeredLayout> parts(roots.size());
+            std::vector<std::vector<int>> node_map(roots.size()), cluster_map(roots.size()), edge_map(roots.size());
+            for (size_t p = 0; p < roots.size(); ++p) {
+                LayeredGraph sub;
+                sub.dir = g.dir;
+                sub.node_sep = g.node_sep;
+                sub.rank_sep = g.rank_sep;
+                sub.edge_sep = g.edge_sep;
+                sub.cluster_pad = g.cluster_pad;
+                std::vector<int> local(static_cast<size_t>(n), -1), local_c(static_cast<size_t>(nc), -1);
+                std::vector<char> need(static_cast<size_t>(nc), 0);
+                for (int v = 0; v < n; ++v) {
+                    if (comp_of[static_cast<size_t>(v)] != static_cast<int>(p)) continue;
+                    for (int c = cluster_of(v); c >= 0 && !need[static_cast<size_t>(c)]; c = parent[static_cast<size_t>(c)]) need[static_cast<size_t>(c)] = 1;
+                }
+                for (int c = 0; c < nc; ++c) {
+                    if (!need[static_cast<size_t>(c)]) continue;
+                    local_c[static_cast<size_t>(c)] = static_cast<int>(sub.clusters.size());
+                    LayeredGraph::Cluster cl = g.clusters[static_cast<size_t>(c)];
+                    cl.parent = parent[static_cast<size_t>(c)] >= 0 ? local_c[static_cast<size_t>(parent[static_cast<size_t>(c)])] : -1;
+                    sub.clusters.push_back(cl);
+                    cluster_map[p].push_back(c);
+                }
+                for (int v = 0; v < n; ++v) {
+                    if (comp_of[static_cast<size_t>(v)] != static_cast<int>(p)) continue;
+                    local[static_cast<size_t>(v)] = static_cast<int>(sub.nodes.size());
+                    LayeredGraph::Node nd = g.nodes[static_cast<size_t>(v)];
+                    nd.cluster = cluster_of(v) >= 0 ? local_c[static_cast<size_t>(cluster_of(v))] : -1;
+                    sub.nodes.push_back(nd);
+                    node_map[p].push_back(v);
+                }
+                for (size_t i = 0; i < g.edges.size(); ++i) {
+                    const auto& e = g.edges[i];
+                    if (e.from < 0 || e.to < 0 || e.from >= n || e.to >= n || comp_of[static_cast<size_t>(e.from)] != static_cast<int>(p)) continue;
+                    LayeredGraph::Edge se = e;
+                    se.from = local[static_cast<size_t>(e.from)];
+                    se.to = local[static_cast<size_t>(e.to)];
+                    sub.edges.push_back(se);
+                    edge_map[p].push_back(static_cast<int>(i));
+                }
+                parts[p] = LayoutLayered(sub);
+            }
+            float along = 0, across = 0;  // along: where parts line up; across: their common extent
+            for (const LayeredLayout& part : parts) across = std::max(across, sideways ? part.width : part.height);
+            for (size_t p = 0; p < parts.size(); ++p) {
+                const LayeredLayout& part = parts[p];
+                float dx = 0, dy = 0;
+                if (sideways) {
+                    dy = along;
+                    dx = g.dir == RankDir::RL ? across - part.width : 0.f;
+                    along += part.height + g.node_sep;
+                } else {
+                    dx = along;
+                    dy = g.dir == RankDir::BT ? across - part.height : 0.f;
+                    along += part.width + g.node_sep;
+                }
+                auto shift = [&](D2D1_POINT_2F q) { return D2D1::Point2F(q.x + dx, q.y + dy); };
+                for (size_t k = 0; k < node_map[p].size(); ++k) out.centers[static_cast<size_t>(node_map[p][k])] = shift(part.centers[k]);
+                for (size_t k = 0; k < cluster_map[p].size(); ++k) {
+                    const D2D1_RECT_F& r = part.clusters[k];
+                    out.clusters[static_cast<size_t>(cluster_map[p][k])] = D2D1::RectF(r.left + dx, r.top + dy, r.right + dx, r.bottom + dy);
+                }
+                for (size_t k = 0; k < edge_map[p].size(); ++k) {
+                    const size_t ei = static_cast<size_t>(edge_map[p][k]);
+                    for (const D2D1_POINT_2F& q : part.bends[k]) out.bends[ei].push_back(shift(q));
+                    out.labels[ei] = shift(part.labels[k]);
+                }
+            }
+            along -= g.node_sep;
+            out.width = sideways ? across : along;
+            out.height = sideways ? along : across;
+            return out;
+        }
+    }
+
     // Title bands: at the top of the box on screen.
     auto band = [&](int c) {
         const auto& cl = g.clusters[static_cast<size_t>(c)];
@@ -675,6 +785,17 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
         int pos = INT_MAX;
     };
     std::vector<Block> blocks;
+    // Order of each cluster among its siblings in the last rank arranged.
+    std::vector<int> sibling_rank(static_cast<size_t>(nc), -1);
+    std::vector<int> sibling_count(static_cast<size_t>(nc) + 1, 0);
+    auto record_siblings = [&](const std::vector<int>& layer) {
+        std::fill(sibling_count.begin(), sibling_count.end(), 0);
+        for (int v : layer) {
+            const WNode& d = nodes[static_cast<size_t>(v)];
+            if (d.kind != Kind::Left) continue;
+            sibling_rank[static_cast<size_t>(d.owner)] = sibling_count[static_cast<size_t>(parent[static_cast<size_t>(d.owner)] + 1)]++;
+        }
+    };
     auto arrange = [&](std::vector<int>& layer, const std::vector<float>& bary, const std::vector<char>& has,
                        bool bias_right) {
         if (nc == 0) {
@@ -772,6 +893,24 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
                 }
             }
             SortEntries(entries, bias_right);
+            // Sibling clusters keep the order they had in the rank before
+            // (a box can't cross another one between two ranks).
+            {
+                std::vector<size_t> slots;
+                std::vector<int> kept;
+                for (size_t k = 0; k < entries.size(); ++k) {
+                    const int p = entries[k].payload;
+                    if (p < 0 && sibling_rank[static_cast<size_t>(blocks[static_cast<size_t>(-p - 1)].cluster)] >= 0) {
+                        slots.push_back(k);
+                        kept.push_back(p);
+                    }
+                }
+                std::stable_sort(kept.begin(), kept.end(), [&](int a, int b) {
+                    return sibling_rank[static_cast<size_t>(blocks[static_cast<size_t>(-a - 1)].cluster)] <
+                           sibling_rank[static_cast<size_t>(blocks[static_cast<size_t>(-b - 1)].cluster)];
+                });
+                for (size_t k = 0; k < slots.size(); ++k) entries[slots[k]].payload = kept[k];
+            }
             const std::vector<SortEntry> sorted = entries;
             for (const SortEntry& s : sorted) {
                 if (s.payload >= 0) result.push_back(s.payload);
@@ -782,6 +921,7 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
         flatten(flatten, block_of[0]);
         for (int c : touched) block_of[static_cast<size_t>(c + 1)] = -1;
         layer = std::move(result);
+        record_siblings(layer);
     };
 
     // Layers in DFS order from the top, then barycenter sweeps keeping the
@@ -824,6 +964,7 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
     std::vector<char> has(static_cast<size_t>(total), 0);
     if (nc > 0) {
         // Clusters together from the start.
+        std::fill(sibling_rank.begin(), sibling_rank.end(), -1);
         for (auto& layer : layers) {
             for (int v : layer) {
                 bary[static_cast<size_t>(v)] = static_cast<float>(nodes[static_cast<size_t>(v)].order);
@@ -843,6 +984,10 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
             const int r0 = going_down ? 1 : max_rank - 1;
             const int r1 = going_down ? max_rank + 1 : -1;
             const int step = going_down ? 1 : -1;
+            if (nc > 0) {
+                std::fill(sibling_rank.begin(), sibling_rank.end(), -1);
+                if (r0 - step >= 0 && r0 - step <= max_rank) record_siblings(layers[static_cast<size_t>(r0 - step)]);
+            }
             for (int r = r0; r != r1; r += step) {
                 auto& layer = layers[static_cast<size_t>(r)];
                 for (int v : layer) {
@@ -869,13 +1014,18 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
         number();
     }
 
-    // Rank positions.
+    // Rank positions. A cluster's top hugs its first members (the bottom of
+    // its rank), its bottom its last ones: tall neighbours in those ranks
+    // don't open gaps in the box.
     {
         float y = 0;
         for (auto& layer : layers) {
             float h = 0;
             for (int v : layer) h = std::max(h, nodes[static_cast<size_t>(v)].h);
-            for (int v : layer) nodes[static_cast<size_t>(v)].y = y + h / 2;
+            for (int v : layer) {
+                WNode& d = nodes[static_cast<size_t>(v)];
+                d.y = d.kind == Kind::Top ? y + h - d.h / 2 : (d.kind == Kind::Bottom ? y + d.h / 2 : y + h / 2);
+            }
             y += h + rank_sep;
         }
     }

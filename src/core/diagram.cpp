@@ -17,7 +17,7 @@ constexpr uint32_t kLight[kDgRoleCount] = {
     0xFF9370DB,  // node stroke
     0xFFFFFFDE,  // cluster fill
     0xFFAAAA33,  // cluster stroke
-    0xCCE8E8E8,  // label background
+    0xFFE8E8E8,  // label background
     0xFFFFF5AD,  // note fill
     0xFFAAAA33,  // note stroke
     0xFF333333,  // note text
@@ -41,7 +41,7 @@ constexpr uint32_t kDark[kDgRoleCount] = {
     0xFFCCCCCC,  // node stroke
     0xFF262C36,  // cluster fill
     0x55FFFFFF,  // cluster stroke
-    0xCC585858,  // label background
+    0xFF4A4A4A,  // label background
     0xFF4A4533,  // note fill
     0xFFB8A95C,  // note stroke
     0xFFE0DFDF,  // note text
@@ -116,6 +116,20 @@ RichText ParseLabel(std::wstring_view raw, bool markdown) {
     LabelWriter w;
     for (size_t i = 0; i < raw.size();) {
         const wchar_t c = raw[i];
+        // Font Awesome icons (fa:fa-car, fab:fa-github): GitHub has no icon
+        // font for them either.
+        if (c == L'f' && (i == 0 || IsSpace(raw[i - 1]))) {
+            size_t k = i + 2;
+            if (raw.substr(i, 2) == L"fa") {
+                while (k < raw.size() && std::iswalpha(raw[k]) && k < i + 4) ++k;
+                if (raw.substr(k, 4) == L":fa-") {
+                    k += 4;
+                    while (k < raw.size() && (std::iswalnum(raw[k]) || raw[k] == L'-')) ++k;
+                    i = k;
+                    continue;
+                }
+            }
+        }
         // Entities: HTML's &name; and Mermaid's #name; / #123;
         if (c == L'&' || c == L'#') {
             const size_t semi = raw.find(L';', i + 1);
@@ -125,7 +139,7 @@ RichText ParseLabel(std::wstring_view raw, bool markdown) {
                 if (c == L'#' && ent.size() > 2 && ent[1] >= L'0' && ent[1] <= L'9') ent.insert(1, 1, L'#');
                 std::wstring decoded;
                 if (AppendEntity(decoded, std::wstring_view(ent))) {
-                    w.Text(decoded == L" " ? std::wstring(L" ") : decoded);
+                    w.Text(decoded);
                     i = semi + 1;
                     continue;
                 }
@@ -243,6 +257,11 @@ void SceneBuilder::Ellipse(const D2D1_RECT_F& r, DgColor fill, DgColor stroke, f
 void SceneBuilder::Begin(D2D1_POINT_2F p) {
     path_first_ = static_cast<uint32_t>(scene_->ops.size());
     path_first_point_ = static_cast<uint32_t>(scene_->points.size());
+    scene_->ops.push_back(DiagramScene::Op::Move);
+    scene_->points.push_back(p);
+}
+
+void SceneBuilder::MoveTo(D2D1_POINT_2F p) {
     scene_->ops.push_back(DiagramScene::Op::Move);
     scene_->points.push_back(p);
 }

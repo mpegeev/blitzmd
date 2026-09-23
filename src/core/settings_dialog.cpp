@@ -38,6 +38,7 @@ enum ControlId : WORD {
     kIdSmooth,
     kIdHardware,
     kIdReset,
+    kIdMermaid,
     kIdHeader = 1100,  // section headers: kIdHeader + n
 };
 constexpr WORD kIdLabel = 0xFFFF;  // IDC_STATIC
@@ -297,6 +298,7 @@ DialogTemplate SettingsDialog::BuildTemplate() {
     check(RX, y, RW, kIdRemote, Tr(L"&Images from the internet", L"&Изображения из интернета"));
     check(RX, y, RW, kIdEmoji, Tr(L"&Emoji codes like :smile:", L"&Эмодзи-коды вида :smile:"));
     check(RX, y, RW, kIdMath, Tr(L"Math formula&s: $…$", L"&Формулы: $…$"));
+    check(RX, y, RW, kIdMermaid, Tr(L"Mermaid dia&grams", L"&Диаграммы Mermaid"));
 
     y = static_cast<short>(std::max(y, left_end) + 10);
     t.Add(kButton, Tr(L"&Reset", L"&Сбросить"), kIdReset, BS_PUSHBUTTON | WS_TABSTOP, M, y, 56, 14);
@@ -485,7 +487,7 @@ void SettingsDialog::Fill(const Settings& s) {
     const std::pair<WORD, bool> checks[] = {
         {kIdLineNumbers, s.line_numbers}, {kIdHighlight, s.syntax_highlight}, {kIdRemote, s.remote_images},
         {kIdEmoji, s.emoji_shortcodes},   {kIdMath, s.math},                  {kIdAutoReload, s.auto_reload},
-        {kIdSmooth, s.smooth_scroll},     {kIdHardware, s.hardware},
+        {kIdSmooth, s.smooth_scroll},     {kIdHardware, s.hardware},          {kIdMermaid, s.mermaid},
     };
     for (const auto& [id, on] : checks) CheckDlgButton(dlg_, id, on ? BST_CHECKED : BST_UNCHECKED);
     filling_ = false;
@@ -541,6 +543,7 @@ Settings SettingsDialog::Read() const {
     s.remote_images = on(kIdRemote);
     s.emoji_shortcodes = on(kIdEmoji);
     s.math = on(kIdMath);
+    s.mermaid = on(kIdMermaid);
     s.auto_reload = on(kIdAutoReload);
     s.smooth_scroll = on(kIdSmooth);
     s.hardware = on(kIdHardware);

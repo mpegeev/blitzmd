@@ -447,7 +447,7 @@ void AddMarker(SceneBuilder& b, Marker m, D2D1_POINT_2F tip, D2D1_POINT_2F from,
         const float r = 4.5f;
         b.Begin(D2D1::Point2F(c.x - r, c.y - r));
         b.LineTo(D2D1::Point2F(c.x + r, c.y + r));
-        b.Begin(D2D1::Point2F(c.x - r, c.y + r));
+        b.MoveTo(D2D1::Point2F(c.x - r, c.y + r));
         b.LineTo(D2D1::Point2F(c.x + r, c.y - r));
         b.End(Role(kDgNone), color, 2.f);
         break;
