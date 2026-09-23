@@ -3,7 +3,8 @@
 // A document is a tree of blocks. Container blocks (quotes, lists, tables,
 // alerts, <div>s, ...) hold child blocks; leaf blocks (paragraphs, headings,
 // code blocks, summaries) hold UTF-16 text plus style runs covering it. Inline
-// images are U+FFFC characters referencing Document::images.
+// images are U+FFFC characters referencing Document::images; flag emoji are
+// images drawn over their own characters.
 #pragma once
 
 #include <cstdint>
@@ -72,10 +73,12 @@ struct StyleRun {
     uint8_t token = 0;   // syntax TokenKind (code blocks only)
 };
 
-// An inline object occupying one U+FFFC character of the leaf text.
+// An inline object: an image occupying one U+FFFC character of the leaf
+// text, or a flag emoji covering its original characters (length > 1).
 struct InlineObject {
     uint32_t pos = 0;
-    int32_t image = -1;  // index into Document::images
+    uint32_t length = 1;  // text units covered
+    int32_t image = -1;   // index into Document::images
 };
 
 struct Link {
@@ -94,6 +97,7 @@ struct ImageRef {
     bool width_percent = false;
     bool height_percent = false;
     uint8_t theme_only = 0;  // 0 = always, 1 = light theme only, 2 = dark theme only
+    bool flag = false;       // flag emoji: `src` is its region code in the embedded set
 };
 
 struct Block {

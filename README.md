@@ -30,6 +30,9 @@ autolink `www.` / `https://` / e-mail), изображения, HTML-сущно�
 - Формулы `$…$`, `$$…$$` и блоки ```` ```math ````: TeX переводится в Unicode-математику
   (курсивные переменные, греческие буквы, индексы и степени, дроби, корни, матрицы).
 - Эмодзи-коды `:rocket:` → 🚀 (полная база GitHub gemoji, 1900+ кодов), цветные эмодзи.
+- Флаги стран 🇷🇺 🇺🇸 🇯🇵 и 🏴󠁧󠁢󠁥󠁮󠁧󠁿 🏴󠁧󠁢󠁳󠁣󠁴󠁿 🏴󠁧󠁢󠁷󠁬󠁳󠁿: в шрифте эмодзи Windows их нет (видны две буквы), поэтому mdview рисует
+  их из встроенного набора Twemoji (262 флага, +190 КБ к DLL) размером с соседние эмодзи.
+  Копирование и поиск видят исходные символы.
 - Якоря заголовков как на GitHub (`#установка`, дубликаты `-1`, `-2`), переходы по ним.
 - Подсветка синтаксиса в блоках кода: ~70 языков (250+ названий и расширений: C/C++, C#, Java,
   Kotlin, Swift, Go, Rust, JS/TS, Python, Ruby, PHP, Lua, SQL, Pascal/Delphi, Bash, PowerShell,
@@ -175,6 +178,7 @@ $t = "out\build\x64-release\mdview_test.exe"
 & $t spec tests\spec\mdview-extensions.txt --strict                       # front matter и др. расширения
 out\build\x64-release\highlight_test.exe -q   # подсветка синтаксиса: 1.4 млн проверок, фаззинг
 out\build\x64-release\emoji_test.exe          # таблица эмодзи-кодов
+& $t flags samples\gfm\17-flags.md            # флаги: распознавание и встроенный набор
 ```
 
 Результат по спецификации GFM: все 604 примера, не связанных с «сырым» HTML, совпадают с
@@ -206,6 +210,8 @@ src/plugin.cpp        экспорт WLX: ListLoad(W), ListLoadNext(W), ListSear
 src/core/parser.*     md4c → дерево блоков; HTML-подмножество GitHub, эмодзи, якоря, сноски
 src/core/html.*       токенизатор HTML
 src/core/texmath.*    TeX → Unicode
+src/core/flags.*      флаги-эмодзи из встроенного набора Twemoji (src/twemoji-flags.bin,
+                      собирается scripts/gen_flags.py)
 src/core/highlight.*  подсветка синтаксиса
 src/core/layout.*     разметка: DirectWrite, точная у видимой части, оценка остального
 src/core/render.*     отрисовка Direct2D (темы GitHub Primer)
@@ -221,3 +227,7 @@ third_party/md4c      md4c 0.6.0 с несколькими правками со
 MIT (см. `LICENSE`). Используются: [md4c](https://github.com/mity/md4c) (MIT),
 данные [gemoji](https://github.com/github/gemoji) (MIT), иконки
 [Octicons](https://github.com/primer/octicons) (MIT).
+
+Изображения флагов — [Twemoji](https://github.com/jdecked/twemoji) © Twitter, Inc. и другие
+авторы, лицензия [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/); во встроенном
+наборе координаты округлены до сотых.

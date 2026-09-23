@@ -10,6 +10,7 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "core/flags.h"
 #include "core/icons.h"
 #include "core/svg.h"
 #include "core/theme.h"
@@ -667,10 +668,15 @@ void ImageStore::LoadAll() {
     if (!doc) return;
     if (!impl_->wic) impl_->wic = CreateWic();
     uint64_t eager_bytes = 0;
+    std::vector<size_t> flags;
     for (size_t i = 0; i < impl_->entries.size(); ++i) {
         ImageEntry& e = impl_->entries[i];
         if (e.state != ImageState::Pending) continue;
         const ImageRef& ref = doc->images[i];
+        if (ref.flag) {
+            flags.push_back(i);
+            continue;
+        }
         std::wstring src = ref.src;
         if (dark_ && !ref.src_dark.empty()) src = ref.src_dark;
         else if (!dark_ && !ref.src_light.empty()) src = ref.src_light;
@@ -732,6 +738,20 @@ void ImageStore::LoadAll() {
         }
         e.state = ImageState::Loading;
         impl_->Submit(static_cast<int>(i), e.url, remote);
+    }
+    if (!flags.empty()) {
+        // Flag emoji: small SVGs from the embedded set, parsed right away.
+        std::vector<std::string> keys;
+        for (size_t i : flags) keys.push_back(WideToUtf8(doc->images[i].src));
+        std::vector<std::string> svgs = FlagSvgs(keys);
+        for (size_t k = 0; k < flags.size(); ++k) {
+            ImageEntry& e = impl_->entries[flags[k]];
+            e.url = L"flag:" + doc->images[flags[k]].src;
+            e.svg_image = svgs[k].empty() ? nullptr : SvgImage::Parse(std::move(svgs[k]));
+            e.svg = e.svg_image != nullptr;
+            e.px_w = e.px_h = 36;
+            e.state = e.svg ? ImageState::Ready : ImageState::Failed;
+        }
     }
     if (impl_->sync) CompletePending();
 }
