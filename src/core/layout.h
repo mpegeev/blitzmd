@@ -168,6 +168,7 @@ private:
     float LayoutAlert(Block* b, float x, float y, float w, const Ctx& ctx);
     float LayoutDetails(Block* b, float x, float y, float w, const Ctx& ctx);
     Margins BlockMargins(const Block* b) const;
+    float CollapsedMargin(const Block* b, bool top) const;
     void Translate(Block* b, float dx, float dy);
 
     LeafStyle ResolveStyle(const Block* b, const Ctx& ctx) const;

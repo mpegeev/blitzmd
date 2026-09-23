@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "core/emoji.h"
 #include "core/highlight.h"
@@ -23,6 +24,8 @@ namespace {
 
 constexpr wchar_t kObjectChar = 0xFFFC;
 constexpr wchar_t kLineBreak = 0x2028;
+constexpr size_t kMaxNesting = 128;  // block tree depth
+constexpr int kMaxFootnoteNesting = 4;
 
 std::wstring DecodeAttr(const MD_ATTRIBUTE& a) {
     std::wstring out;
@@ -382,6 +385,9 @@ private:
 Block* Builder::Push(BlockType type) {
     CloseLeaf();
     Block* parent = Top();
+    // Layout and rendering recurse over the tree: beyond a sane depth, blocks
+    // still open and close in order but are attached at the deepest level.
+    if (stack_.size() > kMaxNesting) parent = stack_[kMaxNesting - 1];
     Block* b = doc_.NewBlock(type);
     b->parent = parent;
     parent->children.push_back(b);
@@ -883,6 +889,7 @@ void Builder::AppendFootnoteBody(Block* def) {
         def->children.front()->anonymous = false;
     }
     ParseOptions sub_opt = opt_;
+    ++sub_opt.footnote_nesting;
     std::unique_ptr<Document> sub = ParseMarkdown(it->second, doc_.path, sub_opt);
     const int32_t link_off = static_cast<int32_t>(doc_.links.size());
     const int32_t image_off = static_cast<int32_t>(doc_.images.size());
@@ -898,16 +905,29 @@ void Builder::AppendFootnoteBody(Block* def) {
         }
         b->leaf_index = -1;
     }
+    // Only the adopted subtrees survive; the rest (root, nested footnote
+    // section) is freed with `sub`, so nothing may keep pointing into it.
+    std::unordered_set<const Block*> kept;
+    std::vector<Block*> walk;
     for (Block* c : sub->root->children) {
         if (c->type == BlockType::FootnoteSection) continue;  // nested refs don't resolve
         c->parent = def;
         def->children.push_back(c);
+        walk.push_back(c);
+    }
+    while (!walk.empty()) {
+        Block* b = walk.back();
+        walk.pop_back();
+        kept.insert(b);
+        walk.insert(walk.end(), b->children.begin(), b->children.end());
     }
     for (const auto& [id, anchor] : sub->anchors) {
-        if (anchor.block != sub->root) doc_.anchors.try_emplace(id, anchor);
+        // Footnote anchors of the body are numbered on their own: never import.
+        if (id.rfind(L"fn-", 0) == 0 || id.rfind(L"fnref-", 0) == 0) continue;
+        if (kept.count(anchor.block)) doc_.anchors.try_emplace(id, anchor);
     }
     for (auto& up : sub->storage) {
-        if (up.get() != sub->root) doc_.storage.push_back(std::move(up));
+        if (kept.count(up.get())) doc_.storage.push_back(std::move(up));
     }
 }
 
@@ -1187,12 +1207,28 @@ void Builder::HtmlText(const std::wstring& text) {
 }
 
 Block* Builder::PushHtml(BlockType type, const HtmlToken& tok) {
+    CloseLeaf();
+    const BlockType top = Top()->type;
+    if (type != BlockType::TableRow && type != BlockType::TableCell &&
+        (top == BlockType::Table || top == BlockType::TableRow)) {
+        // Content directly in <table>/<tr> (browsers move it out of the
+        // table): an implicit cell lays it out like any other.
+        auto implicit = [this](BlockType t, Tag tag) {
+            Block* c = Push(t);
+            c->from_html = true;
+            c->html_tag = static_cast<uint16_t>(tag);
+            c->header = t == BlockType::TableRow && html_thead_;
+        };
+        if (top == BlockType::Table) implicit(BlockType::TableRow, Tag::Tr);
+        implicit(BlockType::TableCell, Tag::Td);
+    }
     Block* b = Push(type);
     b->from_html = true;
     b->html_tag = static_cast<uint16_t>(tok.tag);
     b->align = AlignFromAttr(tok);
     if (const std::wstring* id = tok.Attr(L"id")) {
-        doc_.anchors.try_emplace(*id, Anchor{b, 0});
+        // A paragraph that stays empty is dropped: its anchor then moves on.
+        if (doc_.anchors.try_emplace(*id, Anchor{b, 0}).second && b->IsLeaf()) leaf_anchors_.push_back(*id);
     }
     return b;
 }
@@ -1589,8 +1625,11 @@ std::unique_ptr<Document> ParseMarkdown(std::string_view utf8, std::wstring_view
     doc->path = std::wstring(path);
     doc->base_dir = DirectoryOf(path);
 
+    // Multi-block footnote bodies are parsed as sub-documents; bodies nested
+    // in bodies recurse, so the depth is bounded (deeper ones stay inline).
     FootnoteBodies bodies;
-    const std::string rewritten = ExtractFootnoteBodies(utf8, bodies);
+    std::string rewritten;
+    if (options.footnote_nesting < kMaxFootnoteNesting) rewritten = ExtractFootnoteBodies(utf8, bodies);
     if (!rewritten.empty()) utf8 = rewritten;
 
     Builder builder(*doc, options, bodies.empty() ? nullptr : &bodies);

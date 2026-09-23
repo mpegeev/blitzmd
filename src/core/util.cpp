@@ -1,5 +1,6 @@
 #include "core/util.h"
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -188,7 +189,7 @@ bool ParseLength(std::wstring_view s, float& value, bool& percent) {
     std::wstring_view unit = Trim(s.substr(i));
     if (unit == L"%") percent = true;
     else if (!(unit.empty() || EqualsNoCase(unit, L"px") || unit == L";")) return false;
-    value = static_cast<float>(v);
+    value = static_cast<float>(std::min(v, 32767.0));  // also keeps it finite
     return true;
 }
 

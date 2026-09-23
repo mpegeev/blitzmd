@@ -12,6 +12,7 @@ struct ParseOptions {
     bool emoji_shortcodes = true;   // :rocket: -> 🚀
     bool math = true;               // $...$ and $$...$$
     bool highlight_code = true;     // syntax highlighting in code blocks
+    int footnote_nesting = 0;       // internal: footnote bodies parse recursively
 };
 
 // Parses UTF-8 Markdown (GitHub Flavored Markdown + GitHub extensions:

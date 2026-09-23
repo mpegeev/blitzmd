@@ -20,7 +20,9 @@ bool PageRenderer::Init(Document& doc, const LayoutConfig& config, float width, 
     scale_ = dpi / 96.f;
     width_px_ = static_cast<UINT>(std::ceil(width * scale_));
     band_px_ = band_px;
-    images_.Attach(&doc, nullptr, config.dark, true);
+    // Synchronous loading: remote images only from the download cache (the
+    // viewer has fetched those on screen), never over the network here.
+    images_.Attach(&doc, nullptr, config.dark, false);
     images_.LoadAll();
     layout_.Init(dw_.Get(), &palette_, &images_);
     layout_.SetConfig(config);

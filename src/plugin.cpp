@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <string>
 
 #include "core/offscreen.h"
@@ -30,12 +31,12 @@ struct ListDefaultParamStruct {
     char DefaultIniName[MAX_PATH];
 };
 
+// Settings are read once: TC calls ListSetDefaultParams first, and the
+// thumbnail thread may race the UI thread for the first ListLoad.
+std::once_flag g_settings_once;
+
 void EnsureSettings() {
-    static bool loaded = false;
-    if (!loaded) {
-        loaded = true;
-        LoadSettings();
-    }
+    std::call_once(g_settings_once, [] { LoadSettings(); });
 }
 
 std::wstring AnsiToWide(const char* s) {
@@ -51,7 +52,7 @@ HBITMAP PreviewBitmap(const std::wstring& path, int width, int height, const cha
     if (width <= 0 || height <= 0) return nullptr;
     // A thumbnail only shows the beginning of the document: parse up to 64 KB.
     std::string bytes;
-    if (!ReadFileBytes(path.c_str(), bytes, 64ull << 20)) {
+    if (!ReadFilePrefix(path.c_str(), bytes, 65536 + 4096, nullptr)) {
         if (!buf || buflen <= 0) return nullptr;
         bytes.assign(buf, static_cast<size_t>(buflen));
     }
@@ -81,8 +82,10 @@ HBITMAP PreviewBitmap(const std::wstring& path, int width, int height, const cha
 
 }  // namespace
 
-BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
+BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) DisableThreadLibraryCalls(module);
+    // Window classes of a DLL outlive FreeLibrary unless unregistered.
+    if (reason == DLL_PROCESS_DETACH && !reserved) mdv::UnregisterViewerClass();
     return TRUE;
 }
 
@@ -102,7 +105,7 @@ void __stdcall ListSetDefaultParams(ListDefaultParamStruct* dps) {
         Host().interface_lo = dps->PluginInterfaceVersionLow;
         const std::wstring ini = AnsiToWide(dps->DefaultIniName);
         if (!ini.empty()) SetSettingsPath(ini);
-        LoadSettings();
+        EnsureSettings();
     } catch (...) {
     }
 }

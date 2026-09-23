@@ -255,7 +255,8 @@ void SvgImage::ParseStructure() {
                     size_t i = 0;
                     while (cnt < 4 && ParseNumber(*v, i, vb[cnt])) ++cnt;
                 }
-                if (cnt == 4 && vb[2] > 0 && vb[3] > 0) {
+                if (cnt == 4 && vb[2] > 0 && vb[3] > 0 && std::isfinite(vb[0]) && std::isfinite(vb[1]) &&
+                    vb[2] < 1e7f && vb[3] < 1e7f) {
                     vb_x_ = vb[0];
                     vb_y_ = vb[1];
                     vb_w_ = vb[2];
@@ -328,8 +329,9 @@ void SvgImage::ParseStructure() {
         while (!t.text.empty() && t.text.back() == L' ') t.text.pop_back();
     }
     std::erase_if(texts_, [](const Text& t) { return t.text.empty(); });
-    width_ = std::clamp(width_, 1.f, 20000.f);
-    height_ = std::clamp(height_, 1.f, 20000.f);
+    // std::clamp passes NaN through; absurd sizes fall back to the CSS default.
+    if (!(width_ >= 1.f && width_ <= 20000.f)) width_ = std::isfinite(width_) && width_ > 20000.f ? 20000.f : 300.f;
+    if (!(height_ >= 1.f && height_ <= 20000.f)) height_ = std::isfinite(height_) && height_ > 20000.f ? 20000.f : 150.f;
 }
 
 void SvgImage::Draw(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFactory* dw) {

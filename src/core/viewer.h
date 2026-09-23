@@ -42,6 +42,8 @@ HostInfo& Host();
 // Returns nullptr if the window could not be created.
 HWND CreateViewer(HWND parent, const wchar_t* path, int show_flags);
 Viewer* ViewerFromHwnd(HWND hwnd);
+// Called when the DLL is unloaded.
+void UnregisterViewerClass();
 
 bool ViewerLoadFile(HWND hwnd, const wchar_t* path, int show_flags);
 bool ViewerSearch(HWND hwnd, const wchar_t* text, int flags);

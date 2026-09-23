@@ -264,7 +264,9 @@ int main(int argc, char** argv) {
                 RedrawWindow(viewer, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
             }
             const double s1 = NowMs();
-            std::printf("scroll: %.2f ms per page (incl. present)\n", (s1 - s0) / 30.0);
+            pump(500);
+            std::printf("scroll: %.2f ms per page (incl. present), working set +%.1f MB after\n", (s1 - s0) / 30.0,
+                        WorkingSetMb() - m0);
             SendMessageW(viewer, WM_KEYDOWN, VK_HOME, 0);
             pump(300);
         }

@@ -75,8 +75,12 @@ public:
     void BeginPaint() { ++paint_stamp_; }
     double NextAnimationDue() const;
     bool AdvanceAnimations(double now_ms);
+    // Keeps decoded images within the memory budget; call after painting.
+    void TrimMemory();
 
 private:
+    uint64_t EntryBytes(size_t i) const;
+
     struct Impl;
     std::unique_ptr<Impl> impl_;
     bool dark_ = false;

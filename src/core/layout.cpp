@@ -680,27 +680,39 @@ LayoutEngine::Margins LayoutEngine::BlockMargins(const Block* b) const {
         return Margins{m_.em * 1.5f, m_.em * 1.5f};
     case BlockType::FootnoteSection:
         return Margins{m_.em * 2.f, 0};
-    case BlockType::Div: {
+    case BlockType::Div:
         if (b->indent > 0) return Margins{0, gap};
-        // Margins collapse through a <div> without padding or borders.
-        Margins m;
-        for (const Block* c : b->children) {
-            if (c->visible) {
-                m.top = BlockMargins(c).top;
-                break;
-            }
-        }
-        for (auto it = b->children.rbegin(); it != b->children.rend(); ++it) {
-            if ((*it)->visible) {
-                m.bottom = BlockMargins(*it).bottom;
-                break;
-            }
-        }
-        return m;
-    }
+        return Margins{CollapsedMargin(b, true), CollapsedMargin(b, false)};
     default:
         return Margins{};
     }
+}
+
+// Margins collapse through a <div> without padding or borders: follow the
+// chain of first (last) visible children. Iterative, as nesting is unbounded.
+float LayoutEngine::CollapsedMargin(const Block* b, bool top) const {
+    while (b->type == BlockType::Div && b->indent <= 0) {
+        const Block* next = nullptr;
+        if (top) {
+            for (const Block* c : b->children) {
+                if (c->visible) {
+                    next = c;
+                    break;
+                }
+            }
+        } else {
+            for (auto it = b->children.rbegin(); it != b->children.rend(); ++it) {
+                if ((*it)->visible) {
+                    next = *it;
+                    break;
+                }
+            }
+        }
+        if (!next) return 0;
+        b = next;
+    }
+    const Margins m = BlockMargins(b);
+    return top ? m.top : m.bottom;
 }
 
 void LayoutEngine::Translate(Block* b, float dx, float dy) {
@@ -878,7 +890,7 @@ float LayoutEngine::LayoutLeaf(Block* b, float x, float y, float w, const Ctx& c
         if (cw > w + 0.5f) b->content_w = cw;
     }
     if (b->content_w <= 0) b->scroll_x = 0;
-    else b->scroll_x = std::clamp(b->scroll_x, 0.f, b->content_w - w);
+    else b->scroll_x = std::clamp(b->scroll_x, 0.f, std::max(0.f, b->content_w - w));
     return b->h;
 }
 
@@ -1166,7 +1178,7 @@ float LayoutEngine::LayoutTable(Block* b, float x, float y, float w, const Ctx& 
     }
     b->content_w = tw > w + 0.5f ? tw : 0.f;
     if (b->content_w <= 0) b->scroll_x = 0;
-    else b->scroll_x = std::clamp(b->scroll_x, 0.f, b->content_w - w);
+    else b->scroll_x = std::clamp(b->scroll_x, 0.f, std::max(0.f, b->content_w - w));
 
     float ry = cursor + border;
     const float table_top = cursor;
@@ -1246,6 +1258,9 @@ IDWriteTextLayout* LayoutEngine::LabelLayout(const std::wstring& text, float siz
                              std::to_wstring(weight);
     auto it = labels_.find(key);
     if (it != labels_.end()) return it->second.Get();
+    // Distinct labels (list numbers, status texts) are unbounded: start over
+    // now and then. Callers use the result right away, before the next call.
+    if (labels_.size() >= 2048) labels_.clear();
     IDWriteTextFormat* fmt = Format(cfg_.font_family, size, weight, false);
     if (!fmt) return nullptr;
     ComPtr<IDWriteTextLayout> layout;

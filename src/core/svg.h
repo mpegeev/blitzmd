@@ -25,6 +25,13 @@ public:
     // Draws the image scaled into `rect`. Must be called on the thread that
     // owns `rt`; device resources are cached for the last render target.
     void Draw(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFactory* dw);
+    // Drops the cached document (the render target is going away; a new one
+    // may get the same address).
+    void ReleaseDeviceResources() {
+        doc_.Reset();
+        doc_rt_ = nullptr;
+        doc_failed_ = false;
+    }
 
 private:
     struct Text {

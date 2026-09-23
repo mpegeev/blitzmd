@@ -24,6 +24,13 @@ constexpr size_t kRemoteCacheBytes = 48u << 20;      // process-wide download ca
 constexpr UINT kMaxDecodeWidth = 2560;
 constexpr uint64_t kMaxDecodePixels = 16ull << 20;
 constexpr uint64_t kMaxAnimationPixels = 4ull << 20;  // larger GIFs stay static
+// Decoded pixels and bitmaps kept per document; beyond it the images drawn
+// least recently are dropped (and decoded again when they come back).
+#ifdef _WIN64
+constexpr uint64_t kImageMemoryBudget = 192ull << 20;
+#else
+constexpr uint64_t kImageMemoryBudget = 96ull << 20;
+#endif
 
 struct Pixels {
     UINT w = 0, h = 0;
@@ -395,15 +402,25 @@ public:
         std::lock_guard<std::mutex> lock(mu_);
         auto it = map_.find(url);
         if (it == map_.end()) return false;
+        if (!it->second->bytes && NowMs() - it->second->time > kRetryFailedMs) {
+            // A failure may have been transient: try again.
+            lru_.erase(it->second);
+            map_.erase(it);
+            return false;
+        }
         lru_.splice(lru_.begin(), lru_, it->second);
         out = it->second->bytes;
         return true;
     }
     void Store(const std::wstring& url, std::shared_ptr<const std::string> bytes) {
         std::lock_guard<std::mutex> lock(mu_);
-        if (map_.count(url)) return;
+        if (auto it = map_.find(url); it != map_.end()) {
+            if (it->second->bytes || !bytes) return;
+            lru_.erase(it->second);  // a retry succeeded
+            map_.erase(it);
+        }
         total_ += bytes ? bytes->size() : 0;
-        lru_.push_front(Item{url, std::move(bytes)});
+        lru_.push_front(Item{url, std::move(bytes), NowMs()});
         map_[url] = lru_.begin();
         while (total_ > kRemoteCacheBytes && lru_.size() > 1) {
             Item& last = lru_.back();
@@ -414,9 +431,11 @@ public:
     }
 
 private:
+    static constexpr double kRetryFailedMs = 30000;
     struct Item {
         std::wstring url;
         std::shared_ptr<const std::string> bytes;  // null = failed download
+        double time = 0;
     };
     std::mutex mu_;
     std::list<Item> lru_;
@@ -686,6 +705,7 @@ void ImageStore::LoadAll() {
     const Document* doc = impl_->doc;
     if (!doc) return;
     if (!impl_->wic) impl_->wic = CreateWic();
+    uint64_t eager_bytes = 0;
     for (size_t i = 0; i < impl_->entries.size(); ++i) {
         ImageEntry& e = impl_->entries[i];
         if (e.state != ImageState::Pending) continue;
@@ -738,11 +758,60 @@ void ImageStore::LoadAll() {
                 continue;
             }
             if (impl_->wic) ReadImageSize(impl_->wic.Get(), e.url, e.px_w, e.px_h);
+            if (!impl_->sync && e.px_w > 0 && e.px_h > 0) {
+                // The size is known: beyond half the budget, pixels are
+                // decoded only once the image is first drawn.
+                const uint64_t est = std::min<uint64_t>(static_cast<uint64_t>(e.px_w) * e.px_h, kMaxDecodePixels) * 4;
+                if (eager_bytes + est > kImageMemoryBudget / 2) {
+                    e.state = ImageState::Ready;
+                    continue;
+                }
+                eager_bytes += est;
+            }
         }
         e.state = ImageState::Loading;
         impl_->Submit(static_cast<int>(i), e.url, remote);
     }
     if (impl_->sync) CompletePending();
+}
+
+uint64_t ImageStore::EntryBytes(size_t i) const {
+    const ImageEntry& e = impl_->entries[i];
+    uint64_t b = impl_->pending_pixels[i].data.size();
+    if (e.bitmap) {
+        const D2D1_SIZE_U s = e.bitmap->GetPixelSize();
+        b += static_cast<uint64_t>(s.width) * s.height * 4;
+    }
+    if (e.animation) b += e.animation->canvas().size() * 2;  // canvas + disposal copy
+    return b;
+}
+
+void ImageStore::TrimMemory() {
+    if (impl_->sync) return;
+    std::vector<size_t> victims;
+    uint64_t total = 0;
+    for (size_t i = 0; i < impl_->entries.size(); ++i) {
+        const uint64_t b = EntryBytes(i);
+        total += b;
+        if (b > 0 && impl_->entries[i].drawn_stamp != paint_stamp_) victims.push_back(i);
+    }
+    if (total <= kImageMemoryBudget) return;
+    // Least recently drawn first; of the never drawn, those further down.
+    const std::vector<ImageEntry>& entries = impl_->entries;
+    std::sort(victims.begin(), victims.end(), [&entries](size_t a, size_t b) {
+        const uint32_t sa = entries[a].drawn_stamp, sb = entries[b].drawn_stamp;
+        return sa != sb ? sa < sb : a > b;
+    });
+    for (size_t i : victims) {
+        if (total <= kImageMemoryBudget / 4 * 3) break;
+        total -= EntryBytes(i);
+        ImageEntry& e = impl_->entries[i];
+        e.bitmap.Reset();
+        impl_->bitmap_rt[i] = nullptr;
+        impl_->pending_pixels[i] = Pixels{};
+        e.animation.reset();
+        e.encoded.reset();
+    }
 }
 
 bool ImageStore::CompletePending() {
@@ -778,6 +847,7 @@ bool ImageStore::CompletePending() {
         }
         if (e.px_w != old_w || e.px_h != old_h || !job->ok) resized = true;
     }
+    if (!done.empty()) TrimMemory();
     return resized;
 }
 
@@ -815,6 +885,7 @@ void ImageStore::ReleaseDeviceResources() {
     for (size_t i = 0; i < impl_->entries.size(); ++i) {
         impl_->entries[i].bitmap.Reset();
         impl_->bitmap_rt[i] = nullptr;
+        if (impl_->entries[i].svg_image) impl_->entries[i].svg_image->ReleaseDeviceResources();
     }
 }
 
@@ -877,7 +948,9 @@ D2D1_SIZE_F ImageStore::LayoutSize(int index, float max_w, float line_h) {
         h *= max_w / w;
         w = max_w;
     }
-    return D2D1::SizeF(std::max(w, 1.f), std::max(h, 1.f));
+    // Never let a degenerate size (inf, NaN) into the layout.
+    auto sane = [](float v) { return v >= 1.f ? std::min(v, 32767.f) : 1.f; };
+    return D2D1::SizeF(sane(w), sane(h));
 }
 
 void ImageStore::Draw(ID2D1RenderTarget* rt, int index, const D2D1_RECT_F& r, Palette* palette,
@@ -885,6 +958,7 @@ void ImageStore::Draw(ID2D1RenderTarget* rt, int index, const D2D1_RECT_F& r, Pa
     if (index < 0 || static_cast<size_t>(index) >= impl_->entries.size() || !palette) return;
     ImageEntry& e = impl_->entries[static_cast<size_t>(index)];
     const size_t i = static_cast<size_t>(index);
+    e.drawn_stamp = paint_stamp_;
     if (e.state == ImageState::Ready) {
         if (e.svg && e.svg_image) {
             e.svg_image->Draw(rt, r, dw ? dw : impl_->dw.Get());
@@ -905,7 +979,6 @@ void ImageStore::Draw(ID2D1RenderTarget* rt, int index, const D2D1_RECT_F& r, Pa
             }
             e.encoded.reset();
         }
-        if (e.animation) e.drawn_stamp = paint_stamp_;
         const D2D1_BITMAP_PROPERTIES props =
             D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
         if (!e.bitmap && e.animation) {

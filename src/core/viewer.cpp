@@ -3,6 +3,7 @@
 #include <d2d1.h>
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <shlwapi.h>
 #include <windowsx.h>
 
 #include <algorithm>
@@ -58,13 +59,35 @@ bool IsMarkdownPath(std::wstring_view p) {
     return false;
 }
 
-bool IsExecutablePath(std::wstring_view p) {
+std::wstring_view ExtensionOf(std::wstring_view p) {
     const size_t dot = p.find_last_of(L'.');
-    if (dot == std::wstring_view::npos) return false;
-    const std::wstring_view ext = p.substr(dot + 1);
-    for (const wchar_t* e : {L"exe", L"com", L"bat", L"cmd", L"scr", L"pif", L"msi", L"msp", L"ps1", L"psm1",
-                             L"vbs", L"vbe", L"js", L"jse", L"wsf", L"wsh", L"hta", L"cpl", L"lnk", L"reg",
-                             L"jar", L"application", L"appref-ms", L"url", L"inf", L"sct", L"msc", L"dll"}) {
+    const size_t slash = p.find_last_of(L"\\/");
+    if (dot == std::wstring_view::npos || (slash != std::wstring_view::npos && dot < slash)) return {};
+    return p.substr(dot + 1);
+}
+
+// Files that run code when opened (confirmation required).
+bool IsExecutablePath(std::wstring_view p) {
+    const std::wstring_view ext = ExtensionOf(p);
+    if (ext.empty()) return false;
+    for (const wchar_t* e : {L"exe", L"com", L"bat", L"cmd", L"scr", L"pif", L"msi", L"msp", L"mst", L"ps1",
+                             L"psm1", L"psd1", L"ps1xml", L"psc1", L"vb", L"vbs", L"vbe", L"js", L"jse", L"ws",
+                             L"wsf", L"wsh", L"wsc", L"hta", L"cpl", L"lnk", L"reg", L"jar", L"application",
+                             L"appref-ms", L"url", L"website", L"inf", L"ins", L"isp", L"sct", L"msc", L"dll",
+                             L"ocx", L"sys", L"scf", L"shs", L"chm", L"hlp", L"gadget", L"xbap", L"xll",
+                             L"settingcontent-ms", L"diagcab", L"library-ms", L"search-ms", L"appx",
+                             L"appxbundle", L"msix", L"msixbundle", L"py", L"pyw", L"pyz", L"pl", L"rb", L"sh",
+                             L"ahk", L"au3"}) {
+        if (EqualsNoCase(ext, e)) return true;
+    }
+    return AssocIsDangerous((L"." + std::wstring(ext)).c_str()) != FALSE;
+}
+
+bool IsImagePath(std::wstring_view p) {
+    const std::wstring_view ext = ExtensionOf(p);
+    for (const wchar_t* e : {L"png", L"apng", L"jpg", L"jpeg", L"jpe", L"jfif", L"gif", L"bmp", L"dib", L"ico",
+                             L"cur", L"tif", L"tiff", L"webp", L"svg", L"svgz", L"avif", L"heic", L"heif", L"jxr",
+                             L"wdp", L"jxl", L"dds"}) {
         if (EqualsNoCase(ext, e)) return true;
     }
     return false;
@@ -192,6 +215,7 @@ private:
     void ScheduleGifFrame();
     void DrawOverlays();
     void Invalidate() { InvalidateRect(hwnd_, nullptr, FALSE); }
+    void ResetInteraction();
 
     // Scrolling
     void ScrollTo(float y, bool smooth);
@@ -273,6 +297,9 @@ private:
     int repeat_dir_ = 0;
     std::wstring status_;
 
+    uint32_t doc_gen_ = 0;             // incremented by every Load()
+    bool printing_ = false;            // PrintDocument() is using the blocks
+
     std::wstring search_text_;
     std::vector<TextRange> hits_;
     int current_hit_ = -1;
@@ -303,7 +330,12 @@ bool Viewer::Create(HWND parent, int flags) {
         wc.hInstance = reinterpret_cast<HINSTANCE>(&__ImageBase);
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         wc.lpszClassName = kClassName;
-        return RegisterClassExW(&wc) != 0 || GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
+        if (RegisterClassExW(&wc)) return true;
+        // Left behind by an earlier load of a module at this address: its
+        // window procedure may be gone, so register ours instead.
+        if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+        UnregisterClassW(kClassName, wc.hInstance);
+        return RegisterClassExW(&wc) != 0;
     }();
     if (!registered) return false;
 
@@ -376,7 +408,27 @@ void Viewer::ApplySettings(bool relayout) {
     Invalidate();
 }
 
+// Drops every mouse interaction in progress (they point into the document).
+void Viewer::ResetInteraction() {
+    mouse_down_ = false;
+    selecting_ = false;
+    dragged_ = false;
+    thumb_drag_ = false;
+    hscroll_drag_ = nullptr;
+    down_link_ = -1;
+    down_image_ = -1;
+    down_summary_ = nullptr;
+    click_count_ = 0;
+    repeat_dir_ = 0;
+    copy_hover_ = false;
+    if (GetCapture() == hwnd_) ReleaseCapture();
+    KillTimer(hwnd_, kTimerAutoScroll);
+    KillTimer(hwnd_, kTimerRepeat);
+    KillTimer(hwnd_, kTimerCopied);
+}
+
 bool Viewer::Load(const std::wstring& path, int flags, bool keep_history) {
+    if (printing_) return false;  // the document is in use
     std::string bytes;
     std::string utf8;
     uint64_t total = 0;
@@ -414,6 +466,8 @@ bool Viewer::Load(const std::wstring& path, int flags, bool keep_history) {
     flags_ = flags;
     images_.Detach();
     layout_.SetDocument(nullptr);
+    ResetInteraction();  // before the old blocks go away
+    ++doc_gen_;
     doc_ = std::move(doc);
     path_ = path;
     selection_ = {};
@@ -493,7 +547,7 @@ void Viewer::RestoreAnchor(const ScrollAnchor& a) {
 }
 
 void Viewer::Relayout(bool keep_anchor) {
-    if (!doc_) return;
+    if (!doc_ || printing_) return;
     const ScrollAnchor a = keep_anchor ? CaptureAnchor() : ScrollAnchor{};
     const float vh = ViewHeight();
     const float margin = vh;
@@ -583,6 +637,7 @@ void Viewer::OnPaint() {
     PAINTSTRUCT ps;
     BeginPaint(hwnd_, &ps);
     EndPaint(hwnd_, &ps);
+    if (printing_) return;  // the last frame stays on screen
     if (!EnsureRenderTarget()) return;
     EnsureLayout();
     if (anim_) {
@@ -624,6 +679,7 @@ void Viewer::OnPaint() {
         return;
     }
     ScheduleGifFrame();
+    images_.TrimMemory();
     if (anim_) {
         // Keep animating at the display's refresh rate.
         DwmFlush();
@@ -654,7 +710,7 @@ D2D1_RECT_F Viewer::ScrollbarThumb() const {
     const float th = track.bottom - track.top;
     const float doc_h = std::max(layout_.doc_height(), 1.f);
     const float vh = ViewHeight();
-    const float size = std::clamp(th * vh / doc_h, 28.f, th);
+    const float size = std::clamp(th * vh / doc_h, std::min(28.f, th), th);  // lo <= hi even when tiny
     const float range = MaxScroll();
     const float pos = range > 0 ? scroll_y_ / range : 0.f;
     const float top = track.top + (th - size) * pos;
@@ -790,7 +846,7 @@ void Viewer::OnMouseWheel(int delta, bool horizontal) {
         const Hit hit = HitTest(pt.x / Scale(), pt.y / Scale() + scroll_y_);
         if (hit.wide) {
             const float step = static_cast<float>(horizontal ? delta : -delta) / WHEEL_DELTA * layout_.metrics().em * 4.f;
-            hit.wide->scroll_x = std::clamp(hit.wide->scroll_x + step, 0.f, hit.wide->content_w - hit.wide->w);
+            hit.wide->scroll_x = std::clamp(hit.wide->scroll_x + step, 0.f, std::max(0.f, hit.wide->content_w - hit.wide->w));
             Invalidate();
         }
         return;
@@ -1076,7 +1132,7 @@ void Viewer::OnMouseMove(int px, int py) {
         const float track_w = b->w - 4.f;
         const float ratio = b->content_w / std::max(track_w, 1.f);
         b->scroll_x = std::clamp(hscroll_drag_start_scroll_ + (x - hscroll_drag_start_x_) * ratio, 0.f,
-                                 b->content_w - b->w);
+                                 std::max(0.f, b->content_w - b->w));
         Invalidate();
         return;
     }
@@ -1144,8 +1200,11 @@ void Viewer::OnLButtonUp(int px, int py) {
         ToggleDetails(down_summary_);
     } else if (down_image_ >= 0 && hit.image == down_image_ && hit.link < 0 && click_count_ == 1) {
         // Like GitHub: clicking a picture that isn't a link opens the image.
+        // Local files only with an image extension: a file that also decodes
+        // as a picture may still be something else to the shell.
         const ImageEntry* e = images_.Entry(down_image_);
-        if (e && !e->url.empty() && !StartsWithNoCase(e->url, L"data:") && e->state == ImageState::Ready) {
+        if (e && !e->url.empty() && !StartsWithNoCase(e->url, L"data:") && e->state == ImageState::Ready &&
+            (e->remote || IsImagePath(e->url))) {
             selection_ = {};
             ShellExecuteW(hwnd_, L"open", e->url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         }
@@ -1367,7 +1426,8 @@ bool Viewer::Search(const std::wstring& text, int flags) {
     };
 
     // All matches (for highlighting), capped.
-    const bool new_query = text != search_text_ || (flags & lcs_findfirst);
+    // hits_ is also dropped by a new document or a mouse selection.
+    const bool new_query = text != search_text_ || (flags & lcs_findfirst) || hits_.empty();
     if (new_query) {
         hits_.clear();
         for (size_t pos = hay.find(needle); pos != std::wstring::npos && hits_.size() < 20000;
@@ -1402,6 +1462,7 @@ bool Viewer::Search(const std::wstring& text, int flags) {
         if (it != hits_.begin()) found = static_cast<int>(it - hits_.begin()) - 1;
     }
     if (found < 0) {
+        current_hit_ = -1;
         Invalidate();
         return false;
     }
@@ -1431,7 +1492,7 @@ bool Viewer::Search(const std::wstring& text, int flags) {
                     if (SUCCEEDED(tl->HitTestTextPosition(hit.start - leaf->text_start, FALSE, &px, &py, &m))) {
                         const float x = layout_.TextOrigin(leaf).x + px - p->x;
                         if (x < p->scroll_x || x > p->scroll_x + p->w - 40.f) {
-                            p->scroll_x = std::clamp(x - p->w * 0.3f, 0.f, p->content_w - p->w);
+                            p->scroll_x = std::clamp(x - p->w * 0.3f, 0.f, std::max(0.f, p->content_w - p->w));
                         }
                     }
                 }
@@ -1547,8 +1608,10 @@ void Viewer::OnContextMenu(int sx, int sy) {
     AppendMenuW(menu, MF_STRING, kMenuOpenExternal, Tr(L"Open in default &editor", L"Открыть в &редакторе"));
     AppendMenuW(menu, MF_STRING, kMenuAbout, L"mdview " MDVIEW_VERSION L"…");
 
+    const uint32_t gen = doc_gen_;
     const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
+    if (gen != doc_gen_) return;  // reloaded meanwhile: `hit` and `toc` are stale
     Settings& ws = GlobalSettings();
     if (cmd >= kMenuTocBase && cmd < kMenuTocBase + toc.size()) {
         Block* heading = toc[cmd - kMenuTocBase];
@@ -1639,7 +1702,7 @@ void Viewer::OnTimer(UINT_PTR id) {
             KillTimer(hwnd_, kTimerRefine);
             return;
         }
-        if (mouse_down_ || anim_) return;  // don't disturb interaction
+        if (mouse_down_ || anim_ || printing_) return;  // don't disturb interaction
         if (layout_.Refine(6.0)) {
             const float old_max = MaxScroll();
             Relayout(true);
@@ -1836,7 +1899,7 @@ LRESULT Viewer::Proc(UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 bool Viewer::Print(const wchar_t* /*printer*/, const RECT* margins) {
-    if (!doc_) return false;
+    if (!doc_ || printing_) return false;
     LayoutConfig cfg = MakeLayoutConfig();
     cfg.dark = false;             // paper is white
     cfg.zoom = 0.85f;
@@ -1846,8 +1909,16 @@ bool Viewer::Print(const wchar_t* /*printer*/, const RECT* margins) {
     const size_t slash = path_.find_last_of(L"\\/");
     const std::wstring title = slash == std::wstring::npos ? path_ : path_.substr(slash + 1);
     const ScrollAnchor anchor = CaptureAnchor();
-    const bool ok = PrintDocument(hwnd_, *doc_, cfg, title, margins);
-    // The print layout reused the document's block boxes: lay out again.
+    // The print layout borrows the document's block boxes; the dialogs' modal
+    // loops must not paint or re-lay-out the viewer meanwhile.
+    bool ok = false;
+    printing_ = true;
+    try {
+        ok = PrintDocument(hwnd_, *doc_, cfg, title, margins);
+    } catch (...) {
+        ok = false;
+    }
+    printing_ = false;
     Relayout(false);
     RestoreAnchor(anchor);
     Relayout(true);
@@ -1870,9 +1941,16 @@ HWND CreateViewer(HWND parent, const wchar_t* path, int show_flags) {
     }
     Viewer* v = viewer.release();  // owned by the window from now on
     HWND hwnd = v->hwnd();
-    v->Load(path, show_flags);
+    try {
+        v->Load(path, show_flags);
+    } catch (...) {
+        DestroyWindow(hwnd);  // TC gets no window: leave none behind
+        throw;
+    }
     return hwnd;
 }
+
+void UnregisterViewerClass() { UnregisterClassW(kClassName, reinterpret_cast<HINSTANCE>(&__ImageBase)); }
 
 Viewer* ViewerFromHwnd(HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd)) return nullptr;
