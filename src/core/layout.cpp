@@ -200,16 +200,20 @@ private:
 
 // A formula (mathlayout.h) over its TeX source. It sits on the baseline like
 // text and reports the paragraph strut, so only a formula taller than the
-// text makes its line taller (the excess pre-divided by the line spacing,
-// like images, so no extra leading appears).
+// text makes its line taller, and then just as tall as the formula (no extra
+// leading).
 class MathObject final : public InlineObjectBase {
 public:
     MathObject(LayoutEngine* engine, std::shared_ptr<const MathBox> box, float scale, float raise, float strut_ascent,
                float strut_descent, float spacing)
         : engine_(engine), box_(std::move(box)), scale_(scale), raise_(raise) {
-        const float k = 1.f / std::max(spacing, 0.5f);
-        ascent_ = std::max(strut_ascent, (box_->ascent * scale_ + raise_) * k);
-        descent_ = std::max(strut_descent, (box_->descent * scale_ - raise_) * k);
+        // With proportional spacing s (leading split evenly) DirectWrite puts
+        // a line's baseline s * ascent + (s - 1) / 2 * descent below its top,
+        // and its bottom s * (ascent + descent): the metrics that make the
+        // line hold the formula's height above and depth below the baseline.
+        const float s = std::max(spacing, 0.5f);
+        descent_ = std::max(strut_descent, (box_->descent * scale_ - raise_) * 2.f / (s + 1.f));
+        ascent_ = std::max(strut_ascent, (box_->ascent * scale_ + raise_ - (s - 1.f) * 0.5f * descent_) / s);
     }
 
     HRESULT STDMETHODCALLTYPE Draw(void*, IDWriteTextRenderer*, FLOAT x, FLOAT y, BOOL, BOOL,
@@ -228,6 +232,13 @@ public:
         m->height = ascent_ + descent_;
         m->baseline = ascent_;
         m->supportsSideways = FALSE;
+        return S_OK;
+    }
+    // The formula beyond the reported box (into the line's leading).
+    HRESULT STDMETHODCALLTYPE GetOverhangMetrics(DWRITE_OVERHANG_METRICS* o) override {
+        *o = DWRITE_OVERHANG_METRICS{};
+        o->top = box_->ascent * scale_ + raise_ - ascent_;
+        o->bottom = box_->descent * scale_ - raise_ - descent_;
         return S_OK;
     }
 

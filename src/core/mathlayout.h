@@ -35,6 +35,7 @@ struct MathBox {
     // Text that needs shaping (\text in complex scripts, emoji).
     struct Text {
         float x = 0, y = 0;   // top-left corner of the layout
+        D2D1_RECT_F ink{};    // around its ink, from (x, y)
         uint32_t color = 0;
         ComPtr<IDWriteTextLayout> layout;
     };

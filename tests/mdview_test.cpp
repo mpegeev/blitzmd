@@ -104,6 +104,55 @@ double WorkingSetMb() {
     return static_cast<double>(pmc.WorkingSetSize) / (1024.0 * 1024.0);
 }
 
+// Records where a text layout puts its inline objects (nothing is drawn).
+class ObjectRecorder final : public IDWriteTextRenderer {
+public:
+    struct Placed {
+        float y = 0;  // top of the object's box
+        DWRITE_INLINE_OBJECT_METRICS metrics{};
+        DWRITE_OVERHANG_METRICS overhang{};
+    };
+    std::vector<Placed> placed;
+
+    ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
+    ULONG STDMETHODCALLTYPE Release() override { return 1; }
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void** p) override {
+        *p = nullptr;
+        return E_NOINTERFACE;
+    }
+    HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* disabled) override {
+        *disabled = TRUE;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetCurrentTransform(void*, DWRITE_MATRIX* m) override {
+        *m = DWRITE_MATRIX{1, 0, 0, 1, 0, 0};
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* p) override {
+        *p = 1;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawGlyphRun(void*, FLOAT, FLOAT, DWRITE_MEASURING_MODE, const DWRITE_GLYPH_RUN*,
+                                           const DWRITE_GLYPH_RUN_DESCRIPTION*, IUnknown*) override {
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawUnderline(void*, FLOAT, FLOAT, const DWRITE_UNDERLINE*, IUnknown*) override {
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawStrikethrough(void*, FLOAT, FLOAT, const DWRITE_STRIKETHROUGH*, IUnknown*) override {
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE DrawInlineObject(void*, FLOAT, FLOAT y, IDWriteInlineObject* obj, BOOL, BOOL,
+                                               IUnknown*) override {
+        Placed p;
+        p.y = y;
+        obj->GetMetrics(&p.metrics);
+        obj->GetOverhangMetrics(&p.overhang);
+        placed.push_back(p);
+        return S_OK;
+    }
+};
+
 }  // namespace
 
 int main(int argc, char** ansi_argv) {
@@ -877,6 +926,64 @@ int main(int argc, char** ansi_argv) {
                 ++failures;
             }
         }
+        {
+            // However tall, a formula stays inside its line (so its leaf and
+            // the space before the next one): in a paragraph, in a heading
+            // (tighter lines), in <sup>, on wrapped lines.
+            std::string rows;
+            for (int i = 0; i < 60; ++i) rows += "a_{" + std::to_string(i) + "} & b \\\\ ";
+            const std::string tall_md =
+                "$$\\begin{pmatrix}" + rows + "\\end{pmatrix}$$\n\n# Heading $\\begin{pmatrix}" + rows.substr(0, 150) +
+                "\\end{pmatrix}$\n\nText $\\frac{\\frac{a}{b}}{\\frac{c}{d}}$ and <sup>$\\sqrt{\\frac{x}{y}}$</sup> "
+                "text wrapping at some widths $\\left(\\begin{matrix}1\\\\2\\\\3\\end{matrix}\\right)$ more words "
+                "$\\int_0^1 x\\,dx$ and a few more words after it.\n";
+            auto tdoc = ParseMarkdown(tall_md, FullPath("samples/gfm/x.md"));
+            Palette palette;
+            ImageStore images;
+            images.Attach(tdoc.get(), nullptr, false, false);
+            LayoutEngine le;
+            le.Init(dw.Get(), &palette, &images);
+            LayoutConfig cfg;
+            cfg.max_content_width = 0;
+            le.SetConfig(cfg);
+            le.SetDocument(tdoc.get());
+            size_t checked = 0;
+            for (int w : {300, 520, 800}) {
+                le.Layout(static_cast<float>(w), 0, 1e6f);
+                for (const Block* leaf : tdoc->leaves) {
+                    LeafState* st = le.State(leaf);
+                    if (!st || !st->layout) continue;
+                    UINT32 count = 0;
+                    st->layout->GetLineMetrics(nullptr, 0, &count);
+                    std::vector<DWRITE_LINE_METRICS> lines(count);
+                    if (!count || FAILED(st->layout->GetLineMetrics(lines.data(), count, &count))) continue;
+                    ObjectRecorder rec;
+                    st->layout->Draw(nullptr, &rec, 0, 0);
+                    for (const ObjectRecorder::Placed& p : rec.placed) {
+                        // The line holding the object's baseline.
+                        const float baseline = p.y + p.metrics.baseline;
+                        float top = 0, line_bottom = 0;
+                        for (const DWRITE_LINE_METRICS& lm : lines) {
+                            line_bottom = top + lm.height;
+                            if (baseline <= line_bottom) break;
+                            top = line_bottom;
+                        }
+                        const float ink_top = p.y - p.overhang.top;
+                        const float ink_bottom = p.y + p.metrics.height + p.overhang.bottom;
+                        ++checked;
+                        if (ink_top < top - 0.5f || ink_bottom > line_bottom + 0.5f) {
+                            std::printf("FAIL: formula ink %.1f..%.1f outside its line %.1f..%.1f (width %d)\n", ink_top,
+                                        ink_bottom, top, line_bottom, w);
+                            ++failures;
+                        }
+                    }
+                }
+            }
+            if (checked < 6) {
+                std::printf("FAIL: only %zu formulas placed\n", checked);
+                ++failures;
+            }
+        }
         // Hostile input: deep nesting, huge and malformed sources.
         auto repeat = [](const wchar_t* s, int n) {
             std::wstring r;
@@ -902,6 +1009,28 @@ int main(int argc, char** ansi_argv) {
             const double ms = NowMs() - t0;
             if (!sane(*box) || ms > 3000) {
                 std::printf("FAIL: hostile input %s... (%.0f ms)\n", WideToUtf8(h.substr(0, 30)).c_str(), ms);
+                ++failures;
+            }
+        }
+        {
+            // Emoji are DirectWrite layouts, a draw call each: a bounded number
+            // per formula, and only those on screen drawn.
+            auto box = ts.Layout(repeat(L"\U0001F600", 9000), false, 16.f);
+            if (box->texts.size() > 64 || box->glyphs.size() < 8000) {
+                std::printf("FAIL: 9000 emoji: %zu layouts, %zu glyphs\n", box->texts.size(), box->glyphs.size());
+                ++failures;
+            }
+            std::string emoji_md = "$";
+            for (int i = 0; i < 3000; ++i) emoji_md += "\xF0\x9F\x98\x80";
+            emoji_md += "$\n";
+            auto edoc = ParseMarkdown(emoji_md, FullPath("samples/gfm/x.md"));
+            OffscreenOptions opt;
+            opt.width = 800;
+            opt.max_height = 600;
+            OffscreenStats stats;
+            RenderToBitmap(*edoc, opt, &stats);
+            if (stats.render_ms > 500) {
+                std::printf("FAIL: a formula of 3000 emoji renders in %.0f ms\n", stats.render_ms);
                 ++failures;
             }
         }

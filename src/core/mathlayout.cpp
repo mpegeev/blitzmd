@@ -33,6 +33,7 @@ enum Constant : int {
 constexpr uint32_t kErrorColor = 0xFFD1242F;  // unknown commands (MathJax shows them red)
 constexpr int kMaxAssemblyGlyphs = 1000;      // parts of one stretched glyph
 constexpr int kFormulaAssemblyGlyphs = 4000;  // and of all of a formula's
+constexpr int kMaxShapedTexts = 64;           // DirectWrite layouts of a formula (emoji, complex scripts)
 constexpr float kFarDips = 1e7f;              // > any 20000-character formula at the reference size
 
 // Big-endian reads with bounds checks (0 outside the table).
@@ -771,8 +772,10 @@ private:
     }
 
     // Text laid out by DirectWrite (shaping, bidi, color fonts); its box is
-    // the ink around the baseline.
+    // the ink around the baseline. Past a formula's budget, false: the text
+    // goes glyph by glyph (each layout costs a draw call).
     bool ShapedText(const std::wstring& text, float size, uint32_t color, Box* box) {
+        if (shaped_budget_ <= 0) return false;
         ComPtr<IDWriteTextFormat> format;
         ComPtr<IDWriteTextLayout> layout;
         constexpr float kFar = 10000.f;
@@ -797,9 +800,11 @@ private:
         box->d = std::max(0.f, kFar + om.bottom - baseline);  // ink below its bottom: om.bottom
         MathBox::Text t;
         t.y = -baseline;
+        t.ink = D2D1::RectF(-om.left, -om.top, kFar + om.right, kFar + om.bottom);
         t.color = color;
         t.layout = std::move(layout);
         box->texts.push_back(std::move(t));
+        --shaped_budget_;
         return true;
     }
 
@@ -1247,6 +1252,7 @@ private:
     float size_;
     uint16_t group_ = 0;  // last id of a stretched glyph's parts
     int assembly_budget_ = kFormulaAssemblyGlyphs;
+    int shaped_budget_ = kMaxShapedTexts;
 };
 
 }  // namespace
@@ -1412,7 +1418,10 @@ void MathTypesetter::Draw(ID2D1RenderTarget* rt, const MathBox& box, D2D1_POINT_
 
     // Shaped text, laid out at the formula's own size.
     for (const MathBox::Text& t : box.texts) {
-        if (!t.layout) continue;
+        const float m = (t.ink.bottom - t.ink.top) * 0.5f;  // color layers may reach past the outline
+        if (!t.layout || !shown(t.x + t.ink.left - m, t.y + t.ink.top - m, t.x + t.ink.right + m, t.y + t.ink.bottom + m)) {
+            continue;
+        }
         rt->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) *
                          D2D1::Matrix3x2F::Translation(origin.x + t.x * scale, origin.y + t.y * scale) * world);
         rt->DrawTextLayout(D2D1::Point2F(0, 0), t.layout.Get(), brush_for(t.color), D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
