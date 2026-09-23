@@ -11,6 +11,7 @@
 //   mdview_test settings <dll> <file.md> <out-prefix>
 //                                               settings dialog: live preview, Cancel, OK
 #include <windows.h>
+#include <dwmapi.h>
 #include <psapi.h>
 #include <shellapi.h>
 
@@ -37,6 +38,7 @@
 #include "spec_runner.h"
 
 #pragma comment(lib, "psapi.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 using namespace mdv;
 
@@ -472,6 +474,246 @@ int main(int argc, char** ansi_argv) {
         FreeLibrary(dll);
         std::printf("plugin OK\n");
         return 0;
+    }
+    if (cmd == "zoom" && argc >= 5) {
+        // zoom <mdview.wlx64> <file.md> <out-prefix>: zooms the first image of
+        // the document the way the mouse does (Ctrl+wheel, drag, double click,
+        // its buttons, the full-window view) and checks what is on screen.
+        HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
+        using SetParamsFn = void(__stdcall*)(void*);
+        using LoadFn = HWND(__stdcall*)(HWND, const wchar_t*, int);
+        using CloseFn = void(__stdcall*)(HWND);
+        auto set_params = dll ? reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams")) : nullptr;
+        auto load = dll ? reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW")) : nullptr;
+        auto close = dll ? reinterpret_cast<CloseFn>(GetProcAddress(dll, "ListCloseWindow")) : nullptr;
+        if (!set_params || !load || !close) {
+            std::fprintf(stderr, "cannot load plugin\n");
+            return 1;
+        }
+        const std::string prefix = argv[4];
+        const std::wstring dir = DirectoryOf(FullPath(argv[4]));
+        CreateDirectoryW(dir.c_str(), nullptr);
+        DeleteFileW((dir + L"mdview.ini").c_str());
+        struct {
+            int size;
+            DWORD lo, hi;
+            char ini[MAX_PATH];
+        } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
+        strncpy_s(dp.ini, WideToUtf8(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        set_params(&dp);
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"MdViewZoomHost";
+        RegisterClassW(&wc);
+        HWND host = CreateWindowExW(0, wc.lpszClassName, L"zoom test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40, 1000,
+                                    760, nullptr, nullptr, wc.hInstance, nullptr);
+        HWND viewer = load(host, FullPath(argv[3]).c_str(), 0);
+        if (!viewer) {
+            std::fprintf(stderr, "ListLoadW failed\n");
+            return 1;
+        }
+        auto pump = [](int ms) {
+            const double end = NowMs() + ms;
+            MSG msg;
+            while (NowMs() < end) {
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                Sleep(5);
+            }
+        };
+        pump(600);  // images decode asynchronously
+        struct Shot {
+            int w = 0, h = 0;
+            std::vector<uint32_t> px;
+            uint32_t at(int x, int y) const { return px[static_cast<size_t>(y) * w + x] & 0xFFFFFF; }
+        };
+        ComPtr<IWICImagingFactory> wic;
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
+        auto grab = [&](const char* name) {
+            RedrawWindow(viewer, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+            // The capture shows what DWM composed: wait for the new frame.
+            DwmFlush();
+            DwmFlush();
+            Sleep(30);
+            RECT rc{};
+            GetClientRect(viewer, &rc);
+            Shot s;
+            s.w = rc.right;
+            s.h = rc.bottom;
+            HDC screen = GetDC(nullptr);
+            HDC mem = CreateCompatibleDC(screen);
+            BITMAPINFO bi{};
+            bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+            bi.bmiHeader.biWidth = s.w;
+            bi.bmiHeader.biHeight = -s.h;
+            bi.bmiHeader.biPlanes = 1;
+            bi.bmiHeader.biBitCount = 32;
+            void* bits = nullptr;
+            HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+            HGDIOBJ old = SelectObject(mem, dib);
+            PrintWindow(viewer, mem, PW_CLIENTONLY | PW_RENDERFULLCONTENT);
+            SelectObject(mem, old);
+            s.px.assign(static_cast<const uint32_t*>(bits), static_cast<const uint32_t*>(bits) + s.w * s.h);
+            ComPtr<IWICBitmap> bmp;
+            if (wic && SUCCEEDED(wic->CreateBitmapFromHBITMAP(dib, nullptr, WICBitmapIgnoreAlpha, &bmp))) {
+                SaveBitmapPng(bmp.Get(), Utf8ToWide(prefix + name + ".png"));
+            }
+            DeleteObject(dib);
+            DeleteDC(mem);
+            ReleaseDC(nullptr, screen);
+            return s;
+        };
+        int failures = 0;
+        auto expect = [&failures](bool ok, const char* what) {
+            std::printf("%s: %s\n", ok ? "ok  " : "FAIL", what);
+            if (!ok) ++failures;
+        };
+        // Pixels that differ between two shots inside [x0,x1)x[y0,y1).
+        auto diff = [](const Shot& a, const Shot& b, int x0, int y0, int x1, int y1) {
+            int n = 0;
+            for (int y = std::max(y0, 0); y < std::min({y1, a.h, b.h}); ++y) {
+                for (int x = std::max(x0, 0); x < std::min({x1, a.w, b.w}); ++x) n += a.at(x, y) != b.at(x, y);
+            }
+            return n;
+        };
+        auto send = [&](UINT msg, WPARAM wp, int x, int y) { SendMessageW(viewer, msg, wp, MAKELPARAM(x, y)); };
+        auto away = [&] { send(WM_MOUSEMOVE, 0, 2, 2); };
+
+        const Shot s0 = grab("0-initial");
+        // The image: the first rows that aren't page background (the document
+        // starts with it), left of the scrollbar.
+        const uint32_t bg = s0.at(s0.w / 2, 2);
+        int l = s0.w, t = -1, r = 0, b = 0;
+        for (int y = 0; y < s0.h; ++y) {
+            bool any = false;
+            for (int x = 0; x < s0.w - 30; ++x) {
+                if (s0.at(x, y) == bg) continue;
+                any = true;
+                l = std::min(l, x);
+                r = std::max(r, x + 1);
+            }
+            if (any && t < 0) t = y;
+            if (!any && t >= 0) {
+                b = y;
+                break;
+            }
+        }
+        std::printf("image at %d,%d..%d,%d\n", l, t, r, b);
+        expect(r - l > 100 && b - t > 100, "the image is on screen");
+        const int cx = (l + r) / 2, cy = (t + b) / 2;
+        const float scale = static_cast<float>(GetDpiForWindow(viewer)) / 96.f;
+
+        send(WM_MOUSEMOVE, 0, cx, cy);
+        const Shot s1 = grab("1-hover");
+        const int bar = static_cast<int>(60 * scale);  // the buttons, top right
+        expect(diff(s0, s1, r - static_cast<int>(150 * scale), t, r, t + bar) > 200, "hover shows the zoom buttons");
+        expect(diff(s0, s1, l, t + bar, r, b) == 0, "hover changes nothing else");
+
+        POINT sp{cx, cy};
+        ClientToScreen(viewer, &sp);
+        SendMessageW(viewer, WM_MOUSEWHEEL, MAKEWPARAM(MK_CONTROL, WHEEL_DELTA * 3), MAKELPARAM(sp.x, sp.y));
+        away();
+        const Shot s2 = grab("2-ctrl-wheel");
+        expect(diff(s0, s2, l, t, r, b) > (r - l) * (b - t) / 4, "Ctrl+wheel zooms the image");
+        expect(diff(s0, s2, 0, 0, s0.w, t - 2) == 0 && diff(s0, s2, 0, b + 2, s0.w - 30, s0.h) <= 4,
+               "... inside its box: the rest of the page stays");
+
+        send(WM_LBUTTONDOWN, MK_LBUTTON, cx, cy);
+        send(WM_MOUSEMOVE, MK_LBUTTON, cx - 120, cy - 80);
+        send(WM_LBUTTONUP, 0, cx - 120, cy - 80);
+        away();
+        const Shot s3 = grab("3-dragged");
+        expect(diff(s2, s3, l, t, r, b) > (r - l) * (b - t) / 4, "dragging moves the zoomed image");
+        expect(diff(s0, s3, 0, 0, s0.w, t - 2) == 0, "... and doesn't select or scroll");
+
+        send(WM_LBUTTONDOWN, MK_LBUTTON, cx, cy);
+        send(WM_LBUTTONUP, 0, cx, cy);
+        send(WM_LBUTTONDBLCLK, MK_LBUTTON, cx, cy);
+        send(WM_LBUTTONUP, 0, cx, cy);
+        away();
+        const Shot s4 = grab("4-double-click");
+        expect(diff(s0, s4, 0, 0, s0.w - 30, s0.h) == 0, "double click restores the image");
+        {
+            int dl = s0.w, dt = s0.h, dr = 0, db = 0, n = 0;
+            for (int y = 0; y < s0.h; ++y) {
+                for (int x = 0; x < s0.w - 30; ++x) {
+                    if (s0.at(x, y) == s4.at(x, y)) continue;
+                    ++n;
+                    dl = std::min(dl, x);
+                    dt = std::min(dt, y);
+                    dr = std::max(dr, x);
+                    db = std::max(db, y);
+                }
+            }
+            if (n) std::printf("  %d pixels differ in %d,%d..%d,%d\n", n, dl, dt, dr, db);
+        }
+
+        // Expand: the last of the buttons.
+        send(WM_MOUSEMOVE, 0, cx, cy);
+        grab("5-hover");
+        const int em = static_cast<int>(16 * scale);
+        const int bx = r - em / 2 - em * 7 / 8, by = t + em / 2 + em * 7 / 8;
+        send(WM_MOUSEMOVE, 0, bx, by);
+        send(WM_LBUTTONDOWN, MK_LBUTTON, bx, by);
+        send(WM_LBUTTONUP, 0, bx, by);
+        // The second click of a double click on the button lands beside the
+        // image in the view: it must stay open.
+        send(WM_LBUTTONDBLCLK, MK_LBUTTON, bx, by);
+        send(WM_LBUTTONUP, 0, bx, by);
+        send(WM_MOUSEMOVE, 0, s0.w / 2, s0.h - 8);
+        const Shot s6 = grab("6-full-window");
+        expect(diff(s0, s6, 0, 0, s0.w, s0.h) > s0.w * s0.h / 10, "the expand button opens the full-window view");
+        const uint32_t corner = s6.at(4, s6.h - 4);
+        expect(corner == bg, "... on the page background (and a double click doesn't close it)");
+        {
+            // Its buttons, top right of the window: the hovered one lights up
+            // and stays so through repaints.
+            const int fx = s6.w - em / 2 - em * 7 / 8, fy = em / 2 + em * 7 / 8;
+            send(WM_MOUSEMOVE, 0, fx - em * 4, fy);  // two buttons left of x: zoom in (1.75 + 0.25 em apart)
+            grab("6b-hover");
+            const Shot h2 = grab("6c-hover-again");
+            expect(diff(s6, h2, s6.w - em * 9, 0, s6.w, em * 3) > 20, "a hovered button of the view stays lit");
+        }
+
+        POINT fc{s6.w / 2, s6.h / 2};
+        ClientToScreen(viewer, &fc);
+        SendMessageW(viewer, WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA * 4), MAKELPARAM(fc.x, fc.y));
+        const Shot s7 = grab("7-full-wheel");
+        expect(diff(s6, s7, 0, 0, s6.w, s6.h) > s6.w * s6.h / 10, "the wheel zooms the full-window view");
+
+        // Posted, like a key press: through the message loop (Total Commander's
+        // Lister would take Esc there, so the viewer hooks it first).
+        PostMessageW(viewer, WM_KEYDOWN, VK_ESCAPE, 0x00010001);
+        pump(100);
+        away();
+        const Shot s8 = grab("8-closed");
+        expect(diff(s0, s8, 0, 0, s0.w - 30, s0.h) == 0, "Esc closes it: the page is back as it was");
+
+        // Ctrl+wheel beside the image still zooms the document.
+        POINT tp{l / 2 + 4, b + static_cast<int>(40 * scale)};
+        ClientToScreen(viewer, &tp);
+        SendMessageW(viewer, WM_MOUSEWHEEL, MAKEWPARAM(MK_CONTROL, WHEEL_DELTA), MAKELPARAM(tp.x, tp.y));
+        const Shot s9 = grab("9-page-zoom");
+        expect(diff(s0, s9, 0, 0, s0.w - 30, s0.h) > s0.w * s0.h / 20, "Ctrl+wheel beside it zooms the page");
+        // A new gesture: Ctrl+wheel down over the image at 1x zooms the page
+        // (back to 100%), not the image.
+        Sleep(600);
+        POINT ip{cx, cy};
+        ClientToScreen(viewer, &ip);
+        SendMessageW(viewer, WM_MOUSEWHEEL, MAKEWPARAM(MK_CONTROL, static_cast<WORD>(-WHEEL_DELTA)), MAKELPARAM(ip.x, ip.y));
+        away();
+        const Shot s10 = grab("10-page-zoom-back");
+        expect(diff(s0, s10, 0, 0, s0.w - 30, s0.h - static_cast<int>(60 * scale)) == 0,
+               "Ctrl+wheel down over an unzoomed image zooms the page out");
+
+        close(viewer);
+        DestroyWindow(host);
+        FreeLibrary(dll);
+        std::printf(failures ? "zoom FAILED\n" : "zoom OK\n");
+        return failures ? 1 : 0;
     }
     if (cmd == "settings" && argc >= 5) {
         // settings <mdview.wlx64> <file.md> <out-prefix>: opens the settings

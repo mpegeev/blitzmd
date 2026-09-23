@@ -59,6 +59,7 @@ Step 'auto-reload' { & $t reload $dll (Join-Path $tmp 'reload') | Select-Object 
 Step 'settings dialog' {
     & $t settings $dll samples/gfm/04-code-highlighting.md (Join-Path $tmp 'settings/s') | Where-Object { $_ -match 'FAIL|settings' }
 }
+Step 'image zoom' { & $t zoom $dll tests/zoom.md (Join-Path $tmp 'zoom/z') | Where-Object { $_ -match 'FAIL|zoom' } }
 
 if (-not $Quick) {
     Step 'fuzz' { & $t fuzz 400 | Select-Object -Last 1 }

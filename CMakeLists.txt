@@ -69,6 +69,7 @@ add_library(mdview_core STATIC
     src/core/mathlayout.cpp
     src/core/render.cpp
     src/core/icons.cpp
+    src/core/zoom.cpp
     src/core/viewer.cpp
     src/core/offscreen.cpp
     src/core/print.cpp

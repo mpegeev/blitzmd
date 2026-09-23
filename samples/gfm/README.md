@@ -24,6 +24,7 @@ This folder is a corpus of Markdown documents for checking the native (Direct2D/
 | [16-front-matter.md](16-front-matter.md) | UTF-8, LF | 1.3 KB | YAML front matter shown as a two-column key/value table (nested mappings as nested tables, short lists joined with commas), while `---` elsewhere stays a thematic break or setext underline. |
 | [17-flags.md](17-flags.md) | UTF-8, LF | 1.7 KB | Flag emoji (regional indicator pairs, shortcodes, England/Scotland/Wales tag sequences) in text, headings, tables, lists, links, inline code and code blocks; odd counts, non-countries and superscript stay letters. |
 | [18-math.md](18-math.md) | UTF-8, LF | 3 KB | Math typeset like MathJax: inline and display formulas, fractions, roots, limits, big operators, `\left…\right` and `\big` delimiters, matrices, `cases`, `aligned`, accents, braces, math alphabets, `\color`, `\boxed`, a ```` ```math ```` block and unknown commands. |
+| [19-zoom.md](19-zoom.md) | UTF-8, LF | 2.4 KB | mdview-only: zooming images inside their box (Ctrl+wheel, drag, double click, the corner buttons) and the full-window view, on a photo, an SVG, a wide image, an animated GIF, a linked image, images in a table, badges too small to zoom and a tall image. |
 
 ## Images (`img/`)
 

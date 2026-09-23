@@ -95,12 +95,26 @@ struct Metrics {
     float kbd_pad = 5.f;
 };
 
+// A zoomable object as last drawn on screen (view coordinates, DIPs).
+struct DrawnObject {
+    Block* leaf = nullptr;
+    InlineObject* object = nullptr;
+    D2D1_RECT_F box{};      // its layout box
+    D2D1_RECT_F visible{};  // the part of it not clipped away
+};
+
 // Everything inline objects need while being drawn.
 struct DrawContext {
     ID2D1RenderTarget* rt = nullptr;
     ImageStore* images = nullptr;
     Palette* palette = nullptr;
     ID2D1Brush* default_brush = nullptr;
+    // On screen (not printing or thumbnails): objects are drawn zoomed and
+    // listed in `drawn`, clipped to `clip` (view coordinates).
+    bool interactive = false;
+    std::vector<DrawnObject>* drawn = nullptr;
+    D2D1_RECT_F clip{};
+    Block* leaf = nullptr;  // leaf being drawn
 };
 
 class LayoutEngine {
