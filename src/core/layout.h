@@ -33,6 +33,7 @@ struct LayoutConfig {
     float zoom = 1.f;
     float max_content_width = 900.f;    // DIPs at 100% zoom; 0 = unlimited
     bool wrap_code = true;
+    bool line_numbers = false;          // line numbers in code blocks
     bool dark = false;
     float page_padding = -1.f;          // DIPs around the content; <0 = automatic
 };
@@ -59,6 +60,7 @@ struct LeafState {
     float min_w = 0.f;                  // widest unbreakable run
     float first_baseline = 0.f;         // first line baseline, relative to text top
     float tx = 0.f, ty = 0.f;           // text origin in document coordinates
+    float gutter = 0.f;                 // code blocks: width of the line-number column
     bool exact = false;
     bool minmax_valid = false;
     uint32_t used = 0;                  // frame stamp for eviction
@@ -141,6 +143,10 @@ public:
 
     // Title layouts for alerts and such (cached).
     IDWriteTextLayout* LabelLayout(const std::wstring& text, float size, uint16_t weight);
+    // Code block line numbers: a number in the code font, with its baseline.
+    IDWriteTextLayout* LineNumberLayout(int number, float size, float* baseline);
+    // Gap between the line numbers and the code.
+    float GutterGap(float size) const { return size * 1.25f; }
 
     DrawContext& draw_context() { return draw_ctx_; }
     ImageStore* images() const { return images_; }
@@ -204,6 +210,12 @@ private:
     std::unordered_map<std::wstring, ComPtr<IDWriteTextFormat>> formats_;
     std::unordered_map<std::wstring, FamilyMetrics> family_metrics_;
     std::unordered_map<std::wstring, ComPtr<IDWriteTextLayout>> labels_;
+    struct NumberLabel {
+        ComPtr<IDWriteTextLayout> layout;
+        float baseline = 0;
+    };
+    std::unordered_map<uint64_t, NumberLabel> numbers_;   // (size, number) -> label
+    float GutterWidth(const Block* b, const LeafStyle& st);
     float viewport_w_ = 0.f;
     float doc_h_ = 0.f;
     float doc_w_ = 0.f;

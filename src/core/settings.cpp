@@ -75,6 +75,7 @@ void LoadSettings() {
     s.syntax_highlight = ReadInt(L"SyntaxHighlight", d.syntax_highlight) != 0;
     s.hardware = ReadInt(L"HardwareRendering", d.hardware) != 0;
     s.wrap_code = std::clamp(ReadInt(L"WrapCode", d.wrap_code), -1, 1);
+    s.line_numbers = ReadInt(L"LineNumbers", d.line_numbers) != 0;
     if (s.font_family.empty()) s.font_family = d.font_family;
 }
 
@@ -93,6 +94,7 @@ void SaveSettings() {
     WriteInt(L"SyntaxHighlight", s.syntax_highlight ? 1 : 0);
     WriteInt(L"HardwareRendering", s.hardware ? 1 : 0);
     WriteInt(L"WrapCode", s.wrap_code);
+    WriteInt(L"LineNumbers", s.line_numbers ? 1 : 0);
 }
 
 }  // namespace mdv

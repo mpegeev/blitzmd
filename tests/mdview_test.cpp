@@ -102,6 +102,7 @@ int main(int argc, char** argv) {
             else if (a == "--height") o.max_height = next(16000.f);
             else if (a == "--remote") o.allow_remote_images = true;
             else if (a == "--nowrap") o.layout.wrap_code = false;
+            else if (a == "--lines") o.layout.line_numbers = true;
             else if (a == "--maxwidth") o.layout.max_content_width = next(900.f);
         }
         std::string md;
@@ -487,6 +488,7 @@ int main(int argc, char** argv) {
             o.layout.zoom = 0.5f + static_cast<float>(rnd() % 20) / 10.f;
             o.layout.dark = (rnd() & 1) != 0;
             o.layout.wrap_code = (rnd() & 1) != 0;
+            o.layout.line_numbers = (rnd() & 1) != 0;
             o.layout.max_content_width = (rnd() & 1) ? 0.f : 900.f;
             ComPtr<IWICBitmap> bmp = RenderToBitmap(*doc, o);
             total += NowMs() - t0;

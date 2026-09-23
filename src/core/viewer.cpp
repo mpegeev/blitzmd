@@ -131,6 +131,7 @@ enum MenuId : UINT {
     kMenuOpenLink,
     kMenuOpenExternal,
     kMenuReload,
+    kMenuLineNumbers,
     kMenuAbout,
     kMenuTocBase = 1000,
 };
@@ -380,6 +381,7 @@ LayoutConfig Viewer::MakeLayoutConfig() const {
     cfg.zoom = static_cast<float>(zoom_percent_) / 100.f;
     cfg.max_content_width = static_cast<float>(s.max_width);
     cfg.wrap_code = s.wrap_code < 0 ? (flags_ & lcp_wraptext) != 0 : s.wrap_code == 1;
+    cfg.line_numbers = s.line_numbers;
     cfg.dark = dark_;
     return cfg;
 }
@@ -395,6 +397,7 @@ void Viewer::ApplySettings(bool relayout) {
     const bool layout_changed = cfg.font_family != old.font_family || cfg.mono_family != old.mono_family ||
                                 cfg.font_size != old.font_size || cfg.zoom != old.zoom ||
                                 cfg.max_content_width != old.max_content_width || cfg.wrap_code != old.wrap_code ||
+                                cfg.line_numbers != old.line_numbers ||
                                 !layout_.laid_out();
     if (layout_changed) {
         const ScrollAnchor a = CaptureAnchor();
@@ -1599,6 +1602,8 @@ void Viewer::OnContextMenu(int sx, int sy) {
     AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(theme), Tr(L"&Theme", L"&Тема"));
     AppendMenuW(menu, MF_STRING | (layout_.config().wrap_code ? MF_CHECKED : 0), kMenuWrap,
                 Tr(L"&Wrap long code lines", L"&Переносить длинные строки кода"));
+    AppendMenuW(menu, MF_STRING | (s.line_numbers ? MF_CHECKED : 0), kMenuLineNumbers,
+                Tr(L"Line &numbers in code", L"&Номера строк в коде"));
     AppendMenuW(menu, MF_STRING | (s.max_width == 0 ? MF_CHECKED : 0), kMenuFullWidth,
                 Tr(L"&Full-width text", L"Текст на всю &ширину"));
     AppendMenuW(menu, MF_STRING | (s.remote_images ? MF_CHECKED : 0), kMenuRemote,
@@ -1651,6 +1656,11 @@ void Viewer::OnContextMenu(int sx, int sy) {
     case kMenuThemeDark: ws.theme = ThemeMode::Dark; SaveSettings(); ApplySettings(true); break;
     case kMenuWrap:
         ws.wrap_code = layout_.config().wrap_code ? 0 : 1;
+        SaveSettings();
+        ApplySettings(true);
+        break;
+    case kMenuLineNumbers:
+        ws.line_numbers = !ws.line_numbers;
         SaveSettings();
         ApplySettings(true);
         break;

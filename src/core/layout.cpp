@@ -235,6 +235,7 @@ void LayoutEngine::SetConfig(const LayoutConfig& cfg) {
     m_.kbd_pad = em * 5.f / 16.f;
     formats_.clear();
     labels_.clear();
+    numbers_.clear();
     InvalidateMeasurements();
 }
 
@@ -597,6 +598,7 @@ IDWriteTextLayout* LayoutEngine::TextLayout(Block* leaf) {
 void LayoutEngine::InvalidateTextLayouts() {
     for (LeafState& s : leaves_) s.layout.Reset();
     labels_.clear();
+    numbers_.clear();
 }
 
 void LayoutEngine::InvalidateMeasurements() {
@@ -874,6 +876,8 @@ float LayoutEngine::LayoutLeaf(Block* b, float x, float y, float w, const Ctx& c
     float pad_l = 0, pad_t = 0, pad_r = 0, pad_b = 0;
     if (b->type == BlockType::CodeBlock) {
         pad_l = pad_t = pad_r = pad_b = m_.code_pad * ctx.scale;
+        s.gutter = GutterWidth(b, st);
+        pad_l += s.gutter;
     } else if (b->type == BlockType::Heading && b->level <= 2) {
         pad_b = st.size * 0.3f + 1.f;
     } else if (b->type == BlockType::Summary) {
@@ -1000,8 +1004,9 @@ void LayoutEngine::MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& ma
             max_w = widest;
         }
         if (b->type == BlockType::CodeBlock) {
-            min_w = std::min(min_w + 2.f * m_.code_pad, m_.em * 12.f);
-            max_w += 2.f * m_.code_pad;
+            const float gutter = cfg_.line_numbers ? GutterWidth(b, ResolveStyle(b, ctx)) : 0.f;
+            min_w = std::min(min_w + 2.f * m_.code_pad + gutter, m_.em * 12.f);
+            max_w += 2.f * m_.code_pad + gutter;
         }
         return;
     }
@@ -1026,7 +1031,7 @@ void LayoutEngine::MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& ma
             s.minmax_valid = true;
         }
         float pad = 0;
-        if (b->type == BlockType::CodeBlock) pad = 2.f * m_.code_pad * ctx.scale;
+        if (b->type == BlockType::CodeBlock) pad = 2.f * m_.code_pad * ctx.scale + GutterWidth(b, st);
         if (b->type == BlockType::Summary) pad = m_.em * ctx.scale * 1.25f;
         // +1: a layout exactly as wide as its text may still wrap (rounding).
         min_w = s.min_w + pad + 1.f;
@@ -1281,6 +1286,41 @@ bool LayoutEngine::Refine(double budget_ms) {
 const TableInfo* LayoutEngine::Table(const Block* table) const {
     auto it = tables_.find(table);
     return it == tables_.end() ? nullptr : &it->second;
+}
+
+// Line numbers of multi-line code blocks: the widest number plus a gap.
+float LayoutEngine::GutterWidth(const Block* b, const LeafStyle& st) {
+    if (!cfg_.line_numbers || b->type != BlockType::CodeBlock) return 0.f;
+    const int lines = 1 + static_cast<int>(std::count(b->text.begin(), b->text.end(), L'\n'));
+    if (lines < 2) return 0.f;
+    float width = 0;
+    if (IDWriteTextLayout* tl = LineNumberLayout(lines, st.size, nullptr)) {
+        DWRITE_TEXT_METRICS tm{};
+        tl->GetMetrics(&tm);
+        width = tm.widthIncludingTrailingWhitespace;
+    }
+    return width + GutterGap(st.size);
+}
+
+IDWriteTextLayout* LayoutEngine::LineNumberLayout(int number, float size, float* baseline) {
+    const uint64_t key = (static_cast<uint64_t>(size * 100.f + 0.5f) << 32) | static_cast<uint32_t>(number);
+    auto it = numbers_.find(key);
+    if (it == numbers_.end()) {
+        if (numbers_.size() >= 4096) numbers_.clear();
+        IDWriteTextFormat* fmt = Format(mono_family_, size, 400, false);
+        if (!fmt) return nullptr;
+        const std::wstring text = std::to_wstring(number);
+        NumberLabel label;
+        if (FAILED(dw_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), fmt, kHugeWidth,
+                                         kHugeWidth, &label.layout))) {
+            return nullptr;
+        }
+        label.layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        label.baseline = FirstLineBaseline(label.layout.Get());
+        it = numbers_.emplace(key, std::move(label)).first;
+    }
+    if (baseline) *baseline = it->second.baseline;
+    return it->second.layout.Get();
 }
 
 IDWriteTextLayout* LayoutEngine::LabelLayout(const std::wstring& text, float size, uint16_t weight) {

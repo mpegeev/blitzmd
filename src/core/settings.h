@@ -26,6 +26,7 @@ struct Settings {
     // full window in a few milliseconds.
     bool hardware = false;
     int wrap_code = -1;                  // -1: follow Lister's wrap option, 0/1 forced
+    bool line_numbers = false;           // line numbers in code blocks
 };
 
 // Process-wide settings instance.

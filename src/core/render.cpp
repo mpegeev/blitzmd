@@ -336,13 +336,19 @@ void Renderer::DrawCodeBlock(Block* b) {
     const Metrics& m = layout_->metrics();
     const D2D1_RECT_F box = D2D1::RectF(b->x, b->y, b->x + b->w, b->y + b->h);
     rt_->FillRoundedRectangle(D2D1_ROUNDED_RECT{box, m.radius, m.radius}, Brush(kColorCanvasSubtle));
-    rt_->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_ALIASED);
+    // With line numbers the code scrolls (horizontally) right of their column.
+    const LeafState* s = layout_->State(b);
+    const float gutter = s ? s->gutter : 0.f;
+    D2D1_RECT_F code_clip = box;
+    if (gutter > 0) code_clip.left = s->tx - layout_->GutterGap(s->style.size) * 0.5f;
+    rt_->PushAxisAlignedClip(code_clip, D2D1_ANTIALIAS_MODE_ALIASED);
     D2D1_MATRIX_3X2_F old;
     rt_->GetTransform(&old);
     if (b->scroll_x > 0) rt_->SetTransform(D2D1::Matrix3x2F::Translation(-b->scroll_x, 0) * old);
     DrawLeaf(b);
     rt_->SetTransform(old);
     rt_->PopAxisAlignedClip();
+    if (gutter > 0) DrawLineNumbers(b, *s);
     if (b->content_w > 0) DrawHScrollbar(b);
 
     if (st_->hover_block == b || st_->copied_block == b) {
@@ -358,6 +364,46 @@ void Renderer::DrawCodeBlock(Block* b) {
         const D2D1_RECT_F ir = D2D1::RectF(cx - isz * 0.5f, cy - isz * 0.5f, cx + isz * 0.5f, cy + isz * 0.5f);
         if (st_->copied_block == b) DrawIcon(rt_, icons_, Icon::Check, ir, Brush(kColorAlertTip));
         else DrawIcon(rt_, icons_, Icon::Copy, ir, Brush(kColorMuted));
+    }
+}
+
+// Numbers of the logical lines of a code block (wrapped continuations get
+// none). They are drawn, not part of the text: selection, search and copying
+// only ever see the code.
+void Renderer::DrawLineNumbers(Block* b, const LeafState& s) {
+    IDWriteTextLayout* tl = layout_->TextLayout(b);
+    if (!tl) return;
+    const float gap = layout_->GutterGap(s.style.size);
+    const float right = s.tx - gap;
+    const float sep = std::floor(s.tx - gap * 0.5f) + 0.5f;
+    rt_->DrawLine(D2D1::Point2F(sep, b->y), D2D1::Point2F(sep, b->y + b->h), Brush(kColorBorderMuted), 1.f);
+
+    // Walk the visual lines: a number goes on each one that starts a line of
+    // code, on that line's own baseline; only the lines in view are drawn.
+    UINT32 count = 0;
+    tl->GetLineMetrics(nullptr, 0, &count);
+    if (count == 0) return;
+    line_buf_.resize(count);
+    if (FAILED(tl->GetLineMetrics(line_buf_.data(), count, &count))) return;
+    const float top = st_->scroll_y, bottom = st_->scroll_y + st_->view_h;
+    ID2D1Brush* brush = Brush(kColorMuted);
+    float y = s.ty;
+    int number = 1;
+    bool starts_line = true;
+    for (UINT32 i = 0; i < count && y <= bottom; ++i) {
+        const DWRITE_LINE_METRICS& lm = line_buf_[i];
+        if (starts_line && y + lm.height >= top) {
+            float baseline = 0;
+            if (IDWriteTextLayout* nl = layout_->LineNumberLayout(number, s.style.size, &baseline)) {
+                DWRITE_TEXT_METRICS tm{};
+                nl->GetMetrics(&tm);
+                rt_->DrawTextLayout(D2D1::Point2F(right - tm.widthIncludingTrailingWhitespace, y + lm.baseline - baseline),
+                                    nl, brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+            }
+        }
+        starts_line = lm.newlineLength > 0;
+        if (starts_line) ++number;
+        y += lm.height;
     }
 }
 
