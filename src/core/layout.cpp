@@ -1053,17 +1053,38 @@ void LayoutEngine::MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& ma
     case BlockType::Rule:
         return;
     case BlockType::Table: {
-        // Nested table: rough intrinsic width (sum of cells of the widest row).
+        // Nested table: column widths are the widest cell of each column (as
+        // LayoutTable computes them), plus padding and the grid lines.
+        std::vector<float> cmin, cmax;
         for (Block* row : b->children) {
-            float rmin = 0, rmax = 0;
+            if (row->type != BlockType::TableRow) continue;
+            size_t col = 0;
             for (Block* cell : row->children) {
-                float cmin, cmax;
-                MinMaxWidth(cell, c, cmin, cmax, estimate);
-                rmin += cmin + 2.f * m_.cell_pad_x + 1.f;
-                rmax += cmax + 2.f * m_.cell_pad_x + 1.f;
+                Ctx cc = c;
+                cc.header_cell = cell->header || row->header;
+                cc.align = cell->align;
+                float mn, mx;
+                MinMaxWidth(cell, cc, mn, mx, estimate);
+                const size_t span = static_cast<size_t>(std::max(1, cell->colspan));
+                if (cmin.size() < col + span) {
+                    cmin.resize(col + span, 0.f);
+                    cmax.resize(col + span, 0.f);
+                }
+                for (size_t k = col; k < col + span; ++k) {
+                    cmin[k] = std::max(cmin[k], mn / static_cast<float>(span));
+                    cmax[k] = std::max(cmax[k], mx / static_cast<float>(span));
+                }
+                col += span;
             }
-            min_w = std::max(min_w, rmin);
-            max_w = std::max(max_w, rmax);
+        }
+        const float per_col = 2.f * m_.cell_pad_x * ctx.scale + 1.f;
+        for (size_t k = 0; k < cmin.size(); ++k) {
+            min_w += cmin[k] + per_col;
+            max_w += cmax[k] + per_col;
+        }
+        if (!cmin.empty()) {
+            min_w += 1.f;
+            max_w += 1.f;
         }
         return;
     }

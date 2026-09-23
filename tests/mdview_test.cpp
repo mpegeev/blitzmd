@@ -1,6 +1,8 @@
 // mdview_test — developer tool for the mdview Lister plugin.
 //
-//   mdview_test spec <spec.txt> [-v] [-n N]     run CommonMark/GFM spec examples
+//   mdview_test spec <spec.txt> [-v] [-n N] [--strict]
+//                                               run CommonMark/GFM spec examples
+//                                               (--strict: every mismatch fails)
 //   mdview_test dump <file.md>                  print the parsed document as HTML
 //   mdview_test render <file.md> <out.png> [--width W] [--scale S] [--dark]
 //                      [--zoom Z] [--scroll Y] [--height H] [--remote] [--nowrap]
@@ -30,7 +32,7 @@ namespace {
 int Usage() {
     std::fprintf(stderr,
                  "usage:\n"
-                 "  mdview_test spec <spec.txt> [-v] [-n N]\n"
+                 "  mdview_test spec <spec.txt> [-v] [-n N] [--strict]\n"
                  "  mdview_test dump <file.md>\n"
                  "  mdview_test render <file.md> <out.png> [--width W] [--scale S] [--dark] [--zoom Z]\n"
                  "              [--scroll Y] [--height H] [--remote] [--nowrap]\n"
@@ -70,13 +72,14 @@ int main(int argc, char** argv) {
     if (argc < 3) return Usage();
     const std::string cmd = argv[1];
     if (cmd == "spec") {
-        bool verbose = false;
+        bool verbose = false, strict = false;
         int only = 0;
         for (int i = 3; i < argc; ++i) {
             if (!std::strcmp(argv[i], "-v")) verbose = true;
+            else if (!std::strcmp(argv[i], "--strict")) strict = true;
             else if (!std::strcmp(argv[i], "-n") && i + 1 < argc) only = std::atoi(argv[++i]);
         }
-        return test::RunSpec(argv[2], verbose, only);
+        return test::RunSpec(argv[2], verbose, only, strict);
     }
     if (cmd == "dump") {
         std::string md;
@@ -457,9 +460,22 @@ int main(int argc, char** argv) {
             "\xC3", "\xFF", "\xED\xA0\x80", "\r\n", "\r", "[link]: /url\n", "[link]", "<https://a.b>",
         };
         const size_t n_pieces = sizeof(kPieces) / sizeof(kPieces[0]);
+        // YAML front matter fragments (a third of the documents start with one).
+        static const char* kYaml[] = {
+            "key: ", "k2:", "value", "\n", "  ", "    ", "- ", "-", "[", "]", "{", "}", ", ", "'", "\"", "\\\"",
+            "|", "|-\n", ">", ">+\n", "# c", ":", ": ", "&a ", "*a", "!tag ", "\t", "  - k: v\n", "...\n",
+            "---\n", "\xD0\x9A\xD0\xBB\xD1\x8E\xD1\x87: ", "<b>&amp;", "```", "\r\n", "a: [b, {c: d}]\n",
+        };
+        const size_t n_yaml = sizeof(kYaml) / sizeof(kYaml[0]);
         double total = 0;
         for (int it = 0; it < iterations; ++it) {
             std::string md;
+            if (rnd() % 3 == 0) {
+                md = "---\nkey: v\n";
+                const int ylen = static_cast<int>(rnd() % 60);
+                for (int k = 0; k < ylen; ++k) md += kYaml[rnd() % n_yaml];
+                md += "\n---\n";
+            }
             const int len = static_cast<int>(rnd() % 300);
             for (int k = 0; k < len; ++k) md += kPieces[rnd() % n_pieces];
             const double t0 = NowMs();

@@ -21,6 +21,7 @@ This folder is a corpus of Markdown documents for checking the native (Direct2D/
 | [13-encoding-cp1251.md](13-encoding-cp1251.md) | **Windows-1251**, no BOM, CRLF | 1.3 KB | Russian text in a legacy ANSI code page. It is invalid as UTF-8, so the viewer must fall back to CP1251. |
 | [14-encoding-utf16le-nobom.md](14-encoding-utf16le-nobom.md) | UTF-16 LE, **no BOM**, LF | 2.7 KB | Heuristic detection (a `00` byte at every odd offset). |
 | [15-encoding-invalid-utf8.md](15-encoding-invalid-utf8.md) | UTF-8 with 7 invalid sequences, LF | 1.4 KB | A few bad bytes must become U+FFFD, not flip the whole document into a legacy code page. |
+| [16-front-matter.md](16-front-matter.md) | UTF-8, LF | 1.3 KB | YAML front matter shown as a GitHub-style table (nested lists and mappings as nested tables), while `---` elsewhere stays a thematic break or setext underline. |
 
 ## Images (`img/`)
 

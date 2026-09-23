@@ -54,6 +54,7 @@ add_library(mdview_core STATIC
     src/core/util.cpp
     src/core/document.cpp
     src/core/html.cpp
+    src/core/frontmatter.cpp
     src/core/parser.cpp
     src/core/texmath.cpp
     ${MDVIEW_HIGHLIGHT_SOURCE}

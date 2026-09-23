@@ -358,6 +358,8 @@ std::string NormalizeHtml(const std::string& html) {
             out += k.s;
         }
     }
+    // A paragraph without any text (e.g. "[](url)") is invisible either way.
+    for (size_t p; (p = out.find(L"<p></p>")) != std::wstring::npos;) out.erase(p, 7);
     return WideToUtf8(out);
 }
 

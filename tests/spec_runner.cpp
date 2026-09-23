@@ -109,7 +109,7 @@ bool HasRawHtml(const std::string& md) {
 
 }  // namespace
 
-int RunSpec(const std::string& path, bool verbose, int only_example) {
+int RunSpec(const std::string& path, bool verbose, int only_example, bool strict) {
     std::string bytes;
     if (!ReadFileBytes(Utf8ToWide(path).c_str(), bytes, 64u << 20)) {
         std::fprintf(stderr, "cannot read %s\n", path.c_str());
@@ -135,9 +135,10 @@ int RunSpec(const std::string& path, bool verbose, int only_example) {
             ++pass;
             continue;
         }
-        const bool raw_html = HasRawHtml(e.markdown) || e.section == "HTML blocks" ||
-                              e.section == "Raw HTML" || e.kind == "tagfilter";
-        const bool md4c_differs = reference != expected;
+        // Strict (our own extension tests): every mismatch is a failure.
+        const bool raw_html = !strict && (HasRawHtml(e.markdown) || e.section == "HTML blocks" ||
+                                          e.section == "Raw HTML" || e.kind == "tagfilter");
+        const bool md4c_differs = !strict && reference != expected;
         if (raw_html) ++html_fail;
         else if (md4c_differs) ++md4c_fail;
         else ++fail;
