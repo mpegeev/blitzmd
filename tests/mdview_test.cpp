@@ -8,12 +8,16 @@
 //                      [--zoom Z] [--scroll Y] [--height H] [--remote] [--nowrap]
 //                                               render a document (region) to PNG
 //   mdview_test bench <file.md> [--width W]     parse + layout timing
+//   mdview_test settings <dll> <file.md> <out-prefix>
+//                                               settings dialog: live preview, Cancel, OK
 #include <windows.h>
 #include <psapi.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
 
 #include "core/texmath.h"
 #include "core/offscreen.h"
@@ -56,6 +60,34 @@ std::wstring FullPath(const char* p) {
     const DWORD n = GetFullPathNameW(w.c_str(), 2048, buf, nullptr);
     return n > 0 && n < 2048 ? std::wstring(buf, n) : w;
 }
+
+// Captures a window (Direct2D content and the dark title bar included) to PNG
+// and returns the color of the pixel at (x, y) of the capture.
+COLORREF CaptureWindow(HWND hwnd, const std::string& path, bool client_only, int x = 8, int y = 8) {
+    RECT rc{};
+    if (client_only) GetClientRect(hwnd, &rc);
+    else GetWindowRect(hwnd, &rc);
+    const int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    HDC screen = GetDC(nullptr);
+    HDC mem = CreateCompatibleDC(screen);
+    HBITMAP bmp = CreateCompatibleBitmap(screen, w, h);
+    HGDIOBJ old = SelectObject(mem, bmp);
+    PrintWindow(hwnd, mem, PW_RENDERFULLCONTENT | (client_only ? PW_CLIENTONLY : 0));
+    const COLORREF pixel = GetPixel(mem, x, y);
+    SelectObject(mem, old);
+    ComPtr<IWICImagingFactory> wic;
+    ComPtr<IWICBitmap> wbmp;
+    if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
+        SUCCEEDED(wic->CreateBitmapFromHBITMAP(bmp, nullptr, WICBitmapIgnoreAlpha, &wbmp))) {
+        SaveBitmapPng(wbmp.Get(), Utf8ToWide(path));
+    }
+    DeleteObject(bmp);
+    DeleteDC(mem);
+    ReleaseDC(nullptr, screen);
+    return pixel;
+}
+
+bool IsDarkPixel(COLORREF c) { return GetRValue(c) + GetGValue(c) + GetBValue(c) < 3 * 80; }
 
 double WorkingSetMb() {
     PROCESS_MEMORY_COUNTERS pmc{};
@@ -127,8 +159,10 @@ int main(int argc, char** argv) {
     if (cmd == "snap") {
         // snap <out.png> [window class] : captures a top-level window (default:
         // Total Commander's Lister) including Direct2D content.
+        // A "0x..." argument is a window handle.
         const std::wstring cls = argc >= 4 ? Utf8ToWide(argv[3]) : L"TLister";
-        HWND hwnd = FindWindowW(cls.c_str(), nullptr);
+        HWND hwnd = cls.starts_with(L"0x") ? reinterpret_cast<HWND>(static_cast<uintptr_t>(std::wcstoull(cls.c_str(), nullptr, 16)))
+                                           : FindWindowW(cls.c_str(), nullptr);
         if (!hwnd) {
             std::fprintf(stderr, "window not found\n");
             return 1;
@@ -369,6 +403,171 @@ int main(int argc, char** argv) {
         FreeLibrary(dll);
         std::printf("plugin OK\n");
         return 0;
+    }
+    if (cmd == "settings" && argc >= 5) {
+        // settings <mdview.wlx64> <file.md> <out-prefix>: opens the settings
+        // dialog the way the context menu does, captures it, changes options
+        // (live preview in the viewer), cancels, then changes and saves them.
+        HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
+        using SetParamsFn = void(__stdcall*)(void*);
+        using LoadFn = HWND(__stdcall*)(HWND, const wchar_t*, int);
+        using CloseFn = void(__stdcall*)(HWND);
+        auto set_params = dll ? reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams")) : nullptr;
+        auto load = dll ? reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW")) : nullptr;
+        auto close = dll ? reinterpret_cast<CloseFn>(GetProcAddress(dll, "ListCloseWindow")) : nullptr;
+        if (!set_params || !load || !close) {
+            std::fprintf(stderr, "cannot load plugin\n");
+            return 1;
+        }
+        const std::string prefix = argv[4];
+        const std::wstring dir = DirectoryOf(FullPath(argv[4]));
+        CreateDirectoryW(dir.c_str(), nullptr);
+        const std::wstring ini = dir + L"mdview.ini";
+        DeleteFileW(ini.c_str());
+        struct {
+            int size;
+            DWORD lo, hi;
+            char ini[MAX_PATH];
+        } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
+        strncpy_s(dp.ini, WideToUtf8(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        set_params(&dp);
+
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"MdViewSettingsHost";
+        RegisterClassW(&wc);
+        HWND host = CreateWindowExW(0, wc.lpszClassName, L"settings test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40,
+                                    1000, 760, nullptr, nullptr, wc.hInstance, nullptr);
+        HWND viewer = load(host, FullPath(argv[3]).c_str(), 0);
+        if (!viewer) {
+            std::fprintf(stderr, "ListLoadW failed\n");
+            return 1;
+        }
+        const UINT open_settings = RegisterWindowMessageW(L"MdViewWlxOpenSettings");
+        const DWORD ui_thread = GetCurrentThreadId();
+        std::atomic<bool> done{false};
+        int failures = 0;
+        auto expect = [&failures](bool ok, const char* what) {
+            std::printf("%s: %s\n", ok ? "ok  " : "FAIL", what);
+            if (!ok) ++failures;
+        };
+        // The dialog runs a modal loop on the UI thread: drive it from here.
+        std::thread driver([&] {
+            CoInitializeEx(nullptr, COINIT_MULTITHREADED);  // WIC for the captures
+            auto find_dialog = [&]() -> HWND {
+                for (int i = 0; i < 100; ++i) {
+                    HWND found = nullptr;
+                    EnumThreadWindows(
+                        ui_thread,
+                        [](HWND h, LPARAM lp) {
+                            wchar_t cls[16] = {};
+                            GetClassNameW(h, cls, 16);
+                            if (wcscmp(cls, L"#32770") == 0 && IsWindowVisible(h)) {
+                                *reinterpret_cast<HWND*>(lp) = h;
+                                return FALSE;
+                            }
+                            return TRUE;
+                        },
+                        reinterpret_cast<LPARAM>(&found));
+                    if (found) return found;
+                    Sleep(50);
+                }
+                return nullptr;
+            };
+            auto command = [](HWND dlg, int id, int code) {
+                SendMessageW(dlg, WM_COMMAND, MAKEWPARAM(id, code), reinterpret_cast<LPARAM>(GetDlgItem(dlg, id)));
+            };
+            auto set_check = [&](HWND dlg, int id, bool on) {
+                SendDlgItemMessageW(dlg, id, BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0);
+                command(dlg, id, BN_CLICKED);
+            };
+            auto select = [&](HWND dlg, int id, int index) {
+                SendDlgItemMessageW(dlg, id, CB_SETCURSEL, static_cast<WPARAM>(index), 0);
+                command(dlg, id, CBN_SELCHANGE);
+            };
+            auto type = [&](HWND dlg, int id, const wchar_t* text) {
+                SetDlgItemTextW(dlg, id, text);
+                command(dlg, id, CBN_EDITCHANGE);
+            };
+            auto closed = [](HWND dlg) {
+                for (int i = 0; i < 100 && IsWindow(dlg); ++i) Sleep(50);
+                return !IsWindow(dlg);
+            };
+            auto ini_value = [&](const wchar_t* key) {
+                return static_cast<int>(GetPrivateProfileIntW(L"mdview", key, -999, ini.c_str()));
+            };
+            PostMessageW(viewer, open_settings, 0, 0);
+            HWND dlg = find_dialog();
+            expect(dlg != nullptr, "dialog opens");
+            if (dlg) {
+                Sleep(300);
+                wchar_t title[64] = {};
+                GetWindowTextW(dlg, title, 64);
+                RECT rc{};
+                GetWindowRect(dlg, &rc);
+                std::printf("dialog \"%s\" %ldx%ld\n", WideToUtf8(title).c_str(), rc.right - rc.left, rc.bottom - rc.top);
+                DWORD sel_start = 0, sel_end = 0;
+                SendDlgItemMessageW(dlg, 1005, CB_GETEDITSEL, reinterpret_cast<WPARAM>(&sel_start),
+                                    reinterpret_cast<LPARAM>(&sel_end));
+                expect(sel_start == sel_end, "unfocused number fields show no selection");
+                expect(!IsDarkPixel(CaptureWindow(dlg, prefix + "-dialog.png", false, 20, 60)), "light dialog");
+                expect(!IsDarkPixel(CaptureWindow(host, prefix + "-viewer0.png", true)), "light viewer");
+                // Live preview: dark theme, 20 px text, no line numbers.
+                select(dlg, 1001, 2);
+                type(dlg, 1004, L"20");
+                set_check(dlg, 1009, false);
+                Sleep(900);
+                expect(IsDarkPixel(CaptureWindow(host, prefix + "-viewer1.png", true)), "viewer turns dark at once");
+                expect(IsDarkPixel(CaptureWindow(dlg, prefix + "-dialog-dark.png", false, 20, 60)), "dialog turns dark");
+                expect(GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES, "nothing saved before OK");
+                PostMessageW(dlg, WM_COMMAND, IDCANCEL, 0);
+                expect(closed(dlg), "Cancel closes");
+                Sleep(300);
+                expect(!IsDarkPixel(CaptureWindow(host, prefix + "-viewer2.png", true)), "Cancel restores the theme");
+                expect(GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES, "Cancel saves nothing");
+            }
+            PostMessageW(viewer, open_settings, 0, 0);
+            dlg = find_dialog();
+            expect(dlg != nullptr, "dialog opens again");
+            if (dlg) {
+                type(dlg, 1004, L"18");
+                select(dlg, 1005, 7);         // 125 %
+                set_check(dlg, 1007, true);   // full width
+                set_check(dlg, 1011, false);  // no remote images
+                Sleep(600);
+                CaptureWindow(host, prefix + "-viewer3.png", true);
+                PostMessageW(dlg, WM_COMMAND, IDOK, 0);
+                expect(closed(dlg), "OK closes");
+                Sleep(200);
+                expect(ini_value(L"FontSize") == 18 && ini_value(L"Zoom") == 125 && ini_value(L"MaxWidth") == 0 &&
+                           ini_value(L"RemoteImages") == 0 && ini_value(L"Theme") == 0 &&
+                           ini_value(L"LineNumbers") == 1,
+                       "OK saves the new values");
+            }
+            CoUninitialize();
+            done = true;
+        });
+        const double end = NowMs() + 30000;
+        MSG msg;
+        while (!done && NowMs() < end) {
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            Sleep(5);
+        }
+        if (!done) {
+            std::printf("FAIL: timeout\n");
+            std::fflush(stdout);
+            TerminateProcess(GetCurrentProcess(), 1);
+        }
+        driver.join();
+        close(viewer);
+        DestroyWindow(host);
+        FreeLibrary(dll);
+        std::printf(failures ? "settings FAILED\n" : "settings OK\n");
+        return failures ? 1 : 0;
     }
     if (cmd == "reload" && argc >= 4) {
         // reload <mdview.wlx64> <dir>: auto-reload check. Opens <dir>\reload-test.md,

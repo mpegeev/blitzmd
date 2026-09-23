@@ -17,6 +17,7 @@
 #include "core/print.h"
 #include "core/render.h"
 #include "core/settings.h"
+#include "core/settings_dialog.h"
 #include "core/theme.h"
 
 #pragma comment(lib, "dwmapi.lib")
@@ -42,7 +43,7 @@ constexpr uint64_t kMaxFileBytes = 32ull << 20;  // larger files: the beginning 
 struct Shared {
     ComPtr<ID2D1Factory> d2d;
     ComPtr<IDWriteFactory> dw;
-    int viewers = 0;
+    std::vector<Viewer*> viewers;
 };
 Shared& G() {
     static Shared g;
@@ -97,8 +98,6 @@ bool IsImagePath(std::wstring_view p) {
     return false;
 }
 
-bool IsRussianUi() { return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_RUSSIAN; }
-
 // Posted by the file watch (a thread-pool wait) to the viewer window.
 UINT FileChangedMessage() {
     static const UINT msg = RegisterWindowMessageW(L"MdViewWlxFileChanged");
@@ -119,8 +118,6 @@ UINT WindowDpi(HWND hwnd) {
     }
     return dpi ? dpi : 96;
 }
-
-const wchar_t* Tr(const wchar_t* en, const wchar_t* ru) { return IsRussianUi() ? ru : en; }
 
 enum MenuId : UINT {
     kMenuCopy = 100,
@@ -143,6 +140,7 @@ enum MenuId : UINT {
     kMenuReload,
     kMenuLineNumbers,
     kMenuAutoReload,
+    kMenuSettings,
     kMenuAbout,
     kMenuTocBase = 1000,
 };
@@ -171,7 +169,9 @@ public:
     bool Search(const std::wstring& text, int flags);
     bool Command(int command, int parameter);
     bool Print(const wchar_t* printer, const RECT* margins);
+    void SettingsChanged(const Settings& old);
     HWND hwnd() const { return hwnd_; }
+    bool dark() const { return dark_; }
 
     static LRESULT CALLBACK StaticProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
 
@@ -341,8 +341,11 @@ Viewer::~Viewer() {
     images_.Detach();
     layout_.SetDocument(nullptr);
     rt_.Reset();
-    if (--G().viewers == 0) {
-        G().d2d.Reset();
+    auto& list = G().viewers;
+    const auto it = std::find(list.begin(), list.end(), this);
+    if (it != list.end()) {
+        list.erase(it);
+        if (list.empty()) G().d2d.Reset();
     }
 }
 
@@ -370,7 +373,7 @@ bool Viewer::Create(HWND parent, int flags) {
                                             reinterpret_cast<IUnknown**>(g.dw.GetAddressOf())))) {
         return false;
     }
-    ++g.viewers;
+    g.viewers.push_back(this);
 
     flags_ = flags;
     parent_ = parent;
@@ -433,6 +436,21 @@ void Viewer::ApplySettings(bool relayout) {
         }
     }
     Invalidate();
+}
+
+// Settings changed (dialog or menu, possibly in another viewer window).
+void Viewer::SettingsChanged(const Settings& old) {
+    const Settings& s = GlobalSettings();
+    if (s.zoom_percent != old.zoom_percent) zoom_percent_ = s.zoom_percent;
+    if (s.hardware != old.hardware) DiscardDeviceResources();
+    if (s.auto_reload != old.auto_reload) StartWatch();
+    const bool reparse = s.remote_images != old.remote_images || s.emoji_shortcodes != old.emoji_shortcodes ||
+                         s.math != old.math || s.syntax_highlight != old.syntax_highlight;
+    if (reparse && !path_.empty() && !printing_) {
+        Reload();
+    } else {
+        ApplySettings(true);
+    }
 }
 
 // Drops every mouse interaction in progress (they point into the document).
@@ -1508,6 +1526,7 @@ void Viewer::SetZoom(int percent) {
     GlobalSettings().zoom_percent = percent;
     SaveSettings();
     ApplySettings(true);
+    RefreshSettingsDialog();
     SetStatus(std::wstring(Tr(L"Zoom: ", L"Масштаб: ")) + std::to_wstring(percent) + L"%");
     SetTimer(hwnd_, kTimerCopied, 1200, nullptr);
 }
@@ -1726,13 +1745,22 @@ void Viewer::OnContextMenu(int sx, int sy) {
     AppendMenuW(menu, MF_STRING | (s.auto_reload ? MF_CHECKED : 0), kMenuAutoReload,
                 Tr(L"Reload when the file &changes", L"Обновлять при &изменении файла"));
     AppendMenuW(menu, MF_STRING, kMenuOpenExternal, Tr(L"Open in default &editor", L"Открыть в &редакторе"));
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kMenuSettings, Tr(L"&Settings…", L"Н&астройки…"));
     AppendMenuW(menu, MF_STRING, kMenuAbout, L"mdview " MDVIEW_VERSION L"…");
 
     const uint32_t gen = doc_gen_;
     const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
     DestroyMenu(menu);
     if (gen != doc_gen_) return;  // reloaded meanwhile: `hit` and `toc` are stale
-    Settings& ws = GlobalSettings();
+    // Menu switches apply to every open viewer, like the settings dialog.
+    auto change = [](auto&& edit) {
+        const Settings old = GlobalSettings();
+        edit(GlobalSettings());
+        SaveSettings();
+        ApplySettingsToViewers(old);
+        RefreshSettingsDialog();
+    };
     if (cmd >= kMenuTocBase && cmd < kMenuTocBase + toc.size()) {
         Block* heading = toc[cmd - kMenuTocBase];
         // Collapsed <details> around the heading are opened first.
@@ -1766,42 +1794,25 @@ void Viewer::OnContextMenu(int sx, int sy) {
     case kMenuZoomIn: SetZoom(zoom_percent_ + 10); break;
     case kMenuZoomOut: SetZoom(zoom_percent_ - 10); break;
     case kMenuZoomReset: SetZoom(100); break;
-    case kMenuThemeAuto: ws.theme = ThemeMode::Auto; SaveSettings(); ApplySettings(true); break;
-    case kMenuThemeLight: ws.theme = ThemeMode::Light; SaveSettings(); ApplySettings(true); break;
-    case kMenuThemeDark: ws.theme = ThemeMode::Dark; SaveSettings(); ApplySettings(true); break;
-    case kMenuWrap:
-        ws.wrap_code = layout_.config().wrap_code ? 0 : 1;
-        SaveSettings();
-        ApplySettings(true);
+    case kMenuThemeAuto: change([](Settings& ws) { ws.theme = ThemeMode::Auto; }); break;
+    case kMenuThemeLight: change([](Settings& ws) { ws.theme = ThemeMode::Light; }); break;
+    case kMenuThemeDark: change([](Settings& ws) { ws.theme = ThemeMode::Dark; }); break;
+    case kMenuWrap: {
+        const bool wrap = layout_.config().wrap_code;
+        change([wrap](Settings& ws) { ws.wrap_code = wrap ? 0 : 1; });
         break;
-    case kMenuLineNumbers:
-        ws.line_numbers = !ws.line_numbers;
-        SaveSettings();
-        ApplySettings(true);
-        break;
+    }
+    case kMenuLineNumbers: change([](Settings& ws) { ws.line_numbers = !ws.line_numbers; }); break;
     case kMenuFullWidth:
-        ws.max_width = ws.max_width == 0 ? Settings{}.max_width : 0;
-        SaveSettings();
-        ApplySettings(true);
+        change([](Settings& ws) { ws.max_width = ws.max_width == 0 ? Settings{}.max_width : 0; });
         break;
-    case kMenuRemote:
-        ws.remote_images = !ws.remote_images;
-        SaveSettings();
-        if (!path_.empty()) {
-            const float y = scroll_y_;
-            Load(path_, flags_, true);
-            ScrollTo(y, false);
-        }
-        break;
+    case kMenuRemote: change([](Settings& ws) { ws.remote_images = !ws.remote_images; }); break;
     case kMenuReload: Reload(); break;
-    case kMenuAutoReload:
-        ws.auto_reload = !ws.auto_reload;
-        SaveSettings();
-        StartWatch();
-        break;
+    case kMenuAutoReload: change([](Settings& ws) { ws.auto_reload = !ws.auto_reload; }); break;
     case kMenuOpenExternal:
         if (!path_.empty()) ShellExecuteW(hwnd_, L"edit", path_.c_str(), nullptr, nullptr, SW_SHOWNORMAL) ;
         break;
+    case kMenuSettings: ShowSettingsDialog(hwnd_); break;  // the viewer may be gone afterwards
     case kMenuAbout: {
         const std::wstring text = std::wstring(L"mdview " MDVIEW_VERSION L"\n\n") +
                                   Tr(L"GitHub Flavored Markdown viewer for Total Commander.",
@@ -1914,6 +1925,10 @@ LRESULT CALLBACK Viewer::StaticProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 LRESULT Viewer::Proc(UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == OpenSettingsMessage()) {
+        ShowSettingsDialog(hwnd_);  // the viewer may be gone afterwards
+        return 0;
+    }
     if (msg == FileChangedMessage()) {
         if (watch_change_ != INVALID_HANDLE_VALUE || watch_wait_) OnFileChanged();
         return 0;
@@ -2090,6 +2105,25 @@ HWND CreateViewer(HWND parent, const wchar_t* path, int show_flags) {
         throw;
     }
     return hwnd;
+}
+
+bool ViewerIsDark(HWND hwnd) {
+    const Viewer* v = ViewerFromHwnd(hwnd);
+    return v && v->dark();
+}
+
+void ApplySettingsToViewers(const Settings& old) {
+    // A viewer may reload its document; none is created or destroyed meanwhile,
+    // but iterate over a copy anyway.
+    const std::vector<Viewer*> viewers = G().viewers;
+    for (Viewer* v : viewers) {
+        if (std::find(G().viewers.begin(), G().viewers.end(), v) != G().viewers.end()) v->SettingsChanged(old);
+    }
+}
+
+UINT OpenSettingsMessage() {
+    static const UINT msg = RegisterWindowMessageW(L"MdViewWlxOpenSettings");
+    return msg;
 }
 
 void UnregisterViewerClass() { UnregisterClassW(kClassName, reinterpret_cast<HINSTANCE>(&__ImageBase)); }

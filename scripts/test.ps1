@@ -54,6 +54,9 @@ foreach ($name in '02-github-readme.md', '04-code-highlighting.md', '16-front-ma
     Step "plugin $name" { & $t plugin $dll "samples/gfm/$name" (Join-Path $tmp 'plugin.png') | Select-Object -Last 1 }
 }
 Step 'auto-reload' { & $t reload $dll (Join-Path $tmp 'reload') | Select-Object -Last 1 }
+Step 'settings dialog' {
+    & $t settings $dll samples/gfm/04-code-highlighting.md (Join-Path $tmp 'settings/s') | Where-Object { $_ -match 'FAIL|settings' }
+}
 
 if (-not $Quick) {
     Step 'fuzz' { & $t fuzz 400 | Select-Object -Last 1 }

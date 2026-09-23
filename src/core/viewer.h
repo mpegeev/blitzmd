@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "core/settings.h"
+
 namespace mdv {
 
 // Total Commander Lister plugin constants (listplug.h).
@@ -52,5 +54,16 @@ bool ViewerPrint(HWND hwnd, const wchar_t* printer, const RECT* margins);
 
 // Whether Windows apps use the dark theme.
 bool SystemUsesDarkTheme();
+
+// Whether the viewer window uses its dark theme (false if it is gone).
+bool ViewerIsDark(HWND hwnd);
+
+// Brings every open viewer up to date with GlobalSettings(); `old` is the
+// settings they were showing (decides what has to be redone).
+void ApplySettingsToViewers(const Settings& old);
+
+// Opens the settings dialog of the viewer (registered window message, also
+// used by the tests).
+UINT OpenSettingsMessage();
 
 }  // namespace mdv

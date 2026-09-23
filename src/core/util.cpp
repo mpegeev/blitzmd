@@ -475,4 +475,6 @@ bool DecodeDataUri(std::wstring_view uri, std::string& out) {
     return !out.empty();
 }
 
+bool IsRussianUi() { return PRIMARYLANGID(GetUserDefaultUILanguage()) == LANG_RUSSIAN; }
+
 }  // namespace mdv
