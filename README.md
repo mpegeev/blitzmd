@@ -43,11 +43,13 @@ autolink `www.` / `https://` / e-mail), изображения, HTML-сущно�
 (`colspan`), `<dl>`, комментарии. `<script>`, `<style>`, `<iframe>` и подобное не выполняется и не
 показывается.
 
-**Изображения**: PNG, JPEG, GIF, BMP, ICO, TIFF, WebP (через WIC), SVG (включая текст — бейджи
-shields.io выглядят как на GitHub), `data:`-URI, относительные и абсолютные пути, пробелы и
-кириллица в именах файлов. Анимированные GIF проигрываются (только пока видны на экране; кадры
-декодируются по одному, без хранения всей анимации в памяти). Картинки из интернета загружаются
-в фоне и кешируются (отключаемо).
+**Изображения**: PNG, JPEG, GIF, BMP, ICO, TIFF, WebP (через WIC), SVG (включая текст и логотипы —
+бейджи shields.io и GitHub Actions выглядят как на GitHub), `data:`-URI, относительные и абсолютные
+пути, пробелы и кириллица в именах файлов. Анимированные GIF проигрываются (только пока видны на
+экране; кадры декодируются по одному, без хранения всей анимации в памяти). Картинки из интернета
+загружаются в фоне и кешируются (отключаемо). Память под картинки ограничена (192 МБ, в 32-битной
+версии 96 МБ): в документах с сотнями скриншотов давно не показанные картинки выгружаются и
+декодируются заново, когда снова попадают на экран.
 
 **Просмотр**
 - Тема следует Total Commander (включая тёмный режим TC 10+), можно задать светлую/тёмную явно.
@@ -148,6 +150,7 @@ $t = "out\build\x64-release\mdview_test.exe"
 & $t bench  samples\gfm\09-large-document.md
 & $t fuzz   2000                            # случайные документы: разбор + разметка + отрисовка
 & $t plugin out\build\x64-release\mdview.wlx64 README.md shot.png "поиск"   # сам DLL, как TC
+& $t plugin out\build\x64-release\mdview.wlx64 anim.md shot.png --idle      # + расход CPU в простое (GIF)
 out\build\x64-release\highlight_test.exe -q   # подсветка синтаксиса: 1.4 млн проверок, фаззинг
 out\build\x64-release\emoji_test.exe          # таблица эмодзи-кодов
 ```
@@ -167,7 +170,7 @@ src/plugin.cpp        экспорт WLX: ListLoad(W), ListLoadNext(W), ListSear
                       ListSendCommand, ListPrint(W), ListGetPreviewBitmap(W), ...
 src/core/parser.*     md4c → дерево блоков; HTML-подмножество GitHub, эмодзи, якоря, сноски
 src/core/html.*       токенизатор HTML
-src/core/math.*       TeX → Unicode
+src/core/texmath.*    TeX → Unicode
 src/core/highlight.*  подсветка синтаксиса
 src/core/layout.*     разметка: DirectWrite, точная у видимой части, оценка остального
 src/core/render.*     отрисовка Direct2D (темы GitHub Primer)
