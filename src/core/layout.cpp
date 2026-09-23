@@ -6,6 +6,7 @@
 #include "core/highlight.h"
 #include "core/images.h"
 #include "core/mathlayout.h"
+#include "core/zoom.h"
 
 namespace mdv {
 namespace {
@@ -84,17 +85,27 @@ private:
 // above tall images (CSS doesn't); the reported size is pre-divided.
 class ImageObject final : public InlineObjectBase {
 public:
-    ImageObject(LayoutEngine* engine, int index, float w, float h, float em, float spacing, float strut_descent)
-        : engine_(engine), index_(index), w_(w), h_(h), em_(em), baseline_(h / std::max(spacing, 0.5f)),
-          descent_(strut_descent) {}
+    ImageObject(LayoutEngine* engine, InlineObject* object, float w, float h, float em, float spacing,
+                float strut_descent)
+        : engine_(engine), object_(object), index_(object->image), w_(w), h_(h), em_(em),
+          baseline_(h / std::max(spacing, 0.5f)), descent_(strut_descent) {}
 
     HRESULT STDMETHODCALLTYPE Draw(void*, IDWriteTextRenderer*, FLOAT x, FLOAT y, BOOL, BOOL,
                                    IUnknown*) override {
         DrawContext& dc = engine_->draw_context();
-        if (dc.rt && dc.images && w_ > 0 && h_ > 0) {
-            const float top = y + baseline_ - h_;  // y is the line baseline - baseline_
-            dc.images->Draw(dc.rt, index_, D2D1::RectF(x, top, x + w_, top + h_), dc.palette,
-                            engine_->dwrite(), em_);
+        if (!dc.rt || !dc.images || w_ <= 0 || h_ <= 0) return S_OK;
+        const float top = y + baseline_ - h_;  // y is the line baseline - baseline_
+        const D2D1_RECT_F box = D2D1::RectF(x, top, x + w_, top + h_);
+        const ImageEntry* e = dc.images->Entry(index_);
+        const bool zoomable = dc.interactive && e && e->state == ImageState::Ready && w_ >= kMinZoomable &&
+                              h_ >= kMinZoomable;
+        if (zoomable && dc.drawn) RecordDrawn(dc, box);
+        if (zoomable && IsZoomed(*object_)) {
+            dc.rt->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+            dc.images->Draw(dc.rt, index_, ZoomedRect(box, *object_), dc.palette, engine_->dwrite(), em_);
+            dc.rt->PopAxisAlignedClip();
+        } else {
+            dc.images->Draw(dc.rt, index_, box, dc.palette, engine_->dwrite(), em_);
         }
         return S_OK;
     }
@@ -107,7 +118,23 @@ public:
     }
 
 private:
+    static constexpr float kMinZoomable = 40.f;  // DIPs: badges and icons are left alone
+
+    // Lists the box, in view coordinates, for the viewer's mouse handling.
+    void RecordDrawn(DrawContext& dc, const D2D1_RECT_F& box) {
+        D2D1_MATRIX_3X2_F m;
+        dc.rt->GetTransform(&m);
+        if (m._12 != 0 || m._21 != 0) return;
+        const D2D1_RECT_F v = D2D1::RectF(box.left * m._11 + m._31, box.top * m._22 + m._32,
+                                          box.right * m._11 + m._31, box.bottom * m._22 + m._32);
+        const D2D1_RECT_F seen = D2D1::RectF(std::max(v.left, dc.clip.left), std::max(v.top, dc.clip.top),
+                                             std::min(v.right, dc.clip.right), std::min(v.bottom, dc.clip.bottom));
+        if (seen.right <= seen.left || seen.bottom <= seen.top) return;
+        dc.drawn->push_back(DrawnObject{dc.leaf, object_, v, seen});
+    }
+
     LayoutEngine* engine_;
+    InlineObject* object_;
     int index_;
     float w_, h_, em_, baseline_, descent_;
 };
@@ -633,7 +660,7 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
 
     // Images, and flag emoji and formulas over their characters.
     const float line_h = st.size * st.line_height;
-    for (const InlineObject& o : b->objects) {
+    for (InlineObject& o : b->objects) {
         if (o.pos >= len || o.length > len - o.pos) continue;
         uint32_t run_flags = 0;
         for (const StyleRun& r : b->runs) {
@@ -674,7 +701,7 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         if (text[o.pos] != kObjectChar) continue;
         D2D1_SIZE_F sz = D2D1::SizeF(line_h, line_h);
         if (images_) sz = images_->LayoutSize(o.image, width >= kHugeWidth ? 0.f : width, line_h, Zoom());
-        auto* obj = new ImageObject(this, o.image, sz.width, sz.height, st.size, spacing,
+        auto* obj = new ImageObject(this, &o, sz.width, sz.height, st.size, spacing,
                                     st.size * MetricsOf(family).descent);
         layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, 1});
         obj->Release();

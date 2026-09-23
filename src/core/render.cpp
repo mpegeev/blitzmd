@@ -122,9 +122,33 @@ void Renderer::Draw(ID2D1RenderTarget* rt, LayoutEngine& layout, const RenderSta
     dc.rt = rt;
     dc.images = layout.images();
     dc.palette = palette_;
+    dc.clip = D2D1::RectF(0, 0, st.view_w, st.view_h);
+    clip_stack_.clear();
     DrawChildren(doc->root);
     dc.rt = nullptr;
+    dc.leaf = nullptr;
     rt->SetTransform(base);
+}
+
+// An axis-aligned clip, also kept (in view coordinates) for inline objects
+// that record where they are visible.
+void Renderer::PushClip(const D2D1_RECT_F& r) {
+    rt_->PushAxisAlignedClip(r, D2D1_ANTIALIAS_MODE_ALIASED);
+    DrawContext& dc = layout_->draw_context();
+    clip_stack_.push_back(dc.clip);
+    D2D1_MATRIX_3X2_F m;
+    rt_->GetTransform(&m);
+    dc.clip = D2D1::RectF(std::max(dc.clip.left, r.left * m._11 + m._31), std::max(dc.clip.top, r.top * m._22 + m._32),
+                          std::min(dc.clip.right, r.right * m._11 + m._31),
+                          std::min(dc.clip.bottom, r.bottom * m._22 + m._32));
+}
+
+void Renderer::PopClip() {
+    rt_->PopAxisAlignedClip();
+    if (!clip_stack_.empty()) {
+        layout_->draw_context().clip = clip_stack_.back();
+        clip_stack_.pop_back();
+    }
 }
 
 void Renderer::DrawChildren(Block* b) {
@@ -144,13 +168,13 @@ void Renderer::DrawLeafScrolled(Block* b) {
         DrawLeaf(b);
         return;
     }
-    rt_->PushAxisAlignedClip(D2D1::RectF(b->x, b->y, b->x + b->w, b->y + b->h), D2D1_ANTIALIAS_MODE_ALIASED);
+    PushClip(D2D1::RectF(b->x, b->y, b->x + b->w, b->y + b->h));
     D2D1_MATRIX_3X2_F old;
     rt_->GetTransform(&old);
     rt_->SetTransform(D2D1::Matrix3x2F::Translation(-b->scroll_x, 0) * old);
     DrawLeaf(b);
     rt_->SetTransform(old);
-    rt_->PopAxisAlignedClip();
+    PopClip();
     DrawHScrollbar(b);
 }
 
@@ -369,6 +393,7 @@ void Renderer::DrawLeaf(Block* b) {
 
     DrawContext& dc = layout_->draw_context();
     dc.default_brush = Brush(s->style.color);
+    dc.leaf = b;
     rt_->DrawTextLayout(o, tl, dc.default_brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
 
     // Selected images get a tinted overlay (the selection is behind them).
@@ -390,13 +415,13 @@ void Renderer::DrawCodeBlock(Block* b) {
     const float gutter = s ? s->gutter : 0.f;
     D2D1_RECT_F code_clip = box;
     if (gutter > 0) code_clip.left = s->tx - layout_->GutterGap(s->style.size) * 0.5f;
-    rt_->PushAxisAlignedClip(code_clip, D2D1_ANTIALIAS_MODE_ALIASED);
+    PushClip(code_clip);
     D2D1_MATRIX_3X2_F old;
     rt_->GetTransform(&old);
     if (b->scroll_x > 0) rt_->SetTransform(D2D1::Matrix3x2F::Translation(-b->scroll_x, 0) * old);
     DrawLeaf(b);
     rt_->SetTransform(old);
-    rt_->PopAxisAlignedClip();
+    PopClip();
     if (gutter > 0) DrawLineNumbers(b, *s);
     if (b->content_w > 0) DrawHScrollbar(b);
 
@@ -532,7 +557,7 @@ void Renderer::DrawTable(Block* b) {
     D2D1_MATRIX_3X2_F old;
     rt_->GetTransform(&old);
     if (scroll) {
-        rt_->PushAxisAlignedClip(D2D1::RectF(b->x, b->y, b->x + b->w, b->y + b->h), D2D1_ANTIALIAS_MODE_ALIASED);
+        PushClip(D2D1::RectF(b->x, b->y, b->x + b->w, b->y + b->h));
         rt_->SetTransform(D2D1::Matrix3x2F::Translation(-b->scroll_x, 0) * old);
     }
     const float hair = Hairline();
@@ -572,7 +597,7 @@ void Renderer::DrawTable(Block* b) {
     }
     if (scroll) {
         rt_->SetTransform(old);
-        rt_->PopAxisAlignedClip();
+        PopClip();
         DrawHScrollbar(b);
     }
 }

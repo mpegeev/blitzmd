@@ -81,6 +81,11 @@ struct InlineObject {
     uint32_t length = 1;  // text units covered
     int32_t image = -1;   // index into Document::images
     int32_t math = -1;    // index into Document::maths
+    // View of a zoomable object (images), set by the viewer: magnification
+    // inside its box, and the point of the content at the box's top-left
+    // corner as a fraction of the content's size (0 .. 1 - 1/zoom).
+    float zoom = 1.f;
+    float view_x = 0.f, view_y = 0.f;
 };
 
 // A formula: $…$, $$…$$ or a ```math block.

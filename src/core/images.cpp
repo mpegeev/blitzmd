@@ -991,9 +991,11 @@ void ImageStore::Draw(ID2D1RenderTarget* rt, int index, const D2D1_RECT_F& r, Pa
             const D2D1_SIZE_F bs = e.bitmap->GetSize();
             const float scale_x = (r.right - r.left) / std::max(bs.width, 1.f);
             if (SUCCEEDED(rt->QueryInterface(IID_PPV_ARGS(&dc)))) {
+                // Shrunk or zoomed in: smooth; at about its size: fast.
                 dc->DrawBitmap(e.bitmap.Get(), &r, 1.f,
-                               scale_x < 0.95f && !e.animation ? D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC
-                                               : D2D1_INTERPOLATION_MODE_LINEAR,
+                               (scale_x < 0.95f || scale_x > 1.5f) && !e.animation
+                                   ? D2D1_INTERPOLATION_MODE_HIGH_QUALITY_CUBIC
+                                   : D2D1_INTERPOLATION_MODE_LINEAR,
                                nullptr, nullptr);
             } else {
                 rt->DrawBitmap(e.bitmap.Get(), r, 1.f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);

@@ -19,6 +19,11 @@ enum class Icon : uint8_t {
     Check,
     Image,      // image placeholder
     Link,
+    ZoomIn,     // zoom buttons over images and diagrams
+    ZoomOut,
+    ScreenFull,
+    Sync,       // reset the zoom
+    X,          // close the full-window view
 };
 
 // Parsed icon geometries, per Direct2D factory. Not thread-safe: use one
