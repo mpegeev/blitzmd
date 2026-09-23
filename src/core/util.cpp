@@ -269,9 +269,52 @@ bool ReadFilePrefix(const wchar_t* path, std::string& out, uint64_t max_bytes, u
 
 namespace {
 
-bool IsValidUtf8(std::string_view s) {
+// One step of a WHATWG UTF-8 decoder at p[i]: a valid sequence (`ok`), or
+// the maximal invalid subpart that becomes one U+FFFD (the offending byte
+// after it is decoded afresh), possibly cut off by the end of the buffer.
+struct Utf8Step {
+    size_t len;
+    bool ok;
+    bool truncated;
+};
+
+Utf8Step StepUtf8(const unsigned char* p, size_t n, size_t i) {
+    const unsigned char c = p[i];
+    if (c < 0x80) return {1, true, false};
+    size_t need;
+    unsigned char lo = 0x80, hi = 0xBF;
+    if (c >= 0xC2 && c <= 0xDF) {
+        need = 1;
+    } else if (c >= 0xE0 && c <= 0xEF) {
+        need = 2;
+        if (c == 0xE0) lo = 0xA0;  // overlong
+        if (c == 0xED) hi = 0x9F;  // UTF-16 surrogates
+    } else if (c >= 0xF0 && c <= 0xF4) {
+        need = 3;
+        if (c == 0xF0) lo = 0x90;  // overlong
+        if (c == 0xF4) hi = 0x8F;  // above U+10FFFF
+    } else {
+        return {1, false, false};
+    }
+    for (size_t k = 1; k <= need; ++k) {
+        if (i + k >= n) return {k, false, true};
+        const unsigned char b = p[i + k];
+        if (b < lo || b > hi) return {k, false, false};
+        lo = 0x80;
+        hi = 0xBF;
+    }
+    return {need + 1, true, false};
+}
+
+struct Utf8Stats {
+    size_t multibyte = 0;  // valid non-ASCII sequences
+    size_t invalid = 0;    // invalid subparts (not counting a cut-off tail)
+};
+
+Utf8Stats ScanUtf8(std::string_view s) {
     const auto* p = reinterpret_cast<const unsigned char*>(s.data());
     const size_t n = s.size();
+    Utf8Stats st;
     size_t i = 0;
     while (i < n) {
         // Fast path over ASCII, 8 bytes at a time.
@@ -282,24 +325,32 @@ bool IsValidUtf8(std::string_view s) {
             i += 8;
         }
         if (i >= n) break;
-        const unsigned char c = p[i];
-        if (c < 0x80) { ++i; continue; }
-        size_t len;
-        if ((c & 0xE0) == 0xC0 && c >= 0xC2) len = 2;
-        else if ((c & 0xF0) == 0xE0) len = 3;
-        else if ((c & 0xF8) == 0xF0 && c <= 0xF4) len = 4;
-        else return false;
-        if (i + len > n) {
-            // A multi-byte sequence cut at the end of a buffer is tolerated
-            // (thumbnail previews pass truncated content).
-            return true;
+        if (p[i] < 0x80) {
+            ++i;
+            continue;
         }
-        for (size_t k = 1; k < len; ++k) {
-            if ((p[i + k] & 0xC0) != 0x80) return false;
-        }
-        i += len;
+        const Utf8Step step = StepUtf8(p, n, i);
+        if (step.ok) ++st.multibyte;
+        else if (!step.truncated) ++st.invalid;  // a buffer cut mid-character is fine
+        i += step.len;
     }
-    return true;
+    return st;
+}
+
+// UTF-8 with every invalid subpart replaced by U+FFFD, like browsers do.
+std::string RepairUtf8(std::string_view s) {
+    const auto* p = reinterpret_cast<const unsigned char*>(s.data());
+    const size_t n = s.size();
+    std::string out;
+    out.reserve(n + 16);
+    size_t i = 0;
+    while (i < n) {
+        const Utf8Step step = StepUtf8(p, n, i);
+        if (step.ok) out.append(s.data() + i, step.len);
+        else out.append("\xEF\xBF\xBD");
+        i += step.len;
+    }
+    return out;
 }
 
 std::string Utf16ToUtf8(const unsigned char* p, size_t bytes, bool big_endian) {
@@ -335,9 +386,9 @@ std::string DecodeTextToUtf8(std::string_view bytes) {
     const auto* p = reinterpret_cast<const unsigned char*>(bytes.data());
     const size_t n = bytes.size();
     if (n >= 3 && p[0] == 0xEF && p[1] == 0xBB && p[2] == 0xBF) {
-        std::string_view rest = bytes.substr(3);
-        if (IsValidUtf8(rest)) return std::string(rest);
-        bytes = rest;  // broken UTF-8 after a BOM: fall through to ANSI
+        // The BOM settles it: bad bytes become U+FFFD.
+        const std::string_view rest = bytes.substr(3);
+        return ScanUtf8(rest).invalid == 0 ? std::string(rest) : RepairUtf8(rest);
     } else if (n >= 2 && p[0] == 0xFF && p[1] == 0xFE) {
         return Utf16ToUtf8(p + 2, n - 2, false);
     } else if (n >= 2 && p[0] == 0xFE && p[1] == 0xFF) {
@@ -345,7 +396,11 @@ std::string DecodeTextToUtf8(std::string_view bytes) {
     } else if (const int u16 = DetectBomlessUtf16(bytes)) {
         return Utf16ToUtf8(p, n, u16 == 2);
     }
-    if (IsValidUtf8(bytes)) return std::string(bytes);
+    const Utf8Stats st = ScanUtf8(bytes);
+    if (st.invalid == 0) return std::string(bytes);
+    // A few bad bytes in otherwise UTF-8 text (a legacy code page produces
+    // mostly invalid sequences instead): keep UTF-8, like browsers do.
+    if (st.invalid * 4 <= st.multibyte) return RepairUtf8(bytes);
     // Legacy 8-bit text: interpret in the system ANSI code page.
     const int wn = MultiByteToWideChar(CP_ACP, 0, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
     if (wn <= 0) return std::string(bytes);
