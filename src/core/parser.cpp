@@ -13,6 +13,7 @@
 #include <unordered_set>
 
 #include "core/emoji.h"
+#include "core/frontmatter.h"
 #include "core/highlight.h"
 #include "core/html.h"
 #include "core/texmath.h"
@@ -65,6 +66,15 @@ Align AlignFromAttr(const HtmlToken& tok) {
     if (EqualsNoCase(*a, L"right")) return Align::Right;
     if (EqualsNoCase(*a, L"left") || EqualsNoCase(*a, L"justify")) return Align::Left;
     return Align::Default;
+}
+
+// HTML valign on table rows and cells: 0 = middle (default), 1 = top, 2 = bottom.
+uint8_t VAlignFromAttr(const HtmlToken& tok) {
+    const std::wstring* a = tok.Attr(L"valign");
+    if (!a) return 0;
+    if (EqualsNoCase(*a, L"top")) return 1;
+    if (EqualsNoCase(*a, L"bottom")) return 2;
+    return 0;
 }
 
 AlertKind AlertFromName(std::wstring_view s) {
@@ -1488,6 +1498,7 @@ void Builder::HtmlStartTag(const HtmlToken& tok) {
         PopAbove(table);
         Block* b = PushHtml(BlockType::TableRow, tok);
         b->header = html_thead_;
+        b->valign = VAlignFromAttr(tok);
         break;
     }
     case Tag::Td:
@@ -1509,6 +1520,7 @@ void Builder::HtmlStartTag(const HtmlToken& tok) {
         }
         Block* b = PushHtml(BlockType::TableCell, tok);
         b->header = t == Tag::Th;
+        b->valign = tok.Attr(L"valign") ? VAlignFromAttr(tok) : row->valign;
         if (const auto* cs = tok.Attr(L"colspan")) b->colspan = std::clamp(_wtoi(cs->c_str()), 1, 64);
         break;
     }
@@ -1624,6 +1636,17 @@ std::unique_ptr<Document> ParseMarkdown(std::string_view utf8, std::wstring_view
     auto doc = std::make_unique<Document>();
     doc->path = std::wstring(path);
     doc->base_dir = DirectoryOf(path);
+
+    // YAML front matter at the very top becomes a table (like on GitHub).
+    std::string with_front_matter;
+    if (options.footnote_nesting == 0) {
+        std::string replacement;
+        if (const size_t n = RenderFrontMatter(utf8, replacement)) {
+            with_front_matter = replacement;
+            with_front_matter.append(utf8.substr(n));
+            utf8 = with_front_matter;
+        }
+    }
 
     // Multi-block footnote bodies are parsed as sub-documents; bodies nested
     // in bodies recurse, so the depth is bounded (deeper ones stay inline).

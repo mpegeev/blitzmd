@@ -54,6 +54,7 @@ add_library(mdview_core STATIC
     src/core/util.cpp
     src/core/document.cpp
     src/core/html.cpp
+    src/core/frontmatter.cpp
     src/core/parser.cpp
     src/core/texmath.cpp
     ${MDVIEW_HIGHLIGHT_SOURCE}
@@ -75,7 +76,8 @@ target_link_libraries(mdview_core PUBLIC md4c
 
 set(MDVIEW_CXX_OPTIONS /W4 /permissive- /utf-8 /Zc:__cplusplus /Zc:inline /EHsc /GR- /MP)
 set(MDVIEW_DEFINITIONS UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00
-    MDVIEW_VERSION="${PROJECT_VERSION}")
+    MDVIEW_VERSION="${PROJECT_VERSION}" MDVIEW_VER_MAJOR=${PROJECT_VERSION_MAJOR}
+    MDVIEW_VER_MINOR=${PROJECT_VERSION_MINOR} MDVIEW_VER_PATCH=${PROJECT_VERSION_PATCH})
 target_compile_options(mdview_core PRIVATE ${MDVIEW_CXX_OPTIONS})
 target_compile_definitions(mdview_core PUBLIC ${MDVIEW_DEFINITIONS})
 

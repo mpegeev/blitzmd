@@ -100,6 +100,7 @@ struct Block {
     BlockType type = BlockType::Paragraph;
     Align align = Align::Default;
     uint8_t level = 0;          // heading level
+    uint8_t valign = 0;         // table rows/cells: 0 middle, 1 top, 2 bottom (HTML valign)
     bool anonymous = false;     // paragraph implied by inline content (no margins)
     bool open = true;           // <details open>
     bool tight = false;         // tight list

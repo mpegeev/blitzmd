@@ -235,6 +235,7 @@ void LayoutEngine::SetConfig(const LayoutConfig& cfg) {
     m_.kbd_pad = em * 5.f / 16.f;
     formats_.clear();
     labels_.clear();
+    numbers_.clear();
     InvalidateMeasurements();
 }
 
@@ -597,6 +598,7 @@ IDWriteTextLayout* LayoutEngine::TextLayout(Block* leaf) {
 void LayoutEngine::InvalidateTextLayouts() {
     for (LeafState& s : leaves_) s.layout.Reset();
     labels_.clear();
+    numbers_.clear();
 }
 
 void LayoutEngine::InvalidateMeasurements() {
@@ -874,6 +876,8 @@ float LayoutEngine::LayoutLeaf(Block* b, float x, float y, float w, const Ctx& c
     float pad_l = 0, pad_t = 0, pad_r = 0, pad_b = 0;
     if (b->type == BlockType::CodeBlock) {
         pad_l = pad_t = pad_r = pad_b = m_.code_pad * ctx.scale;
+        s.gutter = GutterWidth(b, st);
+        pad_l += s.gutter;
     } else if (b->type == BlockType::Heading && b->level <= 2) {
         pad_b = st.size * 0.3f + 1.f;
     } else if (b->type == BlockType::Summary) {
@@ -1000,8 +1004,9 @@ void LayoutEngine::MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& ma
             max_w = widest;
         }
         if (b->type == BlockType::CodeBlock) {
-            min_w = std::min(min_w + 2.f * m_.code_pad, m_.em * 12.f);
-            max_w += 2.f * m_.code_pad;
+            const float gutter = cfg_.line_numbers ? GutterWidth(b, ResolveStyle(b, ctx)) : 0.f;
+            min_w = std::min(min_w + 2.f * m_.code_pad + gutter, m_.em * 12.f);
+            max_w += 2.f * m_.code_pad + gutter;
         }
         return;
     }
@@ -1026,7 +1031,7 @@ void LayoutEngine::MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& ma
             s.minmax_valid = true;
         }
         float pad = 0;
-        if (b->type == BlockType::CodeBlock) pad = 2.f * m_.code_pad * ctx.scale;
+        if (b->type == BlockType::CodeBlock) pad = 2.f * m_.code_pad * ctx.scale + GutterWidth(b, st);
         if (b->type == BlockType::Summary) pad = m_.em * ctx.scale * 1.25f;
         // +1: a layout exactly as wide as its text may still wrap (rounding).
         min_w = s.min_w + pad + 1.f;
@@ -1053,17 +1058,38 @@ void LayoutEngine::MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& ma
     case BlockType::Rule:
         return;
     case BlockType::Table: {
-        // Nested table: rough intrinsic width (sum of cells of the widest row).
+        // Nested table: column widths are the widest cell of each column (as
+        // LayoutTable computes them), plus padding and the grid lines.
+        std::vector<float> cmin, cmax;
         for (Block* row : b->children) {
-            float rmin = 0, rmax = 0;
+            if (row->type != BlockType::TableRow) continue;
+            size_t col = 0;
             for (Block* cell : row->children) {
-                float cmin, cmax;
-                MinMaxWidth(cell, c, cmin, cmax, estimate);
-                rmin += cmin + 2.f * m_.cell_pad_x + 1.f;
-                rmax += cmax + 2.f * m_.cell_pad_x + 1.f;
+                Ctx cc = c;
+                cc.header_cell = cell->header || row->header;
+                cc.align = cell->align;
+                float mn, mx;
+                MinMaxWidth(cell, cc, mn, mx, estimate);
+                const size_t span = static_cast<size_t>(std::max(1, cell->colspan));
+                if (cmin.size() < col + span) {
+                    cmin.resize(col + span, 0.f);
+                    cmax.resize(col + span, 0.f);
+                }
+                for (size_t k = col; k < col + span; ++k) {
+                    cmin[k] = std::max(cmin[k], mn / static_cast<float>(span));
+                    cmax[k] = std::max(cmax[k], mx / static_cast<float>(span));
+                }
+                col += span;
             }
-            min_w = std::max(min_w, rmin);
-            max_w = std::max(max_w, rmax);
+        }
+        const float per_col = 2.f * m_.cell_pad_x * ctx.scale + 1.f;
+        for (size_t k = 0; k < cmin.size(); ++k) {
+            min_w += cmin[k] + per_col;
+            max_w += cmax[k] + per_col;
+        }
+        if (!cmin.empty()) {
+            min_w += 1.f;
+            max_w += 1.f;
         }
         return;
     }
@@ -1220,9 +1246,11 @@ float LayoutEngine::LayoutTable(Block* b, float x, float y, float w, const Ctx& 
         }
         row_h = std::max(row_h, m_.em * ctx.scale * 1.5f + 2.f * pady);
         for (auto& [cell, ch] : cells) {
+            // Vertically centered unless valign says otherwise (HTML tables).
             const float extra = row_h - ch;
-            if (extra > 0.5f) {
-                for (Block* child : cell->children) Translate(child, 0, extra * 0.5f);
+            const float shift = cell->valign == 1 ? 0.f : cell->valign == 2 ? extra : extra * 0.5f;
+            if (shift > 0.5f) {
+                for (Block* child : cell->children) Translate(child, 0, shift);
             }
             cell->h = row_h;
         }
@@ -1260,6 +1288,41 @@ bool LayoutEngine::Refine(double budget_ms) {
 const TableInfo* LayoutEngine::Table(const Block* table) const {
     auto it = tables_.find(table);
     return it == tables_.end() ? nullptr : &it->second;
+}
+
+// Line numbers of multi-line code blocks: the widest number plus a gap.
+float LayoutEngine::GutterWidth(const Block* b, const LeafStyle& st) {
+    if (!cfg_.line_numbers || b->type != BlockType::CodeBlock) return 0.f;
+    const int lines = 1 + static_cast<int>(std::count(b->text.begin(), b->text.end(), L'\n'));
+    if (lines < 2) return 0.f;
+    float width = 0;
+    if (IDWriteTextLayout* tl = LineNumberLayout(lines, st.size, nullptr)) {
+        DWRITE_TEXT_METRICS tm{};
+        tl->GetMetrics(&tm);
+        width = tm.widthIncludingTrailingWhitespace;
+    }
+    return width + GutterGap(st.size);
+}
+
+IDWriteTextLayout* LayoutEngine::LineNumberLayout(int number, float size, float* baseline) {
+    const uint64_t key = (static_cast<uint64_t>(size * 100.f + 0.5f) << 32) | static_cast<uint32_t>(number);
+    auto it = numbers_.find(key);
+    if (it == numbers_.end()) {
+        if (numbers_.size() >= 4096) numbers_.clear();
+        IDWriteTextFormat* fmt = Format(mono_family_, size, 400, false);
+        if (!fmt) return nullptr;
+        const std::wstring text = std::to_wstring(number);
+        NumberLabel label;
+        if (FAILED(dw_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), fmt, kHugeWidth,
+                                         kHugeWidth, &label.layout))) {
+            return nullptr;
+        }
+        label.layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        label.baseline = FirstLineBaseline(label.layout.Get());
+        it = numbers_.emplace(key, std::move(label)).first;
+    }
+    if (baseline) *baseline = it->second.baseline;
+    return it->second.layout.Get();
 }
 
 IDWriteTextLayout* LayoutEngine::LabelLayout(const std::wstring& text, float size, uint16_t weight) {

@@ -1,0 +1,186 @@
+---
+title: mdview extensions
+...
+
+# mdview extensions
+
+Examples for behaviour beyond the GFM spec (GitHub rendering details that
+mdview reproduces). Run with `mdview_test spec tests/spec/mdview-extensions.txt --strict`.
+
+## Front matter
+
+YAML front matter at the very top of a file is shown as a two-column table,
+one row per top-level key (key in bold, then its value). GitHub puts the keys
+side by side as columns instead; mdview reads top to bottom and never needs
+horizontal scrolling for it.
+
+```````````````````````````````` example
+---
+title: Hello
+layout: post
+---
+
+# Hi
+.
+<table><tbody>
+<tr><th align="left">title</th><td>Hello</td></tr>
+<tr><th align="left">layout</th><td>post</td></tr>
+</tbody></table>
+<h1>Hi</h1>
+````````````````````````````````
+
+Quoted strings keep their colons. Short plain lists are joined with commas;
+a list with an item containing a comma gets one item per line.
+
+```````````````````````````````` example
+---
+title: "Part 2: the sequel"
+tags: [a, b, c]
+pairs: [a, 'b, c', d]
+---
+.
+<table><tbody>
+<tr><th align="left">title</th><td>Part 2: the sequel</td></tr>
+<tr><th align="left">tags</th><td>a, b, c</td></tr>
+<tr><th align="left">pairs</th><td><p>a</p><p>b, c</p><p>d</p></td></tr>
+</tbody></table>
+````````````````````````````````
+
+Block sequences, nested mappings (nested key/value tables), comments and
+empty values.
+
+```````````````````````````````` example
+---
+# a comment
+authors:
+  - name: Ann
+    role: dev
+  - Bob
+meta:
+  draft: true
+empty:
+---
+.
+<table><tbody>
+<tr><th align="left">authors</th><td>
+<table><tbody><tr><th align="left">name</th><td>Ann</td></tr><tr><th align="left">role</th><td>dev</td></tr></tbody></table>
+<p>Bob</p>
+</td></tr>
+<tr><th align="left">meta</th><td><table><tbody><tr><th align="left">draft</th><td>true</td></tr></tbody></table></td></tr>
+<tr><th align="left">empty</th><td></td></tr>
+</tbody></table>
+````````````````````````````````
+
+A sequence at the same indentation as its key.
+
+```````````````````````````````` example
+---
+list:
+- one
+- two
+---
+.
+<table><tbody><tr><th align="left">list</th><td>one, two</td></tr></tbody></table>
+````````````````````````````````
+
+Block scalars: literal keeps line breaks, folded joins lines.
+
+```````````````````````````````` example
+---
+literal: |
+  line one
+  line two
+folded: >
+  joined
+  words
+---
+.
+<table><tbody>
+<tr><th align="left">literal</th><td>line one<br />line two</td></tr>
+<tr><th align="left">folded</th><td>joined words</td></tr>
+</tbody></table>
+````````````````````````````````
+
+Special characters are text, not HTML.
+
+```````````````````````````````` example
+---
+formula: a < b & c > d
+---
+.
+<table><tbody><tr><th align="left">formula</th><td>a &lt; b &amp; c &gt; d</td></tr></tbody></table>
+````````````````````````````````
+
+YAML beyond the supported subset is shown as a code block.
+
+```````````````````````````````` example
+---
+base: &anchor
+  x: 1
+copy: *anchor
+---
+.
+<pre><code class="language-yaml">base: &amp;anchor
+  x: 1
+copy: *anchor
+</code></pre>
+````````````````````````````````
+
+Without a closing delimiter it is ordinary Markdown.
+
+```````````````````````````````` example
+---
+title: x
+.
+<hr />
+<p>title: x</p>
+````````````````````````````````
+
+Only at the very start of the file.
+
+```````````````````````````````` example
+Text
+
+---
+title: x
+---
+.
+<p>Text</p>
+<hr />
+<h2>title: x</h2>
+````````````````````````````````
+
+An empty block, or one that doesn't start like a mapping, is left to Markdown
+(the GFM spec renders these as thematic breaks and setext headings).
+
+```````````````````````````````` example
+---
+---
+Text
+.
+<hr />
+<hr />
+<p>Text</p>
+````````````````````````````````
+
+```````````````````````````````` example
+---
+Foo
+---
+Bar
+.
+<hr />
+<h2>Foo</h2>
+<p>Bar</p>
+````````````````````````````````
+
+Four dashes are a thematic break, not front matter.
+
+```````````````````````````````` example
+----
+title: x
+---
+.
+<hr />
+<h2>title: x</h2>
+````````````````````````````````

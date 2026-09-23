@@ -53,6 +53,8 @@ double NowMs();
 
 // Directory part of a path including the trailing backslash.
 std::wstring DirectoryOf(std::wstring_view path);
+// Adds the "\\?\" prefix to paths too long for the classic file API.
+std::wstring ExtendedPath(std::wstring_view path);
 
 // Reads a whole file (up to max_bytes). Returns false on failure/too large.
 bool ReadFileBytes(const wchar_t* path, std::string& out, uint64_t max_bytes);

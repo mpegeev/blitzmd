@@ -1,6 +1,8 @@
 // mdview_test — developer tool for the mdview Lister plugin.
 //
-//   mdview_test spec <spec.txt> [-v] [-n N]     run CommonMark/GFM spec examples
+//   mdview_test spec <spec.txt> [-v] [-n N] [--strict]
+//                                               run CommonMark/GFM spec examples
+//                                               (--strict: every mismatch fails)
 //   mdview_test dump <file.md>                  print the parsed document as HTML
 //   mdview_test render <file.md> <out.png> [--width W] [--scale S] [--dark]
 //                      [--zoom Z] [--scroll Y] [--height H] [--remote] [--nowrap]
@@ -30,7 +32,7 @@ namespace {
 int Usage() {
     std::fprintf(stderr,
                  "usage:\n"
-                 "  mdview_test spec <spec.txt> [-v] [-n N]\n"
+                 "  mdview_test spec <spec.txt> [-v] [-n N] [--strict]\n"
                  "  mdview_test dump <file.md>\n"
                  "  mdview_test render <file.md> <out.png> [--width W] [--scale S] [--dark] [--zoom Z]\n"
                  "              [--scroll Y] [--height H] [--remote] [--nowrap]\n"
@@ -70,13 +72,14 @@ int main(int argc, char** argv) {
     if (argc < 3) return Usage();
     const std::string cmd = argv[1];
     if (cmd == "spec") {
-        bool verbose = false;
+        bool verbose = false, strict = false;
         int only = 0;
         for (int i = 3; i < argc; ++i) {
             if (!std::strcmp(argv[i], "-v")) verbose = true;
+            else if (!std::strcmp(argv[i], "--strict")) strict = true;
             else if (!std::strcmp(argv[i], "-n") && i + 1 < argc) only = std::atoi(argv[++i]);
         }
-        return test::RunSpec(argv[2], verbose, only);
+        return test::RunSpec(argv[2], verbose, only, strict);
     }
     if (cmd == "dump") {
         std::string md;
@@ -99,6 +102,7 @@ int main(int argc, char** argv) {
             else if (a == "--height") o.max_height = next(16000.f);
             else if (a == "--remote") o.allow_remote_images = true;
             else if (a == "--nowrap") o.layout.wrap_code = false;
+            else if (a == "--lines") o.layout.line_numbers = true;
             else if (a == "--maxwidth") o.layout.max_content_width = next(900.f);
         }
         std::string md;
@@ -366,6 +370,89 @@ int main(int argc, char** argv) {
         std::printf("plugin OK\n");
         return 0;
     }
+    if (cmd == "reload" && argc >= 4) {
+        // reload <mdview.wlx64> <dir>: auto-reload check. Opens <dir>\reload-test.md,
+        // saves it the way editors do (temp file + rename), then searches for
+        // the new text; also checks that AutoReload=0 turns it off.
+        HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
+        using SetParamsFn = void(__stdcall*)(void*);
+        using LoadFn = HWND(__stdcall*)(HWND, const wchar_t*, int);
+        using SearchFn = int(__stdcall*)(HWND, const wchar_t*, int);
+        using CloseFn = void(__stdcall*)(HWND);
+        auto load = dll ? reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW")) : nullptr;
+        auto search = dll ? reinterpret_cast<SearchFn>(GetProcAddress(dll, "ListSearchTextW")) : nullptr;
+        auto close = dll ? reinterpret_cast<CloseFn>(GetProcAddress(dll, "ListCloseWindow")) : nullptr;
+        auto set_params = dll ? reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams")) : nullptr;
+        if (!load || !search || !close || !set_params) {
+            std::fprintf(stderr, "cannot load plugin\n");
+            return 1;
+        }
+        const std::wstring dir = FullPath(argv[3]);
+        CreateDirectoryW(dir.c_str(), nullptr);
+        const std::wstring file = dir + L"\\reload-test.md";
+        const std::wstring ini = dir + L"\\mdview.ini";
+        struct {
+            int size;
+            DWORD lo, hi;
+            char ini[MAX_PATH];
+        } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
+        strncpy_s(dp.ini, WideToUtf8(dir + L"\\lsplugin.ini").c_str(), _TRUNCATE);
+        auto write = [](const std::wstring& path, const std::string& text) {
+            HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD n = 0;
+            WriteFile(h, text.data(), static_cast<DWORD>(text.size()), &n, nullptr);
+            CloseHandle(h);
+        };
+        auto save_like_editor = [&](const std::string& text) {
+            const std::wstring tmp = file + L".tmp~";
+            write(tmp, text);
+            DeleteFileW(file.c_str());
+            MoveFileW(tmp.c_str(), file.c_str());
+        };
+        auto pump = [](int ms) {
+            const double end = NowMs() + ms;
+            MSG msg;
+            while (NowMs() < end) {
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
+                Sleep(5);
+            }
+        };
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"MdViewReloadHost";
+        RegisterClassW(&wc);
+        HWND host = CreateWindowExW(0, wc.lpszClassName, L"reload test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40,
+                                    800, 600, nullptr, nullptr, wc.hInstance, nullptr);
+        int failures = 0;
+        for (int enabled = 1; enabled >= 0; --enabled) {
+            write(ini, enabled ? "[mdview]\r\nAutoReload=1\r\n" : "[mdview]\r\nAutoReload=0\r\n");
+            set_params(&dp);  // settings load once per process: first round only
+            write(file, "# Reload test\n\nfirst version\n");
+            HWND v = load(host, file.c_str(), 0);
+            pump(300);
+            const std::string marker = enabled ? "second-version-marker" : "third-version-marker";
+            save_like_editor("# Reload test\n\n" + marker + "\n");
+            pump(1500);
+            const bool found = search(v, Utf8ToWide(marker).c_str(), 1) == 0;
+            std::printf("AutoReload=%d: new text %s\n", enabled, found ? "shown" : "not shown");
+            if (found != (enabled == 1)) ++failures;
+            close(v);
+            if (enabled) {
+                // Settings are cached per process: flip the switch as the menu would.
+                FreeLibrary(dll);
+                dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
+                load = reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW"));
+                search = reinterpret_cast<SearchFn>(GetProcAddress(dll, "ListSearchTextW"));
+                close = reinterpret_cast<CloseFn>(GetProcAddress(dll, "ListCloseWindow"));
+                set_params = reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams"));
+            }
+        }
+        DestroyWindow(host);
+        FreeLibrary(dll);
+        std::printf(failures ? "reload FAILED\n" : "reload OK\n");
+        return failures ? 1 : 0;
+    }
     if (cmd == "text") {
         // text <file.md>: the plain text "Select all + Copy" puts on the clipboard.
         std::string md;
@@ -457,9 +544,22 @@ int main(int argc, char** argv) {
             "\xC3", "\xFF", "\xED\xA0\x80", "\r\n", "\r", "[link]: /url\n", "[link]", "<https://a.b>",
         };
         const size_t n_pieces = sizeof(kPieces) / sizeof(kPieces[0]);
+        // YAML front matter fragments (a third of the documents start with one).
+        static const char* kYaml[] = {
+            "key: ", "k2:", "value", "\n", "  ", "    ", "- ", "-", "[", "]", "{", "}", ", ", "'", "\"", "\\\"",
+            "|", "|-\n", ">", ">+\n", "# c", ":", ": ", "&a ", "*a", "!tag ", "\t", "  - k: v\n", "...\n",
+            "---\n", "\xD0\x9A\xD0\xBB\xD1\x8E\xD1\x87: ", "<b>&amp;", "```", "\r\n", "a: [b, {c: d}]\n",
+        };
+        const size_t n_yaml = sizeof(kYaml) / sizeof(kYaml[0]);
         double total = 0;
         for (int it = 0; it < iterations; ++it) {
             std::string md;
+            if (rnd() % 3 == 0) {
+                md = "---\nkey: v\n";
+                const int ylen = static_cast<int>(rnd() % 60);
+                for (int k = 0; k < ylen; ++k) md += kYaml[rnd() % n_yaml];
+                md += "\n---\n";
+            }
             const int len = static_cast<int>(rnd() % 300);
             for (int k = 0; k < len; ++k) md += kPieces[rnd() % n_pieces];
             const double t0 = NowMs();
@@ -471,6 +571,7 @@ int main(int argc, char** argv) {
             o.layout.zoom = 0.5f + static_cast<float>(rnd() % 20) / 10.f;
             o.layout.dark = (rnd() & 1) != 0;
             o.layout.wrap_code = (rnd() & 1) != 0;
+            o.layout.line_numbers = (rnd() & 1) != 0;
             o.layout.max_content_width = (rnd() & 1) ? 0.f : 900.f;
             ComPtr<IWICBitmap> bmp = RenderToBitmap(*doc, o);
             total += NowMs() - t0;

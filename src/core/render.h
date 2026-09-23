@@ -50,6 +50,7 @@ private:
     void DrawListItem(Block* item);
     void DrawAlert(Block* b);
     void DrawHScrollbar(Block* b);
+    void DrawLineNumbers(Block* b, const LeafState& s);
     void FillRanges(IDWriteTextLayout* tl, D2D1_POINT_2F origin, uint32_t start, uint32_t len,
                     ID2D1Brush* brush, float inset_y = 0);
     void DrawInlineBackgrounds(Block* b, IDWriteTextLayout* tl, D2D1_POINT_2F origin);
@@ -64,6 +65,7 @@ private:
     float view_top_ = 0, view_bottom_ = 0;
     IconCache icons_;
     std::vector<DWRITE_HIT_TEST_METRICS> hit_buf_;
+    std::vector<DWRITE_LINE_METRICS> line_buf_;
 };
 
 // Number formatting for ordered list markers at a nesting depth
