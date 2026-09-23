@@ -1,4 +1,6 @@
 * text=auto eol=lf
+# Read by Total Commander's plugin auto-installer: Windows line endings.
+pluginst.inf text eol=crlf
 *.png binary
 *.jpg binary
 *.gif binary

@@ -2,8 +2,5 @@
 description=mdview - GitHub Flavored Markdown viewer (Direct2D/DirectWrite)
 type=wlx
 file=mdview.wlx
-file64=mdview.wlx64
 defaultdir=mdview
-defaultextension=md
-detect=EXT="MD" | EXT="MARKDOWN" | EXT="MDOWN" | EXT="MKD" | EXT="MKDN" | EXT="MDWN" | EXT="MDTXT" | EXT="MDTEXT" | EXT="RMD"
 version=1.0.0

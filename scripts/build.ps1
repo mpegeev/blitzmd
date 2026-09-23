@@ -44,7 +44,10 @@ if ($Package) {
         $name = if ($a -eq 'x86') { 'mdview.wlx' } else { 'mdview.wlx64' }
         Copy-Item (Join-Path $built[$a] $name) $stage
     }
-    Copy-Item (Join-Path $root 'pluginst.inf') $stage
+    # Total Commander's auto-installer expects a Windows text file (CRLF, ANSI),
+    # whatever line endings the checkout has.
+    $inf = (Get-Content (Join-Path $root 'pluginst.inf')) -join "`r`n"
+    [System.IO.File]::WriteAllText((Join-Path $stage 'pluginst.inf'), $inf + "`r`n", [System.Text.Encoding]::ASCII)
     Copy-Item (Join-Path $root 'README.md') $stage
     Copy-Item (Join-Path $root 'LICENSE') $stage
     $zip = Join-Path $dist 'mdview.zip'
