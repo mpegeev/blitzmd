@@ -1246,9 +1246,11 @@ float LayoutEngine::LayoutTable(Block* b, float x, float y, float w, const Ctx& 
         }
         row_h = std::max(row_h, m_.em * ctx.scale * 1.5f + 2.f * pady);
         for (auto& [cell, ch] : cells) {
+            // Vertically centered unless valign says otherwise (HTML tables).
             const float extra = row_h - ch;
-            if (extra > 0.5f) {
-                for (Block* child : cell->children) Translate(child, 0, extra * 0.5f);
+            const float shift = cell->valign == 1 ? 0.f : cell->valign == 2 ? extra : extra * 0.5f;
+            if (shift > 0.5f) {
+                for (Block* child : cell->children) Translate(child, 0, shift);
             }
             cell->h = row_h;
         }

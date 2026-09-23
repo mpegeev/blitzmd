@@ -19,17 +19,20 @@ summary: |
 # Front matter
 
 The YAML block at the very top of this file (between the `---` lines) is not
-Markdown. GitHub shows it as a table: one column per top-level key, with
-lists and nested mappings as nested tables. It must **not** render as a
-thematic break followed by a setext heading.
+Markdown. mdview shows it as a two-column table, one row per top-level key.
+(GitHub puts the keys side by side as columns, which gets wide and scrolls;
+reading top to bottom is easier.) It must **not** render as a thematic break
+followed by a setext heading.
 
 Things to check:
 
-- the table above looks like GitHub's in light and dark themes;
-- quoted values keep their colons (`title`), lists become one-row tables
-  (`tags`), a list of mappings becomes a row of small tables (`authors`);
+- the table above has the keys in bold on the left, values on the right,
+  in light and dark themes, without horizontal scrolling;
+- quoted values keep their colons (`title`), short lists are joined with
+  commas (`tags`), nested mappings are nested key/value tables (`seo`), a
+  list of mappings is a stack of small tables (`authors`);
 - `summary` keeps its line break;
-- wide tables scroll horizontally instead of squeezing columns.
+- keys stay at the top of their row when the value is tall.
 
 ---
 

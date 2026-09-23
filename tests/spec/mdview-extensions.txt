@@ -9,8 +9,10 @@ mdview reproduces). Run with `mdview_test spec tests/spec/mdview-extensions.txt 
 
 ## Front matter
 
-YAML front matter at the very top of a file is shown as a table of the
-top-level keys, like GitHub does.
+YAML front matter at the very top of a file is shown as a two-column table,
+one row per top-level key (key in bold, then its value). GitHub puts the keys
+side by side as columns instead; mdview reads top to bottom and never needs
+horizontal scrolling for it.
 
 ```````````````````````````````` example
 ---
@@ -20,24 +22,32 @@ layout: post
 
 # Hi
 .
-<table><thead><tr><th>title</th><th>layout</th></tr></thead>
-<tbody><tr><td>Hello</td><td>post</td></tr></tbody></table>
+<table><tbody>
+<tr><th align="left">title</th><td>Hello</td></tr>
+<tr><th align="left">layout</th><td>post</td></tr>
+</tbody></table>
 <h1>Hi</h1>
 ````````````````````````````````
 
-Quoted strings keep their colons; flow sequences become a one-row table.
+Quoted strings keep their colons. Short plain lists are joined with commas;
+a list with an item containing a comma gets one item per line.
 
 ```````````````````````````````` example
 ---
 title: "Part 2: the sequel"
-tags: [a, 'b, c', d]
+tags: [a, b, c]
+pairs: [a, 'b, c', d]
 ---
 .
-<table><thead><tr><th>title</th><th>tags</th></tr></thead>
-<tbody><tr><td>Part 2: the sequel</td><td><table><tbody><tr><td>a</td><td>b, c</td><td>d</td></tr></tbody></table></td></tr></tbody></table>
+<table><tbody>
+<tr><th align="left">title</th><td>Part 2: the sequel</td></tr>
+<tr><th align="left">tags</th><td>a, b, c</td></tr>
+<tr><th align="left">pairs</th><td><p>a</p><p>b, c</p><p>d</p></td></tr>
+</tbody></table>
 ````````````````````````````````
 
-Block sequences, nested mappings, comments and empty values.
+Block sequences, nested mappings (nested key/value tables), comments and
+empty values.
 
 ```````````````````````````````` example
 ---
@@ -51,8 +61,14 @@ meta:
 empty:
 ---
 .
-<table><thead><tr><th>authors</th><th>meta</th><th>empty</th></tr></thead>
-<tbody><tr><td><table><tbody><tr><td><table><thead><tr><th>name</th><th>role</th></tr></thead><tbody><tr><td>Ann</td><td>dev</td></tr></tbody></table></td><td>Bob</td></tr></tbody></table></td><td><table><thead><tr><th>draft</th></tr></thead><tbody><tr><td>true</td></tr></tbody></table></td><td></td></tr></tbody></table>
+<table><tbody>
+<tr><th align="left">authors</th><td>
+<table><tbody><tr><th align="left">name</th><td>Ann</td></tr><tr><th align="left">role</th><td>dev</td></tr></tbody></table>
+<p>Bob</p>
+</td></tr>
+<tr><th align="left">meta</th><td><table><tbody><tr><th align="left">draft</th><td>true</td></tr></tbody></table></td></tr>
+<tr><th align="left">empty</th><td></td></tr>
+</tbody></table>
 ````````````````````````````````
 
 A sequence at the same indentation as its key.
@@ -64,8 +80,7 @@ list:
 - two
 ---
 .
-<table><thead><tr><th>list</th></tr></thead>
-<tbody><tr><td><table><tbody><tr><td>one</td><td>two</td></tr></tbody></table></td></tr></tbody></table>
+<table><tbody><tr><th align="left">list</th><td>one, two</td></tr></tbody></table>
 ````````````````````````````````
 
 Block scalars: literal keeps line breaks, folded joins lines.
@@ -80,8 +95,10 @@ folded: >
   words
 ---
 .
-<table><thead><tr><th>literal</th><th>folded</th></tr></thead>
-<tbody><tr><td>line one<br />line two</td><td>joined words</td></tr></tbody></table>
+<table><tbody>
+<tr><th align="left">literal</th><td>line one<br />line two</td></tr>
+<tr><th align="left">folded</th><td>joined words</td></tr>
+</tbody></table>
 ````````````````````````````````
 
 Special characters are text, not HTML.
@@ -91,8 +108,7 @@ Special characters are text, not HTML.
 formula: a < b & c > d
 ---
 .
-<table><thead><tr><th>formula</th></tr></thead>
-<tbody><tr><td>a &lt; b &amp; c &gt; d</td></tr></tbody></table>
+<table><tbody><tr><th align="left">formula</th><td>a &lt; b &amp; c &gt; d</td></tr></tbody></table>
 ````````````````````````````````
 
 YAML beyond the supported subset is shown as a code block.

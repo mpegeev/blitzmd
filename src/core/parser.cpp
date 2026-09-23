@@ -68,6 +68,15 @@ Align AlignFromAttr(const HtmlToken& tok) {
     return Align::Default;
 }
 
+// HTML valign on table rows and cells: 0 = middle (default), 1 = top, 2 = bottom.
+uint8_t VAlignFromAttr(const HtmlToken& tok) {
+    const std::wstring* a = tok.Attr(L"valign");
+    if (!a) return 0;
+    if (EqualsNoCase(*a, L"top")) return 1;
+    if (EqualsNoCase(*a, L"bottom")) return 2;
+    return 0;
+}
+
 AlertKind AlertFromName(std::wstring_view s) {
     if (EqualsNoCase(s, L"note")) return AlertKind::Note;
     if (EqualsNoCase(s, L"tip")) return AlertKind::Tip;
@@ -1489,6 +1498,7 @@ void Builder::HtmlStartTag(const HtmlToken& tok) {
         PopAbove(table);
         Block* b = PushHtml(BlockType::TableRow, tok);
         b->header = html_thead_;
+        b->valign = VAlignFromAttr(tok);
         break;
     }
     case Tag::Td:
@@ -1510,6 +1520,7 @@ void Builder::HtmlStartTag(const HtmlToken& tok) {
         }
         Block* b = PushHtml(BlockType::TableCell, tok);
         b->header = t == Tag::Th;
+        b->valign = tok.Attr(L"valign") ? VAlignFromAttr(tok) : row->valign;
         if (const auto* cs = tok.Attr(L"colspan")) b->colspan = std::clamp(_wtoi(cs->c_str()), 1, 64);
         break;
     }

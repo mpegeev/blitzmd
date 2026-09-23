@@ -294,38 +294,57 @@ void AppendEscaped(std::string& out, std::string_view s) {
     }
 }
 
-// GitHub's rendering: a mapping is a table with the keys as header row and
-// the values in one body row; a sequence is a one-row table.
+constexpr size_t kInlineListChars = 100;  // longer scalar lists: one item per line
+
+void AppendNode(std::string& out, const Node& n);
+
+// A mapping is a two-column table: the key (bold) and its value, one row
+// per key. GitHub lays the keys out as columns instead, which gets wide and
+// scrolls; this reads top to bottom.
+void AppendMap(std::string& out, const Node& n) {
+    if (n.fields.empty()) return;
+    out += "<table><tbody>";
+    for (const auto& f : n.fields) {
+        out += "<tr valign=\"top\"><th align=\"left\">";
+        AppendEscaped(out, f.first);
+        out += "</th><td>";
+        AppendNode(out, f.second);
+        out += "</td></tr>";
+    }
+    out += "</tbody></table>";
+}
+
 void AppendNode(std::string& out, const Node& n) {
     switch (n.kind) {
     case Node::Scalar:
         AppendEscaped(out, n.text);
         break;
-    case Node::Seq:
-        if (n.items.empty()) break;
-        out += "<table><tbody><tr>";
+    case Node::Seq: {
+        // Short plain lists (tags...) read best on one line; anything else
+        // gets one item per line, mappings as their own small tables.
+        bool plain = true;
+        size_t chars = 0;
         for (const Node& item : n.items) {
-            out += "<td>";
+            // (An item with a comma of its own would be ambiguous in a comma list.)
+            if (item.kind != Node::Scalar || item.text.find_first_of("\n,") != std::string::npos) plain = false;
+            chars += item.text.size() + 2;
+        }
+        if (plain && chars <= kInlineListChars) {
+            for (size_t i = 0; i < n.items.size(); ++i) {
+                if (i) out += ", ";
+                AppendEscaped(out, n.items[i].text);
+            }
+            break;
+        }
+        for (const Node& item : n.items) {
+            out += "<div>";
             AppendNode(out, item);
-            out += "</td>";
+            out += "</div>";
         }
-        out += "</tr></tbody></table>";
         break;
+    }
     case Node::Map:
-        if (n.fields.empty()) break;
-        out += "<table><thead><tr>";
-        for (const auto& f : n.fields) {
-            out += "<th>";
-            AppendEscaped(out, f.first);
-            out += "</th>";
-        }
-        out += "</tr></thead><tbody><tr>";
-        for (const auto& f : n.fields) {
-            out += "<td>";
-            AppendNode(out, f.second);
-            out += "</td>";
-        }
-        out += "</tr></tbody></table>";
+        AppendMap(out, n);
         break;
     }
 }
