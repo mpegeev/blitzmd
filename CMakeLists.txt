@@ -67,6 +67,10 @@ add_library(mdview_core STATIC
     src/core/svg.cpp
     src/core/layout.cpp
     src/core/mathlayout.cpp
+    src/core/graphlayout.cpp
+    src/core/diagram.cpp
+    src/core/mermaid.cpp
+    src/core/mermaid_flowchart.cpp
     src/core/render.cpp
     src/core/icons.cpp
     src/core/zoom.cpp

@@ -28,6 +28,7 @@
 #include "core/images.h"
 #include "core/layout.h"
 #include "core/mathlayout.h"
+#include "core/mermaid.h"
 #include "core/theme.h"
 #include "core/offscreen.h"
 #include "core/parser.h"
@@ -1345,6 +1346,60 @@ int main(int argc, char** ansi_argv) {
             SaveBitmapPng(bmp, Utf8ToWide(out));
         }
         return 0;
+    }
+    if (cmd == "mmd" && argc >= 4) {
+        // mmd <diagram.mmd> <out.png> [--dark] [--scale S]: lays out a Mermaid
+        // diagram and renders it alone.
+        bool dark = false;
+        float scale = 1.5f;
+        for (int i = 4; i < argc; ++i) {
+            if (!std::strcmp(argv[i], "--dark")) dark = true;
+            else if (!std::strcmp(argv[i], "--scale") && i + 1 < argc) scale = static_cast<float>(std::atof(argv[++i]));
+        }
+        std::string bytes;
+        if (!ReadFileBytes(Utf8ToWide(argv[2]).c_str(), bytes, 1 << 20)) {
+            std::fprintf(stderr, "cannot read %s\n", argv[2]);
+            return 1;
+        }
+        const std::wstring source = Utf8ToWide(DecodeTextToUtf8(bytes));
+        ComPtr<IDWriteFactory> dwf;
+        DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(dwf.GetAddressOf()));
+        std::wstring error;
+        const double t0 = NowMs();
+        const bool ok = CheckMermaid(source, &error);
+        const double t1 = NowMs();
+        auto scene = ok ? LayoutMermaid(source, dwf.Get(), L"Segoe UI", 16.f, &error) : nullptr;
+        const double t2 = NowMs();
+        if (!scene) {
+            std::printf("error: %s\n", WideToUtf8(error).c_str());
+            return 1;
+        }
+        std::printf("check %.1f ms, layout %.1f ms, %.0fx%.0f, %zu shapes, %zu texts\n", t1 - t0, t2 - t1, scene->width,
+                    scene->height, scene->shapes.size(), scene->texts.size());
+        ComPtr<IWICImagingFactory> wic;
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
+        ComPtr<ID2D1Factory> d2d;
+        D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2d.GetAddressOf());
+        const UINT w = static_cast<UINT>(std::ceil(scene->width * scale)), h = static_cast<UINT>(std::ceil(scene->height * scale));
+        ComPtr<IWICBitmap> bmp;
+        ComPtr<ID2D1RenderTarget> rt;
+        if (!wic || !d2d || FAILED(wic->CreateBitmap(w, h, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &bmp)) ||
+            FAILED(d2d->CreateWicBitmapRenderTarget(
+                bmp.Get(),
+                D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                                             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+                                             96.f * scale, 96.f * scale),
+                &rt))) {
+            std::fprintf(stderr, "cannot create the bitmap\n");
+            return 1;
+        }
+        const uint32_t page = DiagramRoleArgb(kDgPage, dark);
+        rt->BeginDraw();
+        rt->Clear(D2D1::ColorF(page & 0xFFFFFF));
+        DrawDiagram(rt.Get(), *scene, D2D1::RectF(0, 0, scene->width, scene->height), dark, nullptr, nullptr);
+        rt->EndDraw();
+        std::printf("draw %.1f ms\n", NowMs() - t2);
+        return SaveBitmapPng(bmp.Get(), Utf8ToWide(argv[3])) ? 0 : 1;
     }
     if (cmd == "tex") {
         // tex "<TeX source>": the parsed formula tree.
