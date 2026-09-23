@@ -24,7 +24,10 @@
 
 #include "core/texmath.h"
 #include "core/flags.h"
+#include "core/images.h"
+#include "core/layout.h"
 #include "core/mathlayout.h"
+#include "core/theme.h"
 #include "core/offscreen.h"
 #include "core/parser.h"
 #include "core/print.h"
@@ -834,6 +837,46 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%zu formulas of %s laid out\n", doc->maths.size(), argv[2]);
+        {
+            // Only a formula too wide for its column makes a leaf scroll
+            // horizontally: never plain text, centered images or tables.
+            const std::string wide_md =
+                "A plain paragraph of ordinary words that wraps at many different widths, "
+                "with trailing spaces at its line ends and nothing else in it at all.\n\n"
+                "<p align=\"center\"><img src=\"img/badge-build-passing.svg\"> <img src=\"img/badge-coverage.svg\"> "
+                "<img src=\"img/badge-build-passing.svg\"> <img src=\"img/badge-coverage.svg\"></p>\n\n"
+                "| a | b |\n|---|---|\n| cell text that wraps | \xF0\x9F\x87\xBA\xF0\x9F\x87\xB8 flag and more words |\n\n"
+                "Inline $x^2 + y^2$ math in a sentence that also wraps around at some widths.\n\n"
+                "$$\\sum_{k=1}^{n} a_k + b_k + c_k + d_k + e_k + f_k + g_k + h_k + i_k + j_k + k_k + l_k + m_k$$\n";
+            auto wdoc = ParseMarkdown(wide_md, FullPath("samples/gfm/x.md"));
+            Palette palette;
+            ImageStore images;
+            images.Attach(wdoc.get(), nullptr, false, false);
+            images.LoadAll();
+            LayoutEngine le;
+            le.Init(dw.Get(), &palette, &images);
+            LayoutConfig cfg;
+            cfg.max_content_width = 0;
+            le.SetConfig(cfg);
+            le.SetDocument(wdoc.get());
+            int wide_formula = 0;
+            for (int w = 280; w <= 960; w += 3) {
+                le.Layout(static_cast<float>(w), 0, 1e6f);
+                for (const Block* leaf : wdoc->leaves) {
+                    const bool display = !leaf->objects.empty() && leaf->objects[0].math >= 0 &&
+                                         wdoc->maths[static_cast<size_t>(leaf->objects[0].math)].display;
+                    if (leaf->content_w > 0 && !display) {
+                        std::printf("FAIL: \"%s...\" scrolls at width %d\n", WideToUtf8(leaf->text.substr(0, 20)).c_str(), w);
+                        ++failures;
+                    }
+                    if (leaf->content_w > 0 && display) ++wide_formula;
+                }
+            }
+            if (!wide_formula) {
+                std::printf("FAIL: the long display formula never scrolls\n");
+                ++failures;
+            }
+        }
         // Hostile input: deep nesting, huge and malformed sources.
         auto repeat = [](const wchar_t* s, int n) {
             std::wstring r;

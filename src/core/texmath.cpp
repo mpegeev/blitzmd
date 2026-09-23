@@ -444,7 +444,7 @@ MathNode MakeSpace(float mu) {
 
 class Parser {
 public:
-    explicit Parser(std::wstring_view s) : s_(s) {}
+    explicit Parser(std::wstring_view s) : s_(s), scan_budget_(2 * s.size() + 64) {}
 
     MathNode Top() {
         // Rows separated by \\ outside environments (display math) stack
@@ -560,7 +560,12 @@ private:
         const size_t b = ++i_;
         int depth = 0;
         while (!AtEnd()) {
+            // A failed scan is undone: bound them, or "\\[" repeated would
+            // rescan the rest of the formula every time.
+            if (scan_budget_ == 0 || (dimension && i_ - b > 32)) break;
+            --scan_budget_;
             const wchar_t c = s_[i_];
+            if (dimension && !(iswalnum(c) || c == '.' || c == '-' || c == '+' || c == ' ' || c == ']')) break;
             if (c == '\\' && i_ + 1 < s_.size()) {
                 i_ += 2;
                 continue;
@@ -720,6 +725,10 @@ private:
             return List(kModeGroup, &stop);
         }
         if (c == '}' || c == '&' || (c == '\\' && Peek(1) == '\\')) return list;
+        if (c == '\\') {
+            const std::wstring name = PeekName();
+            if (name == L"end" || name == L"right" || name == L"middle") return list;  // not an argument
+        }
         if (depth_ >= kMaxDepth) {
             Bail(list);
             return list;
@@ -822,6 +831,16 @@ private:
             *last = std::move(s);
         }
         last->kids[slot] = std::move(script);
+    }
+
+    static MathNode* FirstGlyphs(MathNode& n) {
+        for (MathNode& k : n.kids) {
+            if (k.kind == MathKind::Glyphs && !k.text.empty()) return &k;
+            if (k.kind == MathKind::List) {
+                if (MathNode* g = FirstGlyphs(k)) return g;
+            }
+        }
+        return nullptr;
     }
 
     static bool IsPrimes(const MathNode& list) {
@@ -1397,21 +1416,22 @@ private:
                 Push(list, MakeGlyphs(L"/", MathClass::Rel));
                 return;
             }
-            // The first symbol gets its negated form, else a slash over it.
-            for (MathNode& k : next.kids) {
-                if (k.kind != MathKind::Glyphs || k.text.empty()) continue;
+            // The first symbol (also inside a group) gets its negated form,
+            // else a slash over it; without any, a slash in front.
+            if (MathNode* k = FirstGlyphs(next)) {
                 bool mapped = false;
-                if (k.text.size() == 1) {
+                if (k->text.size() == 1) {
                     for (const auto& p : kPairs) {
-                        if (k.text[0] == p[0]) {
-                            k.text[0] = p[1];
+                        if (k->text[0] == p[0]) {
+                            k->text[0] = p[1];
                             mapped = true;
                             break;
                         }
                     }
                 }
-                if (!mapped) k.text.push_back(0x0338);  // combining long solidus overlay
-                break;
+                if (!mapped) k->text.push_back(0x0338);  // combining long solidus overlay
+            } else {
+                Push(list, MakeGlyphs(L"/", MathClass::Rel));
             }
             for (MathNode& k : next.kids) Push(list, std::move(k));
             return;
@@ -1558,6 +1578,7 @@ private:
     Alphabet alphabet_ = Alphabet::Normal;
     uint32_t color_ = 0;
     bool operator_name_ = false;  // inside \operatorname: - and * are text
+    size_t scan_budget_;          // characters [optional] arguments may still scan
 };
 
 void Dump(const MathNode& n, std::wstring& out) {

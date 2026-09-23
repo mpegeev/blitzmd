@@ -237,6 +237,10 @@ private:
     float scale_, raise_, ascent_ = 0, descent_ = 0;
 };
 
+bool HasMath(const Block* b) {
+    return std::any_of(b->objects.begin(), b->objects.end(), [](const InlineObject& o) { return o.math >= 0; });
+}
+
 // Font size of a run (inline code, <small>, <big>...).
 float RunFontSize(float size, uint32_t f) {
     if (f & kSmall) size *= 0.85f;
@@ -664,11 +668,12 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, 1});
         obj->Release();
     }
-    if (width < kHugeWidth && !b->objects.empty() && !st.rtl) {
+    if (width < kHugeWidth && !st.rtl && HasMath(b)) {
         // Wider than its column even after shrinking (a formula): it starts at
         // the column's start and scrolls, rather than overflowing both sides.
+        // (Trailing spaces hang past a wrapped line's end: they don't count.)
         DWRITE_TEXT_METRICS tm{};
-        if (SUCCEEDED(layout->GetMetrics(&tm)) && tm.widthIncludingTrailingWhitespace > width + 0.5f) {
+        if (SUCCEEDED(layout->GetMetrics(&tm)) && tm.width > width + 0.5f) {
             layout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         }
     }
@@ -750,9 +755,7 @@ float LayoutEngine::MeasureLeaf(Block* b, float width, bool exact) {
     }
     DWRITE_TEXT_METRICS tm{};
     s.layout->GetMetrics(&tm);
-    s.overflow_w = width < kHugeWidth && !s.style.rtl && tm.widthIncludingTrailingWhitespace > width + 0.5f
-                       ? tm.widthIncludingTrailingWhitespace
-                       : 0.f;
+    s.overflow_w = width < kHugeWidth && !s.style.rtl && tm.width > width + 0.5f && HasMath(b) ? tm.width : 0.f;
     s.text_h = tm.height;
     s.width = width;
     s.exact = true;

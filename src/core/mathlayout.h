@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "core/util.h"
@@ -41,6 +42,10 @@ struct MathBox {
     std::vector<Glyph> glyphs;
     std::vector<Rule> rules;
     std::vector<Text> texts;
+    // Filled shapes of the stretched glyphs, built on first draw (for the
+    // Direct2D factory they belong to).
+    mutable ComPtr<ID2D1Factory> shapes_factory;
+    mutable std::unordered_map<uint16_t, ComPtr<ID2D1PathGeometry>> shapes;
 };
 
 class MathTypesetter {

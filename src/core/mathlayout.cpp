@@ -32,6 +32,8 @@ enum Constant : int {
 
 constexpr uint32_t kErrorColor = 0xFFD1242F;  // unknown commands (MathJax shows them red)
 constexpr int kMaxAssemblyGlyphs = 1000;      // parts of one stretched glyph
+constexpr int kFormulaAssemblyGlyphs = 4000;  // and of all of a formula's
+constexpr float kFarDips = 1e7f;              // > any 20000-character formula at the reference size
 
 // Big-endian reads with bounds checks (0 outside the table).
 struct Table {
@@ -473,8 +475,10 @@ private:
         if (n_ext > 0 && length(0) < target) {
             const float per = ext - n_ext * overlap;  // what one more round of extenders adds
             if (per > 0) reps = static_cast<int>(std::min(std::ceil((target - length(0)) / per), 1e6f));
-            reps = std::clamp(reps, 0, std::max(0, (kMaxAssemblyGlyphs - n_fixed) / n_ext));
+            const int budget = std::min(kMaxAssemblyGlyphs, assembly_budget_);
+            reps = std::clamp(reps, 0, std::max(0, (budget - n_fixed) / n_ext));
         }
+        assembly_budget_ = std::max(0, assembly_budget_ - (n_fixed + reps * n_ext));
         std::vector<Part> seq;
         for (const Part& p : parts) {
             if (!p.extender) seq.push_back(p);
@@ -673,6 +677,11 @@ private:
         Atom a;
         a.cls = n.cls;
         const float size = Size(ctx);
+        // Emoji: in color, through DirectWrite.
+        if (!n.large && std::any_of(n.text.begin(), n.text.end(), [](wchar_t c) { return c >= 0xD83C && c <= 0xD83E; }) &&
+            ShapedText(n.text, size, ctx.color, &a.box)) {
+            return a;
+        }
         std::vector<uint32_t> cps;
         for (size_t k = 0; k < n.text.size(); ++k) {
             uint32_t cp = n.text[k];
@@ -802,8 +811,12 @@ private:
         const bool limits = base.op && (base.limits == 1 || (base.limits == 0 && ctx.style == 0));
         // Primes (x', x^\prime) are drawn at the base's size right after it
         // (U+2032 sits high already); the rest of the superscript follows.
+        // After a taller base (a group, an operator) they are an ordinary
+        // superscript, as in TeX.
         size_t primes = 0;
-        while (!limits && primes < sup_node.kids.size() && IsPrime(sup_node.kids[primes])) ++primes;
+        while (!limits && base.is_char && !base.op && primes < sup_node.kids.size() && IsPrime(sup_node.kids[primes])) {
+            ++primes;
+        }
         MathNode prime_list, sup_rest;
         prime_list.color = sup_rest.color = sup_node.color;
         prime_list.kids.assign(sup_node.kids.begin(), sup_node.kids.begin() + static_cast<ptrdiff_t>(primes));
@@ -1198,7 +1211,7 @@ private:
         a.cls = MathClass::Rel;
         a.box.Add(arrow, (w - arrow.w) / 2, 0);
         if (!n.kids[0].kids.empty()) a.box.Add(above.box, (w - above.box.w) / 2, -(arrow.h + gap + above.box.d));
-        if (!below.box.glyphs.empty() || !below.box.rules.empty()) {
+        if (n.kids.size() > 1 && !n.kids[1].kids.empty()) {
             a.box.Add(below.box, (w - below.box.w) / 2, arrow.d + gap + below.box.h);
         }
         a.box.w = w;
@@ -1233,6 +1246,7 @@ private:
     MathTypesetter::Impl& f_;
     float size_;
     uint16_t group_ = 0;  // last id of a stretched glyph's parts
+    int assembly_budget_ = kFormulaAssemblyGlyphs;
 };
 
 }  // namespace
@@ -1251,10 +1265,11 @@ std::shared_ptr<const MathBox> MathTypesetter::Layout(std::wstring_view tex, boo
     Typesetter ts(*impl_, size);
     Atom a = ts.Run(root, display);
     // Nothing non-finite or negative reaches the text layout.
-    auto finite = [](float v) { return std::isfinite(v) && std::fabs(v) < 1e6f; };
-    out->width = finite(a.box.w) ? std::max(0.f, a.box.w) : 0.f;
-    out->ascent = finite(a.box.h) ? std::max(0.f, a.box.h) : 0.f;
-    out->descent = finite(a.box.d) ? std::max(0.f, a.box.d) : 0.f;
+    auto finite = [](float v) { return std::isfinite(v) && std::fabs(v) < kFarDips; };
+    auto extent = [](float v) { return std::isfinite(v) ? std::clamp(v, 0.f, kFarDips) : 0.f; };
+    out->width = extent(a.box.w);
+    out->ascent = extent(a.box.h);
+    out->descent = extent(a.box.d);
     for (const MathBox::Glyph& g : a.box.glyphs) {
         if (finite(g.x) && finite(g.y)) out->glyphs.push_back(g);
     }
@@ -1280,6 +1295,24 @@ void MathTypesetter::Draw(ID2D1RenderTarget* rt, const MathBox& box, D2D1_POINT_
     };
     D2D1_MATRIX_3X2_F world;
     rt->GetTransform(&world);
+    // What of the formula (its own coordinates) is on the target: the rest
+    // isn't drawn.
+    const bool aligned = world._12 == 0 && world._21 == 0 && world._11 > 0 && world._22 > 0 && scale > 0;
+    const D2D1_SIZE_F target = rt->GetSize();
+    const D2D1_RECT_F visible = aligned ? D2D1::RectF(((-world._31) / world._11 - origin.x) / scale,
+                                                      ((-world._32) / world._22 - origin.y) / scale,
+                                                      ((target.width - world._31) / world._11 - origin.x) / scale,
+                                                      ((target.height - world._32) / world._22 - origin.y) / scale)
+                                        : D2D1::RectF(-1e30f, -1e30f, 1e30f, 1e30f);
+    auto shown = [&visible](float x0, float y0, float x1, float y1) {
+        return x1 >= visible.left && x0 <= visible.right && y1 >= visible.top && y0 <= visible.bottom;
+    };
+    ComPtr<ID2D1Factory> factory;
+    rt->GetFactory(&factory);
+    if (box.shapes_factory.Get() != factory.Get()) {
+        box.shapes.clear();
+        box.shapes_factory = factory;
+    }
 
     // Rules on whole device pixels (after the scroll transform), with their
     // thickness rounded on its own: bars of equal weight stay equal and crisp.
@@ -1288,6 +1321,7 @@ void MathTypesetter::Draw(ID2D1RenderTarget* rt, const MathBox& box, D2D1_POINT_
     const float px = dpi_y / 96.f * world._22;  // device pixels per DIP, vertically
     const bool snap = world._12 == 0 && world._21 == 0 && px > 0;
     for (const MathBox::Rule& r : box.rules) {
+        if (!shown(r.x, r.y, r.x + r.w, r.y + r.h)) continue;
         float top = origin.y + r.y * scale, height = r.h * scale;
         if (snap) {
             const float dev_top = std::round((top * world._22 + world._32) * dpi_y / 96.f);
@@ -1315,39 +1349,55 @@ void MathTypesetter::Draw(ID2D1RenderTarget* rt, const MathBox& box, D2D1_POINT_
                 ++e;
             }
         }
-        if (g0.face >= impl_->faces.size()) {
+        // Rough bounds of the run (a glyph stays within a few ems of its origin).
+        float x0 = g0.x, x1 = g0.x, y0 = g0.y, y1 = g0.y, em = 0;
+        for (size_t i = k; i < e; ++i) {
+            x0 = std::min(x0, glyphs[i].x);
+            x1 = std::max(x1, glyphs[i].x);
+            y0 = std::min(y0, glyphs[i].y);
+            y1 = std::max(y1, glyphs[i].y);
+            em = std::max(em, glyphs[i].size);
+        }
+        if (g0.face >= impl_->faces.size() || !shown(x0 - 2 * em, y0 - 4 * em, x1 + 4 * em, y1 + 3 * em)) {
             k = e;
             continue;
         }
-        indices.clear();
-        advances.assign(e - k, 0.f);
-        offsets.clear();
-        for (size_t i = k; i < e; ++i) {
-            indices.push_back(glyphs[i].index);
-            offsets.push_back(DWRITE_GLYPH_OFFSET{(glyphs[i].x - g0.x) * scale, -(glyphs[i].y - g0.y) * scale});
-        }
         const D2D1_POINT_2F at = D2D1::Point2F(origin.x + g0.x * scale, origin.y + g0.y * scale);
         IDWriteFontFace* face = impl_->faces[g0.face].Get();
+        auto collect = [&](float k_scale) {
+            indices.clear();
+            advances.assign(e - k, 0.f);
+            offsets.clear();
+            for (size_t i = k; i < e; ++i) {
+                indices.push_back(glyphs[i].index);
+                offsets.push_back(DWRITE_GLYPH_OFFSET{(glyphs[i].x - g0.x) * k_scale, -(glyphs[i].y - g0.y) * k_scale});
+            }
+        };
         bool drawn = false;
-        if (g0.group && e - k > 1) {
-            ComPtr<ID2D1Factory> factory;
-            ComPtr<ID2D1PathGeometry> shape;
-            ComPtr<ID2D1GeometrySink> sink;
-            rt->GetFactory(&factory);
-            if (factory && SUCCEEDED(factory->CreatePathGeometry(&shape)) && SUCCEEDED(shape->Open(&sink))) {
-                sink->SetFillMode(D2D1_FILL_MODE_WINDING);
-                const bool ok = SUCCEEDED(face->GetGlyphRunOutline(g0.size * scale, indices.data(), advances.data(),
-                                                                   offsets.data(), static_cast<UINT32>(indices.size()),
-                                                                   FALSE, FALSE, sink.Get()));
-                if (SUCCEEDED(sink->Close()) && ok) {
-                    rt->SetTransform(D2D1::Matrix3x2F::Translation(at.x, at.y) * world);
-                    rt->FillGeometry(shape.Get(), brush_for(g0.color));
-                    rt->SetTransform(world);
-                    drawn = true;
+        if (g0.group && e - k > 1 && factory) {
+            // Built once at the formula's own size, then scaled.
+            ComPtr<ID2D1PathGeometry>& shape = box.shapes[g0.group];
+            if (!shape) {
+                ComPtr<ID2D1PathGeometry> built;
+                ComPtr<ID2D1GeometrySink> sink;
+                collect(1.f);
+                if (SUCCEEDED(factory->CreatePathGeometry(&built)) && SUCCEEDED(built->Open(&sink))) {
+                    sink->SetFillMode(D2D1_FILL_MODE_WINDING);
+                    const bool ok = SUCCEEDED(face->GetGlyphRunOutline(g0.size, indices.data(), advances.data(),
+                                                                       offsets.data(), static_cast<UINT32>(indices.size()),
+                                                                       FALSE, FALSE, sink.Get()));
+                    if (SUCCEEDED(sink->Close()) && ok) shape = built;
                 }
+            }
+            if (shape) {
+                rt->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) * D2D1::Matrix3x2F::Translation(at.x, at.y) * world);
+                rt->FillGeometry(shape.Get(), brush_for(g0.color));
+                rt->SetTransform(world);
+                drawn = true;
             }
         }
         if (!drawn) {
+            collect(scale);
             DWRITE_GLYPH_RUN run{};
             run.fontFace = face;
             run.fontEmSize = g0.size * scale;
