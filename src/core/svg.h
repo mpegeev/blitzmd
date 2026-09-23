@@ -1,6 +1,7 @@
 // SVG images: shapes are rendered by Direct2D's SVG engine (Windows 10
 // 1703+); <text> elements, which Direct2D ignores, are drawn by us with
-// DirectWrite so badges (shields.io etc.) and diagrams keep their labels.
+// DirectWrite so badges (shields.io etc.) and diagrams keep their labels,
+// and so are embedded <image>s (data: URIs only: badge logos).
 #pragma once
 
 #include <d2d1_3.h>
@@ -27,11 +28,7 @@ public:
     void Draw(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFactory* dw);
     // Drops the cached document (the render target is going away; a new one
     // may get the same address).
-    void ReleaseDeviceResources() {
-        doc_.Reset();
-        doc_rt_ = nullptr;
-        doc_failed_ = false;
-    }
+    void ReleaseDeviceResources();
 
 private:
     struct Text {
@@ -47,12 +44,25 @@ private:
         D2D1_MATRIX_3X2_F transform = D2D1::Matrix3x2F::Identity();
     };
 
+    struct Image {
+        float x = 0, y = 0, w = 0, h = 0;  // 0 size = intrinsic
+        D2D1_MATRIX_3X2_F transform = D2D1::Matrix3x2F::Identity();
+        std::shared_ptr<SvgImage> svg;     // nested SVG, or
+        UINT px_w = 0, px_h = 0;           // raster pixels (32bpp PBGRA)
+        std::vector<uint8_t> pixels;
+        ComPtr<ID2D1Bitmap> bitmap;        // device resource for doc_rt_
+    };
+
+    static std::shared_ptr<SvgImage> Parse(std::string bytes, int depth);
     void ParseStructure();
+    void AddImage(Image im, std::wstring_view href);
 
     std::string source_;
+    int depth_ = 0;  // nesting level of this document inside <image>s
     float width_ = 300, height_ = 150;
     float vb_x_ = 0, vb_y_ = 0, vb_w_ = 0, vb_h_ = 0;
     std::vector<Text> texts_;
+    std::vector<Image> images_;
 
     ID2D1RenderTarget* doc_rt_ = nullptr;
     ComPtr<ID2D1SvgDocument> doc_;

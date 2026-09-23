@@ -42,6 +42,8 @@ std::wstring_view Trim(std::wstring_view s);
 
 // Percent-decodes a URL component ("%20" -> " ", UTF-8 aware).
 std::wstring PercentDecode(std::wstring_view s);
+// Payload of a data: URI (base64 or percent-encoded).
+bool DecodeDataUri(std::wstring_view uri, std::string& out);
 
 // Parses a CSS-ish length: "120", "120px", "50%". Returns false if invalid.
 bool ParseLength(std::wstring_view s, float& value, bool& percent);

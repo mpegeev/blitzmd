@@ -48,45 +48,6 @@ bool EndsWithNoCase(std::wstring_view s, std::wstring_view suffix) {
     return s.size() >= suffix.size() && EqualsNoCase(s.substr(s.size() - suffix.size()), suffix);
 }
 
-// ---- base64 (data: URIs) ----------------------------------------------------
-bool DecodeBase64(std::wstring_view in, std::string& out) {
-    auto val = [](wchar_t c) -> int {
-        if (c >= L'A' && c <= L'Z') return c - L'A';
-        if (c >= L'a' && c <= L'z') return c - L'a' + 26;
-        if (c >= L'0' && c <= L'9') return c - L'0' + 52;
-        if (c == L'+' || c == L'-') return 62;
-        if (c == L'/' || c == L'_') return 63;
-        return -1;
-    };
-    uint32_t acc = 0;
-    int bits = 0;
-    for (wchar_t c : in) {
-        if (c == L'=') break;
-        const int v = val(c);
-        if (v < 0) {
-            if (IsSpace(c)) continue;
-            return false;
-        }
-        acc = (acc << 6) | static_cast<uint32_t>(v);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(static_cast<char>((acc >> bits) & 0xFF));
-        }
-    }
-    return !out.empty();
-}
-
-bool DecodeDataUri(std::wstring_view uri, std::string& out) {
-    const size_t comma = uri.find(L',');
-    if (comma == std::wstring_view::npos) return false;
-    const std::wstring_view meta = uri.substr(5, comma - 5);
-    const std::wstring_view payload = uri.substr(comma + 1);
-    if (meta.find(L";base64") != std::wstring_view::npos) return DecodeBase64(payload, out);
-    out = WideToUtf8(PercentDecode(payload));
-    return !out.empty();
-}
-
 // ---- WIC decoding -----------------------------------------------------------
 ComPtr<IWICImagingFactory> CreateWic() {
     ComPtr<IWICImagingFactory> f;

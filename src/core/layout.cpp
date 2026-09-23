@@ -70,19 +70,21 @@ private:
     LONG ref_ = 1;
 };
 
-// An image sitting on the baseline. Proportional line spacing scales every
-// line by `spacing`, inline objects included, which would add leading above
-// tall images (CSS doesn't); the reported size is pre-divided to cancel it.
+// An image sitting on the baseline, with the line's strut descent below it
+// (the gap under inline images in CSS). Proportional line spacing scales
+// every line by `spacing`, inline objects included, which would add leading
+// above tall images (CSS doesn't); the reported size is pre-divided.
 class ImageObject final : public InlineObjectBase {
 public:
-    ImageObject(LayoutEngine* engine, int index, float w, float h, float em, float spacing)
-        : engine_(engine), index_(index), w_(w), h_(h), em_(em), reported_h_(h / std::max(spacing, 0.5f)) {}
+    ImageObject(LayoutEngine* engine, int index, float w, float h, float em, float spacing, float strut_descent)
+        : engine_(engine), index_(index), w_(w), h_(h), em_(em), baseline_(h / std::max(spacing, 0.5f)),
+          descent_(strut_descent) {}
 
     HRESULT STDMETHODCALLTYPE Draw(void*, IDWriteTextRenderer*, FLOAT x, FLOAT y, BOOL, BOOL,
                                    IUnknown*) override {
         DrawContext& dc = engine_->draw_context();
         if (dc.rt && dc.images && w_ > 0 && h_ > 0) {
-            const float top = y + reported_h_ - h_;  // y is baseline - reported height
+            const float top = y + baseline_ - h_;  // y is the line baseline - baseline_
             dc.images->Draw(dc.rt, index_, D2D1::RectF(x, top, x + w_, top + h_), dc.palette,
                             engine_->dwrite(), em_);
         }
@@ -90,8 +92,8 @@ public:
     }
     HRESULT STDMETHODCALLTYPE GetMetrics(DWRITE_INLINE_OBJECT_METRICS* m) override {
         m->width = w_;
-        m->height = reported_h_;
-        m->baseline = reported_h_;
+        m->height = baseline_ + descent_;
+        m->baseline = baseline_;
         m->supportsSideways = FALSE;
         return S_OK;
     }
@@ -99,20 +101,23 @@ public:
 private:
     LayoutEngine* engine_;
     int index_;
-    float w_, h_, em_, reported_h_;
+    float w_, h_, em_, baseline_, descent_;
 };
 
 // Superscript / subscript text: drawn as a small text layout shifted
 // relative to the baseline without affecting line height (like GitHub's
-// "position: relative; line-height: 0" CSS).
+// "position: relative; line-height: 0" CSS): it reports the metrics of the
+// paragraph font (the CSS strut), so even a line holding nothing else keeps
+// the height of a text line.
 class TextBoxObject final : public InlineObjectBase {
 public:
-    TextBoxObject(LayoutEngine* engine, ComPtr<IDWriteTextLayout> layout, float shift)
-        : engine_(engine), layout_(std::move(layout)), shift_(shift) {
+    TextBoxObject(LayoutEngine* engine, ComPtr<IDWriteTextLayout> layout, float shift, float strut_ascent,
+                  float strut_descent)
+        : engine_(engine), layout_(std::move(layout)), shift_(shift), strut_ascent_(strut_ascent),
+          strut_descent_(strut_descent) {
         DWRITE_TEXT_METRICS tm{};
         layout_->GetMetrics(&tm);
         w_ = tm.widthIncludingTrailingWhitespace;
-        h_ = tm.height;
         baseline_ = FirstLineBaseline(layout_.Get());
     }
     HRESULT STDMETHODCALLTYPE Draw(void*, IDWriteTextRenderer*, FLOAT x, FLOAT y, BOOL, BOOL,
@@ -125,15 +130,16 @@ public:
             brush = effect_brush.Get();
         }
         if (brush) {
-            dc.rt->DrawTextLayout(D2D1::Point2F(x, y - shift_), layout_.Get(), brush,
-                                  D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+            // y is the line baseline - strut ascent.
+            const float top = y + strut_ascent_ - baseline_ - shift_;
+            dc.rt->DrawTextLayout(D2D1::Point2F(x, top), layout_.Get(), brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
         }
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetMetrics(DWRITE_INLINE_OBJECT_METRICS* m) override {
         m->width = w_;
-        m->height = h_;
-        m->baseline = baseline_;
+        m->height = strut_ascent_ + strut_descent_;
+        m->baseline = strut_ascent_;
         m->supportsSideways = FALSE;
         return S_OK;
     }
@@ -141,8 +147,8 @@ public:
 private:
     LayoutEngine* engine_;
     ComPtr<IDWriteTextLayout> layout_;
-    float shift_;
-    float w_ = 0, h_ = 0, baseline_ = 0;
+    float shift_, strut_ascent_, strut_descent_;
+    float w_ = 0, baseline_ = 0;
 };
 
 std::wstring FormatKey(const std::wstring& family, float size, uint16_t weight, bool italic) {
@@ -252,33 +258,34 @@ IDWriteTextFormat* LayoutEngine::Format(const std::wstring& family, float size, 
     return raw;
 }
 
-float LayoutEngine::LineHeightFactor(const std::wstring& family, float css_line_height) {
-    float natural = 0;
-    auto it = line_factor_cache_.find(family);
-    if (it != line_factor_cache_.end()) {
-        natural = it->second;
-    } else {
-        natural = 1.33f;
-        ComPtr<IDWriteFontCollection> coll;
-        UINT32 index = 0;
-        BOOL exists = FALSE;
-        if (SUCCEEDED(dw_->GetSystemFontCollection(&coll)) &&
-            SUCCEEDED(coll->FindFamilyName(family.c_str(), &index, &exists)) && exists) {
-            ComPtr<IDWriteFontFamily> fam;
-            ComPtr<IDWriteFont> font;
-            if (SUCCEEDED(coll->GetFontFamily(index, &fam)) &&
-                SUCCEEDED(fam->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                                    DWRITE_FONT_STYLE_NORMAL, &font))) {
-                DWRITE_FONT_METRICS fm{};
-                font->GetMetrics(&fm);
-                if (fm.designUnitsPerEm > 0) {
-                    natural = static_cast<float>(fm.ascent + fm.descent + fm.lineGap) / fm.designUnitsPerEm;
-                }
+const LayoutEngine::FamilyMetrics& LayoutEngine::MetricsOf(const std::wstring& family) {
+    auto it = family_metrics_.find(family);
+    if (it != family_metrics_.end()) return it->second;
+    FamilyMetrics m;
+    ComPtr<IDWriteFontCollection> coll;
+    UINT32 index = 0;
+    BOOL exists = FALSE;
+    if (SUCCEEDED(dw_->GetSystemFontCollection(&coll)) &&
+        SUCCEEDED(coll->FindFamilyName(family.c_str(), &index, &exists)) && exists) {
+        ComPtr<IDWriteFontFamily> fam;
+        ComPtr<IDWriteFont> font;
+        if (SUCCEEDED(coll->GetFontFamily(index, &fam)) &&
+            SUCCEEDED(fam->GetFirstMatchingFont(DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
+                                                DWRITE_FONT_STYLE_NORMAL, &font))) {
+            DWRITE_FONT_METRICS fm{};
+            font->GetMetrics(&fm);
+            if (fm.designUnitsPerEm > 0) {
+                const float upem = fm.designUnitsPerEm;
+                m.ascent = fm.ascent / upem;
+                m.descent = (fm.descent + fm.lineGap) / upem;
             }
         }
-        line_factor_cache_.emplace(family, natural);
     }
-    return css_line_height / std::max(natural, 0.5f);
+    return family_metrics_.emplace(family, m).first->second;
+}
+
+float LayoutEngine::LineHeightFactor(const std::wstring& family, float css_line_height) {
+    return css_line_height / std::max(MetricsOf(family).natural(), 0.5f);
 }
 
 float LayoutEngine::ApplyLineSpacing(IDWriteTextLayout* layout, const std::wstring& family, float size,
@@ -477,7 +484,8 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
                         if (r.link >= 0 && palette_) sl->SetDrawingEffect(palette_->Brush(kColorLink), rg);
                     }
                     const float shift = kind == kSup ? sub_size * 0.5f : -sub_size * 0.25f;
-                    auto* obj = new TextBoxObject(this, std::move(sl), shift);
+                    const FamilyMetrics& fm = MetricsOf(family);
+                    auto* obj = new TextBoxObject(this, std::move(sl), shift, st.size * fm.ascent, st.size * fm.descent);
                     layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{s0, s1 - s0});
                     obj->Release();
                 }
@@ -492,7 +500,8 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         if (o.image < 0 || o.pos >= len || text[o.pos] != kObjectChar) continue;
         D2D1_SIZE_F sz = D2D1::SizeF(line_h, line_h);
         if (images_) sz = images_->LayoutSize(o.image, width >= kHugeWidth ? 0.f : width, line_h);
-        auto* obj = new ImageObject(this, o.image, sz.width, sz.height, st.size, spacing);
+        auto* obj = new ImageObject(this, o.image, sz.width, sz.height, st.size, spacing,
+                                    st.size * MetricsOf(family).descent);
         layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, 1});
         obj->Release();
     }

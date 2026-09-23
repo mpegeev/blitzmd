@@ -1,6 +1,7 @@
 #include "core/svg.h"
 
 #include <shlwapi.h>
+#include <wincodec.h>
 
 #include <algorithm>
 #include <cmath>
@@ -149,6 +150,33 @@ D2D1_MATRIX_3X2_F ParseTransform(std::wstring_view s) {
     return m;
 }
 
+constexpr int kMaxSvgNesting = 2;         // SVG in <image> in SVG...
+constexpr size_t kMaxSvgImages = 32;      // <image> elements per document
+constexpr UINT kMaxEmbeddedRaster = 1024; // width/height of embedded bitmaps
+
+// Decodes an embedded bitmap (PNG, JPEG, GIF...) to 32bpp PBGRA.
+bool DecodeRaster(const std::string& bytes, UINT& w, UINT& h, std::vector<uint8_t>& out) {
+    ComPtr<IWICImagingFactory> wic;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) {
+        return false;
+    }
+    ComPtr<IStream> stream;
+    stream.Attach(SHCreateMemStream(reinterpret_cast<const BYTE*>(bytes.data()), static_cast<UINT>(bytes.size())));
+    ComPtr<IWICBitmapDecoder> decoder;
+    ComPtr<IWICBitmapFrameDecode> frame;
+    ComPtr<IWICFormatConverter> conv;
+    if (!stream ||
+        FAILED(wic->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder)) ||
+        FAILED(decoder->GetFrame(0, &frame)) || FAILED(frame->GetSize(&w, &h)) || w == 0 || h == 0 ||
+        w > kMaxEmbeddedRaster || h > kMaxEmbeddedRaster || FAILED(wic->CreateFormatConverter(&conv)) ||
+        FAILED(conv->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0,
+                                WICBitmapPaletteTypeMedianCut))) {
+        return false;
+    }
+    out.resize(static_cast<size_t>(w) * h * 4);
+    return SUCCEEDED(conv->CopyPixels(nullptr, w * 4, static_cast<UINT>(out.size()), out.data()));
+}
+
 std::wstring PickFamily(IDWriteFactory* dw, std::wstring_view list) {
     size_t i = 0;
     while (i < list.size()) {
@@ -168,13 +196,39 @@ std::wstring PickFamily(IDWriteFactory* dw, std::wstring_view list) {
 
 }  // namespace
 
-std::shared_ptr<SvgImage> SvgImage::Parse(std::string bytes) {
+std::shared_ptr<SvgImage> SvgImage::Parse(std::string bytes) { return Parse(std::move(bytes), 0); }
+
+std::shared_ptr<SvgImage> SvgImage::Parse(std::string bytes, int depth) {
     const size_t probe = std::min<size_t>(bytes.size(), 4096);
     if (std::string_view(bytes.data(), probe).find("<svg") == std::string_view::npos) return nullptr;
     auto img = std::make_shared<SvgImage>();
     img->source_ = std::move(bytes);
+    img->depth_ = depth;
     img->ParseStructure();
     return img;
+}
+
+// Only embedded data is used: an image never makes us fetch anything.
+void SvgImage::AddImage(Image im, std::wstring_view href) {
+    if (images_.size() >= kMaxSvgImages || depth_ >= kMaxSvgNesting) return;
+    std::string bytes;
+    if (!DecodeDataUri(Trim(href), bytes) || bytes.size() > (4u << 20)) return;
+    if (auto nested = Parse(bytes, depth_ + 1)) {
+        im.svg = std::move(nested);
+    } else if (!DecodeRaster(bytes, im.px_w, im.px_h, im.pixels)) {
+        return;
+    }
+    images_.push_back(std::move(im));
+}
+
+void SvgImage::ReleaseDeviceResources() {
+    doc_.Reset();
+    doc_rt_ = nullptr;
+    doc_failed_ = false;
+    for (Image& im : images_) {
+        im.bitmap.Reset();
+        if (im.svg) im.svg->ReleaseDeviceResources();
+    }
 }
 
 void SvgImage::ParseStructure() {
@@ -286,6 +340,21 @@ void SvgImage::ParseStructure() {
                        n == L"title" || n == L"desc" || n == L"metadata" || n == L"style" || n == L"script" ||
                        n == L"pattern" || n == L"marker" || n == L"lineargradient" || n == L"radialgradient") {
                 in.hidden = true;
+            } else if (n == L"image" && !in.hidden) {
+                const std::wstring* href = tok.Attr(L"href");
+                if (!href) href = tok.Attr(L"xlink:href");
+                if (href) {
+                    Image im;
+                    auto length = [&tok](const wchar_t* name, float& out) {
+                        if (const auto* v = tok.Attr(name)) ParseSvgLength(*v, out);
+                    };
+                    length(L"x", im.x);
+                    length(L"y", im.y);
+                    length(L"width", im.w);
+                    length(L"height", im.h);
+                    im.transform = in.m;
+                    AddImage(std::move(im), *href);
+                }
             } else if (n == L"text" && !in.hidden && !in.no_fill) {
                 Text t;
                 if (const auto* v = tok.Attr(L"x")) {
@@ -341,6 +410,7 @@ void SvgImage::Draw(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFacto
         doc_.Reset();
         doc_failed_ = false;
         doc_rt_ = rt;
+        for (Image& im : images_) im.bitmap.Reset();
     }
     if (!doc_ && !doc_failed_) {
         ComPtr<IStream> stream;
@@ -359,15 +429,36 @@ void SvgImage::Draw(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFacto
         rt->SetTransform(place * old);
         dc5->DrawSvgDocument(doc_.Get());
     }
-    if (!texts_.empty() && dw) {
-        // User space -> viewport (viewBox with preserveAspectRatio xMidYMid meet).
-        D2D1_MATRIX_3X2_F view = D2D1::Matrix3x2F::Identity();
-        if (vb_w_ > 0 && vb_h_ > 0) {
-            const float s = std::min(width_ / vb_w_, height_ / vb_h_);
-            const float ox = (width_ - vb_w_ * s) * 0.5f, oy = (height_ - vb_h_ * s) * 0.5f;
-            view = D2D1::Matrix3x2F::Translation(-vb_x_, -vb_y_) * D2D1::Matrix3x2F::Scale(s, s) *
-                   D2D1::Matrix3x2F::Translation(ox, oy);
+    // User space -> viewport (viewBox with preserveAspectRatio xMidYMid meet).
+    D2D1_MATRIX_3X2_F view = D2D1::Matrix3x2F::Identity();
+    if (vb_w_ > 0 && vb_h_ > 0) {
+        const float s = std::min(width_ / vb_w_, height_ / vb_h_);
+        const float ox = (width_ - vb_w_ * s) * 0.5f, oy = (height_ - vb_h_ * s) * 0.5f;
+        view = D2D1::Matrix3x2F::Translation(-vb_x_, -vb_y_) * D2D1::Matrix3x2F::Scale(s, s) *
+               D2D1::Matrix3x2F::Translation(ox, oy);
+    }
+    for (Image& im : images_) {
+        const float iw = im.svg ? im.svg->width() : static_cast<float>(im.px_w);
+        const float ih = im.svg ? im.svg->height() : static_cast<float>(im.px_h);
+        const float w = im.w > 0 ? im.w : iw, h = im.h > 0 ? im.h : ih;
+        if (iw <= 0 || ih <= 0 || w <= 0 || h <= 0) continue;
+        // preserveAspectRatio="xMidYMid meet" (the default).
+        const float s = std::min(w / iw, h / ih);
+        const float left = im.x + (w - iw * s) * 0.5f, top = im.y + (h - ih * s) * 0.5f;
+        const D2D1_RECT_F r = D2D1::RectF(left, top, left + iw * s, top + ih * s);
+        rt->SetTransform(im.transform * view * place * old);
+        if (im.svg) {
+            im.svg->Draw(rt, r, dw);
+            continue;
         }
+        if (!im.bitmap) {
+            const D2D1_BITMAP_PROPERTIES props =
+                D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+            rt->CreateBitmap(D2D1::SizeU(im.px_w, im.px_h), im.pixels.data(), im.px_w * 4, props, &im.bitmap);
+        }
+        if (im.bitmap) rt->DrawBitmap(im.bitmap.Get(), r, 1.f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+    }
+    if (!texts_.empty() && dw) {
         for (const Text& t : texts_) {
             const std::wstring family = PickFamily(dw, t.family);
             ComPtr<IDWriteTextFormat> fmt;

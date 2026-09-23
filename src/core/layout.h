@@ -177,6 +177,12 @@ private:
     void MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& max_w, bool estimate);
     ComPtr<IDWriteTextLayout> BuildTextLayout(Block* b, const LeafStyle& st, float width);
     IDWriteTextFormat* Format(const std::wstring& family, float size, uint16_t weight, bool italic);
+    // Ascent, descent (+ line gap) and their sum per em of a font family.
+    struct FamilyMetrics {
+        float ascent = 0.92f, descent = 0.41f;
+        float natural() const { return ascent + descent; }
+    };
+    const FamilyMetrics& MetricsOf(const std::wstring& family);
     float LineHeightFactor(const std::wstring& family, float css_line_height);
     // Returns the factor by which lines (and inline objects) get scaled.
     float ApplyLineSpacing(IDWriteTextLayout* layout, const std::wstring& family, float size,
@@ -194,7 +200,7 @@ private:
     std::vector<LeafState> leaves_;
     std::unordered_map<const Block*, TableInfo> tables_;
     std::unordered_map<std::wstring, ComPtr<IDWriteTextFormat>> formats_;
-    std::unordered_map<std::wstring, float> line_factor_cache_;
+    std::unordered_map<std::wstring, FamilyMetrics> family_metrics_;
     std::unordered_map<std::wstring, ComPtr<IDWriteTextLayout>> labels_;
     float viewport_w_ = 0.f;
     float doc_h_ = 0.f;
