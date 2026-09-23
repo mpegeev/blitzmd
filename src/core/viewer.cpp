@@ -152,6 +152,17 @@ enum MenuId : UINT {
 constexpr float kWheelZoomStep = 1.25f;   // per wheel notch, zooming images
 constexpr float kButtonZoomStep = 1.5f;   // per click on a zoom button
 constexpr float kFullViewUiEm = 16.f;     // size of the full-window view's buttons
+constexpr DWORD kWheelGestureMs = 500;    // Ctrl+wheel events this close keep their target
+
+// Buttons that can't act now (zoom out and reset at 1x, zoom in at the most):
+// a bit per button of the toolbar.
+unsigned ObjectButtonsOff(const InlineObject& o) {
+    return (IsZoomed(o) ? 0u : 0b101u) | (o.zoom >= kMaxObjectZoom ? 0b10u : 0u);
+}
+
+unsigned FullViewButtonsOff(const FullView& f) {
+    return (f.scale <= f.min_scale * 1.0001f ? 0b101u : 0u) | (f.scale >= f.max_scale * 0.9999f ? 0b10u : 0u);
+}
 
 }  // namespace
 
@@ -360,6 +371,10 @@ private:
     bool full_backdrop_down_ = false;         // pressed beside it (closes on release)
     float full_last_x_ = 0, full_last_y_ = 0;
     bool key_hook_ = false;                   // KeyHook installed for it
+    bool esc_held_ = false;                   // Esc closed the view, not released yet
+    DWORD full_closed_at_ = 0;                // a double click there must not reach the page
+    InlineObject* wheel_object_ = nullptr;    // Ctrl+wheel gesture: its target (null: the page)
+    DWORD wheel_time_ = 0;
 
     uint32_t doc_gen_ = 0;             // incremented by every Load()
     bool printing_ = false;            // PrintDocument() is using the blocks
@@ -466,6 +481,7 @@ void Viewer::ApplySettings(bool relayout) {
     dark_ = dark;
     if (theme_changed && rt_) palette_.Apply(GetTheme(dark_));
     if (theme_changed) images_.SetDark(dark_);
+    if (theme_changed && full_.active()) CloseFullView();  // <picture> may switch to another image
     const LayoutConfig cfg = MakeLayoutConfig();
     const LayoutConfig& old = layout_.config();
     const bool layout_changed = cfg.font_family != old.font_family || cfg.mono_family != old.mono_family ||
@@ -881,7 +897,10 @@ void Viewer::OnPaint() {
     }
     layout_.EvictFar(scroll_y_, scroll_y_ + ViewHeight());
     // Scrolled under a resting mouse: what it is over now.
-    if (tracking_mouse_ && !mouse_down_) UpdateObjectHover(last_mouse_.x / Scale(), last_mouse_.y / Scale());
+    if (tracking_mouse_ && !mouse_down_ && !full_.active()) {
+        const float x = last_mouse_.x / Scale();
+        UpdateObjectHover(MaxScroll() > 0.5f && x >= ViewWidth() - 16.f ? -1.f : x, last_mouse_.y / Scale());
+    }
 }
 
 // Animated GIFs visible in the last paint get their next frame on time;
@@ -918,10 +937,8 @@ void Viewer::DrawOverlays() {
     if (!full_.active() && hover_object_) {
         if (const DrawnObject* d = Drawn(hover_object_)) {
             const ZoomToolbar t = ObjectToolbar(*d);
-            const InlineObject& o = *d->object;
-            const unsigned disabled = (IsZoomed(o) ? 0u : 0b101u) | (o.zoom >= kMaxObjectZoom ? 0b10u : 0u);
             rt_->PushAxisAlignedClip(d->visible, D2D1_ANTIALIAS_MODE_ALIASED);
-            DrawZoomToolbar(rt_.Get(), renderer_.icons(), palette_, t, hover_button_, disabled);
+            DrawZoomToolbar(rt_.Get(), renderer_.icons(), palette_, t, hover_button_, ObjectButtonsOff(*d->object));
             rt_->PopAxisAlignedClip();
         }
     }
@@ -1046,10 +1063,22 @@ void Viewer::OnMouseWheel(int delta, bool horizontal, WORD keys, POINT screen) {
         return;
     }
     if (ctrl && !horizontal) {
-        // Over an image: it zooms inside its box; elsewhere the document does.
-        if (const DrawnObject* d = ObjectAt(mx, my)) {
-            ZoomObjectBy(*d, factor, mx, my);
-            return;
+        // Over an image it zooms inside its box, elsewhere the page does. A
+        // gesture keeps its target (a pinch zooming the page out doesn't get
+        // stuck on an image sliding under the pointer), and zooming out an
+        // image at 1x zooms the page.
+        const DWORD now = GetTickCount();
+        if (now - wheel_time_ > kWheelGestureMs) {
+            const DrawnObject* d = ObjectAt(mx, my);
+            wheel_object_ = d && !(delta < 0 && !IsZoomed(*d->object)) ? d->object : nullptr;
+        }
+        wheel_time_ = now;
+        if (wheel_object_) {
+            if (const DrawnObject* d = Drawn(wheel_object_)) {
+                ZoomObjectBy(*d, factor, mx, my);
+                return;
+            }
+            wheel_object_ = nullptr;
         }
         wheel_accum_ += static_cast<float>(delta);
         while (wheel_accum_ >= WHEEL_DELTA) {
@@ -1265,16 +1294,19 @@ void Viewer::OnLButtonDown(int px, int py, bool dbl) {
     dragged_ = false;
     down_pt_ = POINT{px, py};
     down_link_ = -1;
+    down_image_ = -1;
     down_summary_ = nullptr;
     SetCapture(hwnd_);
 
     if (full_.active()) {
         const ZoomToolbar t = FullViewToolbar();
         const int b = ZoomButtonAt(t, x, y);
+        mouse_down_ = false;  // not a click on the page
         if (b >= 0) {
             FullViewButton(t.kinds[static_cast<size_t>(b)]);
             return;
         }
+        mouse_down_ = true;
         const D2D1_RECT_F r = full_.ContentRect(ViewRect());
         const bool on = x >= r.left && x < r.right && y >= r.top && y < r.bottom;
         if (on && dbl) {
@@ -1283,9 +1315,15 @@ void Viewer::OnLButtonDown(int px, int py, bool dbl) {
             full_pan_ = true;
             full_last_x_ = x;
             full_last_y_ = y;
-        } else {
-            full_backdrop_down_ = true;  // a click beside the image closes the view
+        } else if (!dbl) {
+            // A click beside the image closes the view (the second click of
+            // a double click on the button that opened it doesn't).
+            full_backdrop_down_ = true;
         }
+        return;
+    }
+    if (dbl && GetTickCount() - full_closed_at_ < GetDoubleClickTime()) {
+        mouse_down_ = false;  // the second click on the button that closed the view
         return;
     }
 
@@ -1313,12 +1351,14 @@ void Viewer::OnLButtonDown(int px, int py, bool dbl) {
             const ZoomToolbar t = ObjectToolbar(d);
             const int b = ZoomButtonAt(t, x, y);
             if (b >= 0) {
+                mouse_down_ = false;  // the release isn't a click on the image
                 ObjectButton(d, t.kinds[static_cast<size_t>(b)]);
                 return;
             }
         }
         if (IsZoomed(*d.object)) {
             if (dbl) {
+                mouse_down_ = false;
                 ObjectButton(d, ZoomButton::Reset);
                 return;
             }
@@ -1776,17 +1816,28 @@ void Viewer::UpdateObjectHover(float x, float y) {
 }
 
 void Viewer::ShowZoomStatus(float zoom) {
-    FlashStatus(std::wstring(Tr(L"Zoom: ", L"Масштаб: ")) + std::to_wstring(std::lround(zoom * 100.f)) + L"%");
+    FlashStatus(std::wstring(Tr(L"Image: ", L"Изображение: ")) + std::to_wstring(std::lround(zoom * 100.f)) + L"%");
 }
 
 void Viewer::ZoomObjectBy(const DrawnObject& d, float factor, float x, float y) {
     ZoomObject(*d.object, d.box, factor, x, y);
+    if (pan_object_ == d.object) {  // zoomed while dragging: drag on from here
+        pan_x_ = static_cast<float>(last_mouse_.x) / Scale();
+        pan_y_ = static_cast<float>(last_mouse_.y) / Scale();
+        pan_view_x_ = d.object->view_x;
+        pan_view_y_ = d.object->view_y;
+    }
     ShowZoomStatus(d.object->zoom);
     Invalidate();
 }
 
 void Viewer::ObjectButton(const DrawnObject& d, ZoomButton button) {
     const float cx = (d.visible.left + d.visible.right) * 0.5f, cy = (d.visible.top + d.visible.bottom) * 0.5f;
+    const unsigned off = ObjectButtonsOff(*d.object);
+    if ((button == ZoomButton::ZoomOut && (off & 1u)) || (button == ZoomButton::ZoomIn && (off & 2u)) ||
+        (button == ZoomButton::Reset && (off & 4u))) {
+        return;
+    }
     switch (button) {
     case ZoomButton::ZoomIn: ZoomObjectBy(d, kButtonZoomStep, cx, cy); break;
     case ZoomButton::ZoomOut: ZoomObjectBy(d, 1.f / kButtonZoomStep, cx, cy); break;
@@ -1819,7 +1870,8 @@ bool Viewer::OpenFullView(Block* leaf, const InlineObject* object) {
 
 void Viewer::CloseFullView() {
     full_.Close();
-    HookKeys(false);
+    if (!esc_held_) HookKeys(false);  // else once Esc is released (KeyHook)
+    full_closed_at_ = GetTickCount();
     full_pan_ = false;
     full_backdrop_down_ = false;
     mouse_down_ = false;  // the press that closed it is not a click on the document
@@ -1833,14 +1885,14 @@ void Viewer::DrawFullView() {
     if (full_.object && full_.object->image >= 0) {
         images_.Draw(rt_.Get(), full_.object->image, full_.ContentRect(view), &palette_, G().dw.Get(), kFullViewUiEm);
     }
-    const unsigned disabled = (full_.scale <= full_.min_scale * 1.0001f ? 0b101u : 0u) |
-                              (full_.scale >= full_.max_scale * 0.9999f ? 0b10u : 0u);
-    DrawZoomToolbar(rt_.Get(), renderer_.icons(), palette_, FullViewToolbar(), hover_button_, disabled);
+    DrawZoomToolbar(rt_.Get(), renderer_.icons(), palette_, FullViewToolbar(), hover_button_, FullViewButtonsOff(full_));
 }
 
 void Viewer::FullViewButton(ZoomButton button) {
     const D2D1_RECT_F v = ViewRect();
     const float cx = (v.left + v.right) * 0.5f, cy = (v.top + v.bottom) * 0.5f;
+    const unsigned off = FullViewButtonsOff(full_);
+    if ((button == ZoomButton::ZoomOut && (off & 1u)) || (button == ZoomButton::ZoomIn && (off & 2u))) return;
     switch (button) {
     case ZoomButton::ZoomIn: full_.ZoomAt(kButtonZoomStep, cx, cy, v); break;
     case ZoomButton::ZoomOut: full_.ZoomAt(1.f / kButtonZoomStep, cx, cy, v); break;
@@ -2344,19 +2396,41 @@ int g_key_hook_users = 0;
 }  // namespace
 
 LRESULT CALLBACK Viewer::KeyHook(int code, WPARAM wp, LPARAM lp) {
-    if (code == HC_ACTION && wp == PM_REMOVE) {
+    GUITHREADINFO gui{sizeof gui};
+    const bool menu = GetGUIThreadInfo(GetCurrentThreadId(), &gui) &&
+                      (gui.flags & (GUI_INMENUMODE | GUI_POPUPMENUMODE | GUI_SYSTEMMENUMODE));
+    if (code == HC_ACTION && wp == PM_REMOVE && !menu) {  // a menu takes its own keys
         MSG* m = reinterpret_cast<MSG*>(lp);
-        if (m->message == WM_KEYDOWN && (m->wParam == VK_ESCAPE || m->wParam == '0' || m->wParam == VK_NUMPAD0)) {
+        const bool esc = m->wParam == VK_ESCAPE;
+        if (m->message == WM_KEYDOWN && (esc || m->wParam == '0' || m->wParam == VK_NUMPAD0)) {
+            const bool repeat = (m->lParam & (1 << 30)) != 0;
             for (Viewer* v : G().viewers) {
-                if (v->full_.active() && (m->hwnd == v->hwnd_ || GetFocus() == v->hwnd_)) {
+                if (!(m->hwnd == v->hwnd_ || GetFocus() == v->hwnd_)) continue;
+                if (v->full_.active()) {
                     const WPARAM vk = m->wParam;
                     m->message = WM_NULL;  // not for the Lister
+                    if (esc) v->esc_held_ = true;
                     try {
                         v->FullViewKey(vk);
                     } catch (...) {
                     }
-                    break;
+                } else if (esc && v->esc_held_) {
+                    // Esc closed the view: its auto-repeat must not close the
+                    // Lister as well; a new press does.
+                    if (repeat) {
+                        m->message = WM_NULL;
+                    } else {
+                        v->esc_held_ = false;
+                        v->HookKeys(false);
+                    }
                 }
+                break;
+            }
+        } else if (m->message == WM_KEYUP && esc) {
+            for (Viewer* v : G().viewers) {
+                if (!v->esc_held_) continue;
+                v->esc_held_ = false;
+                if (!v->full_.active()) v->HookKeys(false);
             }
         }
     }
@@ -2479,12 +2553,15 @@ LRESULT Viewer::Proc(UINT msg, WPARAM wp, LPARAM lp) {
             LPCWSTR cursor = IDC_ARROW;
             if (full_.active()) {
                 const D2D1_RECT_F r = full_.ContentRect(ViewRect());
-                if (ZoomButtonAt(FullViewToolbar(), x, y) >= 0) cursor = IDC_HAND;
-                else if (full_.CanPan(ViewRect()) && x >= r.left && x < r.right && y >= r.top && y < r.bottom) cursor = IDC_SIZEALL;
+                const int b = ZoomButtonAt(FullViewToolbar(), x, y);
+                if (b >= 0 && !((FullViewButtonsOff(full_) >> b) & 1u)) cursor = IDC_HAND;
+                else if (b < 0 && full_.CanPan(ViewRect()) && x >= r.left && x < r.right && y >= r.top && y < r.bottom) cursor = IDC_SIZEALL;
             } else if (!(MaxScroll() > 0.5f && x >= ViewWidth() - 16.f)) {
                 const DrawnObject* d = ObjectAt(x, y);
                 const Hit hit = HitTest(x, y + scroll_y_);
-                if (d && d->object == hover_object_ && hover_button_ >= 0) cursor = IDC_HAND;
+                if (d && d->object == hover_object_ && hover_button_ >= 0) {
+                    if (!((ObjectButtonsOff(*d->object) >> hover_button_) & 1u)) cursor = IDC_HAND;
+                }
                 else if (d && IsZoomed(*d->object)) cursor = IDC_SIZEALL;
                 else if (hit.link >= 0 || hit.summary || copy_hover_ || (hit.image >= 0 && hit.on_text)) cursor = IDC_HAND;
                 else if (hit.on_text) cursor = IDC_IBEAM;

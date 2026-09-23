@@ -660,10 +660,24 @@ int main(int argc, char** ansi_argv) {
         send(WM_MOUSEMOVE, 0, bx, by);
         send(WM_LBUTTONDOWN, MK_LBUTTON, bx, by);
         send(WM_LBUTTONUP, 0, bx, by);
+        // The second click of a double click on the button lands beside the
+        // image in the view: it must stay open.
+        send(WM_LBUTTONDBLCLK, MK_LBUTTON, bx, by);
+        send(WM_LBUTTONUP, 0, bx, by);
+        send(WM_MOUSEMOVE, 0, s0.w / 2, s0.h - 8);
         const Shot s6 = grab("6-full-window");
         expect(diff(s0, s6, 0, 0, s0.w, s0.h) > s0.w * s0.h / 10, "the expand button opens the full-window view");
         const uint32_t corner = s6.at(4, s6.h - 4);
-        expect(corner == bg, "... on the page background");
+        expect(corner == bg, "... on the page background (and a double click doesn't close it)");
+        {
+            // Its buttons, top right of the window: the hovered one lights up
+            // and stays so through repaints.
+            const int fx = s6.w - em / 2 - em * 7 / 8, fy = em / 2 + em * 7 / 8;
+            send(WM_MOUSEMOVE, 0, fx - em * 4, fy);  // two buttons left of x: zoom in (1.75 + 0.25 em apart)
+            grab("6b-hover");
+            const Shot h2 = grab("6c-hover-again");
+            expect(diff(s6, h2, s6.w - em * 9, 0, s6.w, em * 3) > 20, "a hovered button of the view stays lit");
+        }
 
         POINT fc{s6.w / 2, s6.h / 2};
         ClientToScreen(viewer, &fc);
@@ -685,6 +699,16 @@ int main(int argc, char** ansi_argv) {
         SendMessageW(viewer, WM_MOUSEWHEEL, MAKEWPARAM(MK_CONTROL, WHEEL_DELTA), MAKELPARAM(tp.x, tp.y));
         const Shot s9 = grab("9-page-zoom");
         expect(diff(s0, s9, 0, 0, s0.w - 30, s0.h) > s0.w * s0.h / 20, "Ctrl+wheel beside it zooms the page");
+        // A new gesture: Ctrl+wheel down over the image at 1x zooms the page
+        // (back to 100%), not the image.
+        Sleep(600);
+        POINT ip{cx, cy};
+        ClientToScreen(viewer, &ip);
+        SendMessageW(viewer, WM_MOUSEWHEEL, MAKEWPARAM(MK_CONTROL, static_cast<WORD>(-WHEEL_DELTA)), MAKELPARAM(ip.x, ip.y));
+        away();
+        const Shot s10 = grab("10-page-zoom-back");
+        expect(diff(s0, s10, 0, 0, s0.w - 30, s0.h - static_cast<int>(60 * scale)) == 0,
+               "Ctrl+wheel down over an unzoomed image zooms the page out");
 
         close(viewer);
         DestroyWindow(host);

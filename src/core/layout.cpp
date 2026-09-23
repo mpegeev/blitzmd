@@ -130,7 +130,10 @@ private:
         const D2D1_RECT_F seen = D2D1::RectF(std::max(v.left, dc.clip.left), std::max(v.top, dc.clip.top),
                                              std::min(v.right, dc.clip.right), std::min(v.bottom, dc.clip.bottom));
         if (seen.right <= seen.left || seen.bottom <= seen.top) return;
-        dc.drawn->push_back(DrawnObject{dc.leaf, object_, v, seen});
+        try {  // nothing may unwind through DirectWrite
+            dc.drawn->push_back(DrawnObject{dc.leaf, object_, v, seen});
+        } catch (...) {
+        }
     }
 
     LayoutEngine* engine_;
