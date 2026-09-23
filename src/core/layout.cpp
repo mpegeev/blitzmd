@@ -151,6 +151,53 @@ private:
     float w_ = 0, baseline_ = 0;
 };
 
+// A flag emoji (flags.h): an SVG in a square the size of a color emoji
+// glyph, centered where Segoe UI Emoji centers its glyphs. It reports the
+// paragraph strut like text does, so the line keeps its height.
+constexpr float kEmojiAdvance = 1.375f;  // em, as Segoe UI Emoji
+constexpr float kEmojiBox = 1.f;         // em (a flag is as wide as a smiley)
+constexpr float kEmojiCenter = 0.33f;    // em above the baseline
+
+class EmojiObject final : public InlineObjectBase {
+public:
+    EmojiObject(LayoutEngine* engine, int index, float size, float strut_ascent, float strut_descent)
+        : engine_(engine), index_(index), size_(size), ascent_(strut_ascent), descent_(strut_descent) {}
+
+    HRESULT STDMETHODCALLTYPE Draw(void*, IDWriteTextRenderer*, FLOAT x, FLOAT y, BOOL, BOOL,
+                                   IUnknown*) override {
+        DrawContext& dc = engine_->draw_context();
+        if (dc.rt && dc.images) {
+            // y is the line baseline - strut ascent.
+            const float box = size_ * kEmojiBox;
+            const float left = x + (size_ * kEmojiAdvance - box) * 0.5f;
+            const float top = y + ascent_ - size_ * kEmojiCenter - box * 0.5f;
+            dc.images->Draw(dc.rt, index_, D2D1::RectF(left, top, left + box, top + box), dc.palette,
+                            engine_->dwrite(), size_);
+        }
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetMetrics(DWRITE_INLINE_OBJECT_METRICS* m) override {
+        m->width = size_ * kEmojiAdvance;
+        m->height = ascent_ + descent_;
+        m->baseline = ascent_;
+        m->supportsSideways = FALSE;
+        return S_OK;
+    }
+
+private:
+    LayoutEngine* engine_;
+    int index_;
+    float size_, ascent_, descent_;
+};
+
+// Font size of a run (inline code, <small>, <big>...).
+float RunFontSize(float size, uint32_t f) {
+    if (f & kSmall) size *= 0.85f;
+    if (f & kBig) size *= 1.2f;
+    if (f & (kCode | kKbd)) size *= (f & kKbd) ? 0.8f : 0.85f;
+    return size;
+}
+
 std::wstring FormatKey(const std::wstring& family, float size, uint16_t weight, bool italic) {
     return family + L"|" + std::to_wstring(static_cast<int>(size * 100.f + 0.5f)) + L"|" +
            std::to_wstring(weight) + (italic ? L"|i" : L"|n");
@@ -401,13 +448,8 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         if (f & kItalic) layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, rg);
         if (f & kStrike) layout->SetStrikethrough(TRUE, rg);
         if (f & kUnderline) layout->SetUnderline(TRUE, rg);
-        float size = st.size;
-        if (f & kSmall) size *= 0.85f;
-        if (f & kBig) size *= 1.2f;
-        if (f & (kCode | kKbd)) {
-            layout->SetFontFamilyName(mono_family_.c_str(), rg);
-            size *= (f & kKbd) ? 0.8f : 0.85f;
-        }
+        const float size = RunFontSize(st.size, f);
+        if (f & (kCode | kKbd)) layout->SetFontFamilyName(mono_family_.c_str(), rg);
         if (f & kMath) layout->SetFontFamilyName(L"Cambria Math", rg);
         if (size != st.size) layout->SetFontSize(size, rg);
         uint8_t color = 0xFF;
@@ -495,10 +537,25 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         }
     }
 
-    // Images.
+    // Images, and flag emoji over their characters.
     const float line_h = st.size * st.line_height;
     for (const InlineObject& o : b->objects) {
-        if (o.image < 0 || o.pos >= len || text[o.pos] != kObjectChar) continue;
+        if (o.image < 0 || o.pos >= len || o.length > len - o.pos) continue;
+        if (o.length > 1) {
+            float size = st.size;
+            for (const StyleRun& r : b->runs) {
+                if (r.start <= o.pos && o.pos < r.start + r.length) {
+                    size = RunFontSize(st.size, r.flags);
+                    break;
+                }
+            }
+            const FamilyMetrics& fm = MetricsOf(family);
+            auto* obj = new EmojiObject(this, o.image, size, st.size * fm.ascent, st.size * fm.descent);
+            layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, o.length});
+            obj->Release();
+            continue;
+        }
+        if (text[o.pos] != kObjectChar) continue;
         D2D1_SIZE_F sz = D2D1::SizeF(line_h, line_h);
         if (images_) sz = images_->LayoutSize(o.image, width >= kHugeWidth ? 0.f : width, line_h, Zoom());
         auto* obj = new ImageObject(this, o.image, sz.width, sz.height, st.size, spacing,
@@ -994,7 +1051,7 @@ void LayoutEngine::MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& ma
             widest = std::max(widest, line);
             longest = std::max(longest, word);
             for (const InlineObject& o : b->objects) {
-                if (images_ && o.image >= 0) {
+                if (images_ && o.image >= 0 && o.length == 1) {  // flag emoji were measured as text
                     const float iw = images_->LayoutSize(o.image, 0, st.size * st.line_height, Zoom()).width;
                     longest = std::max(longest, iw);
                     widest += iw;

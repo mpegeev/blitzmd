@@ -12,17 +12,21 @@
 //                                               settings dialog: live preview, Cancel, OK
 #include <windows.h>
 #include <psapi.h>
+#include <shellapi.h>
 
 #include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "core/texmath.h"
+#include "core/flags.h"
 #include "core/offscreen.h"
 #include "core/parser.h"
 #include "core/print.h"
+#include "core/svg.h"
 #include "core/util.h"
 #include "html_dump.h"
 #include "spec_runner.h"
@@ -97,7 +101,18 @@ double WorkingSetMb() {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** ansi_argv) {
+    // Arguments as UTF-8 (the ANSI ones lose emoji and most scripts).
+    std::vector<std::string> args;
+    std::vector<char*> utf8_argv;
+    int wargc = 0;
+    if (LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc)) {
+        for (int i = 0; i < wargc; ++i) args.push_back(WideToUtf8(wargv[i]));
+        LocalFree(wargv);
+    }
+    for (std::string& a : args) utf8_argv.push_back(a.data());
+    utf8_argv.push_back(nullptr);
+    char** argv = wargc == argc ? utf8_argv.data() : ansi_argv;
     SetConsoleOutputCP(CP_UTF8);
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
@@ -652,6 +667,88 @@ int main(int argc, char** argv) {
         std::printf(failures ? "reload FAILED\n" : "reload OK\n");
         return failures ? 1 : 0;
     }
+    if (cmd == "flags") {
+        // flags <file.md>: flag emoji detection, the embedded Twemoji set, and
+        // the flags of a document.
+        int failures = 0;
+        {
+            std::string md;
+            if (!LoadMarkdown(argv[2], md)) return 1;
+            auto doc = ParseMarkdown(md, FullPath(argv[2]));
+            size_t objects = 0;
+            for (const Block* leaf : doc->leaves) {
+                for (const InlineObject& o : leaf->objects) objects += o.length > 1 ? 1 : 0;
+            }
+            std::printf("%s: %zu flags\n", argv[2], objects);
+            if (objects == 0) ++failures;
+        }
+        struct Case {
+            const char* md;
+            const char* keys;  // expected flags, space separated
+        };
+        const Case cases[] = {
+            {"\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8", "us"},
+            {"a\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8 b \xF0\x9F\x87\xB7\xF0\x9F\x87\xBA.", "us ru"},
+            {"\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8\xF0\x9F\x87\xB7", "us"},              // odd count
+            {"\xF0\x9F\x87\xA6\xF0\x9F\x87\xA6", ""},                                // AA: no country
+            {"\xF0\x9F\x87\xA6\xF0\x9F\x87\xA6\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8", "us"},  // pairs from the start
+            {"\xF0\x9F\x87\xA6\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8", "au"},              // A U | S
+            {"\xF0\x9F\x8F\xB4\xF3\xA0\x81\xA7\xF3\xA0\x81\xA2\xF3\xA0\x81\xA5\xF3\xA0\x81\xAE\xF3\xA0\x81\xA7"
+             "\xF3\xA0\x81\xBF", "gbeng"},
+            {"\xF0\x9F\x8F\xB4\xF3\xA0\x81\xA7\xF3\xA0\x81\xA2\xF3\xA0\x81\xA5\xF3\xA0\x81\xAE\xF3\xA0\x81\xA7",
+             ""},  // no cancel tag
+            {"\xF0\x9F\x8F\xB4\xF3\xA0\x81\xA7\xF3\xA0\x81\xA2\xF3\xA0\x81\xB8\xF3\xA0\x81\xB9\xF3\xA0\x81\xBA"
+             "\xF3\xA0\x81\xBF", ""},  // gbxyz: unknown
+            {"x<sup>\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8</sup>", ""},
+            {"`\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8`", "us"},
+            {":ru: and :jp:", "ru jp"},
+            {"\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8", "us us"},
+        };
+        for (const Case& c : cases) {
+            auto doc = ParseMarkdown(c.md, L"C:\\flags.md");
+            std::string got;
+            size_t flag_images = 0;
+            for (const ImageRef& im : doc->images) flag_images += im.flag ? 1 : 0;
+            for (const Block* leaf : doc->leaves) {
+                for (const InlineObject& o : leaf->objects) {
+                    if (o.image < 0 || !doc->images[static_cast<size_t>(o.image)].flag) continue;
+                    if (!got.empty()) got += ' ';
+                    got += WideToUtf8(doc->images[static_cast<size_t>(o.image)].src);
+                    if (leaf->text.compare(o.pos, o.length, doc->images[static_cast<size_t>(o.image)].alt) != 0) {
+                        got += "(wrong range)";
+                    }
+                }
+            }
+            const std::wstring text = doc->PlainText(0, doc->text_length);
+            const bool text_kept = text.find(L'\xFFFC') == std::wstring::npos;
+            const bool deduped = flag_images <= 2;
+            const bool ok = got == c.keys && text_kept && deduped;
+            if (!ok) {
+                ++failures;
+                std::printf("FAIL: %s -> \"%s\" (expected \"%s\")\n", c.md, got.c_str(), c.keys);
+            }
+        }
+        // The whole set: every region code that exists unpacks and parses.
+        std::vector<std::string> keys;
+        for (char a = 'a'; a <= 'z'; ++a) {
+            for (char b = 'a'; b <= 'z'; ++b) keys.push_back(std::string{a, b});
+        }
+        keys.insert(keys.end(), {"gbeng", "gbsct", "gbwls", "gbzzz", ""});
+        const double t0 = NowMs();
+        std::vector<std::string> svgs = FlagSvgs(keys);
+        const double t1 = NowMs();
+        size_t found = 0, parsed = 0, bytes = 0;
+        for (std::string& svg : svgs) {
+            if (svg.empty()) continue;
+            ++found;
+            bytes += svg.size();
+            if (SvgImage::Parse(std::move(svg))) ++parsed;
+        }
+        std::printf("%zu flags (%zu KB of SVG) unpacked in %.1f ms, %zu parse\n", found, bytes >> 10, t1 - t0, parsed);
+        if (found != 262 || parsed != found) ++failures;
+        std::printf(failures ? "flags FAILED\n" : "flags OK\n");
+        return failures ? 1 : 0;
+    }
     if (cmd == "text") {
         // text <file.md>: the plain text "Select all + Copy" puts on the clipboard.
         std::string md;
@@ -741,6 +838,9 @@ int main(int argc, char** argv) {
             "\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82 ", "\xE6\x97\xA5\xE6\x9C\xAC ",
             "\xD9\x85\xD8\xB1\xD8\xAD\xD8\xA8\xD8\xA7 ", "\xF0\x9F\x9A\x80", "\xE2\x80\xA8", "\xEF\xBF\xBC",
             "\xC3", "\xFF", "\xED\xA0\x80", "\r\n", "\r", "[link]: /url\n", "[link]", "<https://a.b>",
+            // Regional indicators (flags pair them up) and tag characters.
+            "\xF0\x9F\x87\xBA", "\xF0\x9F\x87\xB8", "\xF0\x9F\x87\xA6", "\xF0\x9F\x8F\xB4",
+            "\xF3\xA0\x81\xA7\xF3\xA0\x81\xA2", "\xF3\xA0\x81\xBF", ":us:",
         };
         const size_t n_pieces = sizeof(kPieces) / sizeof(kPieces[0]);
         // YAML front matter fragments (a third of the documents start with one).

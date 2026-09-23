@@ -1,0 +1,4 @@
+// Resources the test tool shares with the plugin DLL.
+
+// Flag emoji (Twemoji, CC-BY 4.0), see scripts/gen_flags.py.
+FLAGS RCDATA "twemoji-flags.bin"

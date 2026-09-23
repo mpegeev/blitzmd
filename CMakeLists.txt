@@ -59,6 +59,7 @@ add_library(mdview_core STATIC
     src/core/texmath.cpp
     ${MDVIEW_HIGHLIGHT_SOURCE}
     src/core/emoji.cpp
+    src/core/flags.cpp
     src/core/theme.cpp
     src/core/settings.cpp
     src/core/settings_dialog.cpp
@@ -83,6 +84,9 @@ target_compile_options(mdview_core PRIVATE ${MDVIEW_CXX_OPTIONS})
 target_compile_definitions(mdview_core PUBLIC ${MDVIEW_DEFINITIONS})
 
 # ---- the Lister plugin DLL --------------------------------------------------
+# Resource scripts are not scanned for the files they embed.
+set_source_files_properties(src/plugin.rc tests/mdview_test.rc PROPERTIES OBJECT_DEPENDS
+    "${CMAKE_SOURCE_DIR}/src/twemoji-flags.bin;${CMAKE_SOURCE_DIR}/src/mdview.manifest")
 add_library(mdview SHARED src/plugin.cpp src/plugin.def src/plugin.rc)
 target_link_libraries(mdview PRIVATE mdview_core delayimp)
 # Load rarely needed system DLLs only when used (remote images, printing).
@@ -95,7 +99,7 @@ else()
 endif()
 
 # ---- test tool: spec conformance, PNG rendering, benchmarks -----------------
-add_executable(mdview_test tests/mdview_test.cpp tests/spec_runner.cpp tests/html_dump.cpp)
+add_executable(mdview_test tests/mdview_test.cpp tests/spec_runner.cpp tests/html_dump.cpp tests/mdview_test.rc)
 target_link_libraries(mdview_test PRIVATE mdview_core md4c_html)
 target_compile_options(mdview_test PRIVATE ${MDVIEW_CXX_OPTIONS})
 set_target_properties(mdview_test PROPERTIES LINK_FLAGS "/SUBSYSTEM:CONSOLE")

@@ -7,6 +7,7 @@ pluginst.inf text eol=crlf
 *.bmp binary
 *.ico binary
 *.webp binary
+*.bin binary
 # Encoding test samples must be kept byte-exact.
 samples/**/*encoding* -text
 samples/**/*crlf* -text

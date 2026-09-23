@@ -1116,6 +1116,7 @@ Viewer::Hit Viewer::HitTest(float x, float y) const {
         hit.link = static_cast<int>(link);
         const uint32_t local = hit.pos - leaf->text_start;
         for (const InlineObject& o : leaf->objects) {
+            if (o.length != 1) continue;  // flag emoji behave as text
             if (o.pos == local || o.pos + 1 == local) {
                 hit.image = o.image;
                 if (o.pos + 1 == local) {

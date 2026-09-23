@@ -22,6 +22,7 @@ This folder is a corpus of Markdown documents for checking the native (Direct2D/
 | [14-encoding-utf16le-nobom.md](14-encoding-utf16le-nobom.md) | UTF-16 LE, **no BOM**, LF | 2.7 KB | Heuristic detection (a `00` byte at every odd offset). |
 | [15-encoding-invalid-utf8.md](15-encoding-invalid-utf8.md) | UTF-8 with 7 invalid sequences, LF | 1.4 KB | A few bad bytes must become U+FFFD, not flip the whole document into a legacy code page. |
 | [16-front-matter.md](16-front-matter.md) | UTF-8, LF | 1.3 KB | YAML front matter shown as a two-column key/value table (nested mappings as nested tables, short lists joined with commas), while `---` elsewhere stays a thematic break or setext underline. |
+| [17-flags.md](17-flags.md) | UTF-8, LF | 1.7 KB | Flag emoji (regional indicator pairs, shortcodes, England/Scotland/Wales tag sequences) in text, headings, tables, lists, links, inline code and code blocks; odd counts, non-countries and superscript stay letters. |
 
 ## Images (`img/`)
 

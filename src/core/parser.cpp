@@ -13,6 +13,7 @@
 #include <unordered_set>
 
 #include "core/emoji.h"
+#include "core/flags.h"
 #include "core/frontmatter.h"
 #include "core/highlight.h"
 #include "core/html.h"
@@ -1669,6 +1670,7 @@ std::unique_ptr<Document> ParseMarkdown(std::string_view utf8, std::wstring_view
     const MD_SIZE size = static_cast<MD_SIZE>(std::min<size_t>(utf8.size(), 0x7FFFFFFF));
     md_parse(utf8.data(), size, &parser, &builder);
     builder.Finish();
+    if (options.footnote_nesting == 0) AddFlagImages(*doc);  // footnote bodies are part of *doc by now
     return doc;
 }
 

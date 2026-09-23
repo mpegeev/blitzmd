@@ -260,6 +260,27 @@ void Renderer::DrawInlineBackgrounds(Block* b, IDWriteTextLayout* tl, D2D1_POINT
         if (!count) continue;
         hit_buf_.resize(count);
         if (FAILED(tl->HitTestTextRange(s0, s1 - s0, o.x, o.y, hit_buf_.data(), count, &count))) continue;
+        // One pill per line: an inline object (a flag emoji) splits the range
+        // into adjacent pieces; its box keeps the height of the text's.
+        UINT32 merged = 0;
+        for (UINT32 k = 0; k < count; ++k) {
+            const auto& h = hit_buf_[k];
+            if (merged > 0) {
+                auto& prev = hit_buf_[merged - 1];
+                const bool same_line = std::fabs(prev.top + prev.height - (h.top + h.height)) < 1.f;
+                if (same_line && std::fabs(prev.left + prev.width - h.left) < 1.f) {
+                    prev.width = h.left + h.width - prev.left;
+                    if (!prev.isText && h.isText) {
+                        prev.top = h.top;
+                        prev.height = h.height;
+                        prev.isText = TRUE;
+                    }
+                    continue;
+                }
+            }
+            hit_buf_[merged++] = h;
+        }
+        count = merged;
         for (UINT32 k = 0; k < count; ++k) {
             const auto& h = hit_buf_[k];
             float left = h.left, right = h.left + h.width;
@@ -327,7 +348,7 @@ void Renderer::DrawLeaf(Block* b) {
     if (sel.end > sel.start && !b->objects.empty()) {
         for (const InlineObject& obj : b->objects) {
             const uint32_t pos = a + obj.pos;
-            if (pos >= sel.start && pos < sel.end) FillRanges(tl, o, obj.pos, 1, Brush(kColorSelection));
+            if (pos >= sel.start && pos < sel.end) FillRanges(tl, o, obj.pos, obj.length, Brush(kColorSelection));
         }
     }
 }
