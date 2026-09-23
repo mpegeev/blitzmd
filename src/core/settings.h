@@ -1,6 +1,6 @@
 // Plugin settings, stored in mdview.ini next to Total Commander's plugin ini
 // (see ListSetDefaultParams). All values have sensible defaults; the file is
-// only written when the user changes something from the context menu.
+// only written when the user changes something (context menu, settings dialog).
 #pragma once
 
 #include <string>
@@ -28,6 +28,8 @@ struct Settings {
     int wrap_code = -1;                  // -1: follow Lister's wrap option, 0/1 forced
     bool line_numbers = true;            // line numbers in code blocks
     bool auto_reload = true;             // re-read the file when it changes on disk
+
+    bool operator==(const Settings&) const = default;
 };
 
 // Process-wide settings instance.

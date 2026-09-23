@@ -61,6 +61,7 @@ add_library(mdview_core STATIC
     src/core/emoji.cpp
     src/core/theme.cpp
     src/core/settings.cpp
+    src/core/settings_dialog.cpp
     src/core/images.cpp
     src/core/svg.cpp
     src/core/layout.cpp

@@ -71,4 +71,8 @@ std::string DecodeTextToUtf8(std::string_view bytes);
 // Places Unicode text on the clipboard.
 bool CopyTextToClipboard(HWND owner, std::wstring_view text);
 
+// The UI speaks Russian when Windows does, English otherwise.
+bool IsRussianUi();
+inline const wchar_t* Tr(const wchar_t* en, const wchar_t* ru) { return IsRussianUi() ? ru : en; }
+
 }  // namespace mdv
