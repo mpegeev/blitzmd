@@ -347,6 +347,7 @@ void Renderer::DrawLeaf(Block* b) {
     // Selected images get a tinted overlay (the selection is behind them).
     if (sel.end > sel.start && !b->objects.empty()) {
         for (const InlineObject& obj : b->objects) {
+            if (obj.image < 0) continue;  // formulas are text: the selection is behind them
             const uint32_t pos = a + obj.pos;
             if (pos >= sel.start && pos < sel.end) FillRanges(tl, o, obj.pos, obj.length, Brush(kColorSelection));
         }

@@ -3,8 +3,8 @@
 // A document is a tree of blocks. Container blocks (quotes, lists, tables,
 // alerts, <div>s, ...) hold child blocks; leaf blocks (paragraphs, headings,
 // code blocks, summaries) hold UTF-16 text plus style runs covering it. Inline
-// images are U+FFFC characters referencing Document::images; flag emoji are
-// images drawn over their own characters.
+// images are U+FFFC characters referencing Document::images; flag emoji and
+// formulas are drawn over their own characters (the TeX source for math).
 #pragma once
 
 #include <cstdint>
@@ -74,11 +74,19 @@ struct StyleRun {
 };
 
 // An inline object: an image occupying one U+FFFC character of the leaf
-// text, or a flag emoji covering its original characters (length > 1).
+// text, a flag emoji covering its original characters (length > 1), or a
+// formula covering its TeX source.
 struct InlineObject {
     uint32_t pos = 0;
     uint32_t length = 1;  // text units covered
     int32_t image = -1;   // index into Document::images
+    int32_t math = -1;    // index into Document::maths
+};
+
+// A formula: $…$, $$…$$ or a ```math block.
+struct MathRef {
+    std::wstring tex;
+    bool display = false;
 };
 
 struct Link {
@@ -160,6 +168,7 @@ struct Document {
     std::vector<Block*> leaves;               // text-bearing blocks in document order
     std::vector<Link> links;
     std::vector<ImageRef> images;
+    std::vector<MathRef> maths;
     std::unordered_map<std::wstring, Anchor> anchors;
     std::wstring path;                        // file the document was loaded from
     std::wstring base_dir;                    // for resolving relative links/images

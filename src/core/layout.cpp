@@ -5,6 +5,7 @@
 
 #include "core/highlight.h"
 #include "core/images.h"
+#include "core/mathlayout.h"
 
 namespace mdv {
 namespace {
@@ -190,6 +191,45 @@ private:
     float size_, ascent_, descent_;
 };
 
+// A formula (mathlayout.h) over its TeX source. It sits on the baseline like
+// text and reports the paragraph strut, so only a formula taller than the
+// text makes its line taller (the excess pre-divided by the line spacing,
+// like images, so no extra leading appears).
+class MathObject final : public InlineObjectBase {
+public:
+    MathObject(LayoutEngine* engine, std::shared_ptr<const MathBox> box, float scale, float strut_ascent,
+               float strut_descent, float spacing)
+        : engine_(engine), box_(std::move(box)), scale_(scale) {
+        const float k = 1.f / std::max(spacing, 0.5f);
+        ascent_ = std::max(strut_ascent, box_->ascent * scale_ * k);
+        descent_ = std::max(strut_descent, box_->descent * scale_ * k);
+    }
+
+    HRESULT STDMETHODCALLTYPE Draw(void*, IDWriteTextRenderer*, FLOAT x, FLOAT y, BOOL, BOOL,
+                                   IUnknown* effect) override {
+        DrawContext& dc = engine_->draw_context();
+        MathTypesetter* math = engine_->math();
+        if (!dc.rt || !math) return S_OK;
+        ID2D1Brush* brush = dc.default_brush;
+        ComPtr<ID2D1Brush> effect_brush;
+        if (effect && SUCCEEDED(effect->QueryInterface(IID_PPV_ARGS(&effect_brush)))) brush = effect_brush.Get();
+        math->Draw(dc.rt, *box_, D2D1::Point2F(x, y + ascent_), scale_, brush);  // y: baseline - ascent
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetMetrics(DWRITE_INLINE_OBJECT_METRICS* m) override {
+        m->width = box_->width * scale_;
+        m->height = ascent_ + descent_;
+        m->baseline = ascent_;
+        m->supportsSideways = FALSE;
+        return S_OK;
+    }
+
+private:
+    LayoutEngine* engine_;
+    std::shared_ptr<const MathBox> box_;
+    float scale_, ascent_ = 0, descent_ = 0;
+};
+
 // Font size of a run (inline code, <small>, <big>...).
 float RunFontSize(float size, uint32_t f) {
     if (f & kSmall) size *= 0.85f;
@@ -247,6 +287,7 @@ void LayoutEngine::SetDocument(Document* doc) {
     doc_ = doc;
     leaves_.clear();
     tables_.clear();
+    math_boxes_.clear();
     if (doc_) {
         leaves_.resize(doc_->leaves.size());
         UpdateVisibility(doc_->root, true);
@@ -283,7 +324,34 @@ void LayoutEngine::SetConfig(const LayoutConfig& cfg) {
     formats_.clear();
     labels_.clear();
     numbers_.clear();
+    math_boxes_.clear();
     InvalidateMeasurements();
+}
+
+MathTypesetter* LayoutEngine::math() {
+    if (!math_ && !math_failed_ && dw_) {
+        math_ = std::make_unique<MathTypesetter>();
+        if (!math_->Init(dw_.Get())) {
+            math_.reset();
+            math_failed_ = true;
+        }
+    }
+    return math_.get();
+}
+
+std::shared_ptr<const MathBox> LayoutEngine::MathFormula(int32_t index, const std::wstring& family, float size) {
+    MathTypesetter* m = math();
+    if (!m || !doc_ || index < 0 || static_cast<size_t>(index) >= doc_->maths.size()) return nullptr;
+    // Like MathJax, math is scaled so its x-height matches the text's.
+    const float ratio = std::clamp(MetricsOf(family).x_height / m->XHeight(), 0.85f, 1.3f);
+    const float math_size = size * ratio;
+    const uint64_t key = (static_cast<uint64_t>(index) << 32) | static_cast<uint32_t>(math_size * 64.f + 0.5f);
+    auto it = math_boxes_.find(key);
+    if (it != math_boxes_.end()) return it->second;
+    const MathRef& ref = doc_->maths[static_cast<size_t>(index)];
+    auto box = m->Layout(ref.tex, ref.display, math_size);
+    math_boxes_.emplace(key, box);
+    return box;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,6 +394,7 @@ const LayoutEngine::FamilyMetrics& LayoutEngine::MetricsOf(const std::wstring& f
                 const float upem = fm.designUnitsPerEm;
                 m.ascent = fm.ascent / upem;
                 m.descent = (fm.descent + fm.lineGap) / upem;
+                if (fm.xHeight > 0) m.x_height = fm.xHeight / upem;
             }
         }
     }
@@ -537,20 +606,32 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         }
     }
 
-    // Images, and flag emoji over their characters.
+    // Images, and flag emoji and formulas over their characters.
     const float line_h = st.size * st.line_height;
     for (const InlineObject& o : b->objects) {
-        if (o.image < 0 || o.pos >= len || o.length > len - o.pos) continue;
-        if (o.length > 1) {
-            float size = st.size;
+        if (o.pos >= len || o.length > len - o.pos) continue;
+        auto run_size = [&] {
             for (const StyleRun& r : b->runs) {
-                if (r.start <= o.pos && o.pos < r.start + r.length) {
-                    size = RunFontSize(st.size, r.flags);
-                    break;
-                }
+                if (r.start <= o.pos && o.pos < r.start + r.length) return RunFontSize(st.size, r.flags);
             }
+            return st.size;
+        };
+        if (o.math >= 0) {
+            const std::shared_ptr<const MathBox> box = MathFormula(o.math, family, run_size());
+            if (!box) continue;  // no math font: the source stays visible
+            // Too wide for the line: shrink (down to half) rather than overflow.
+            float scale = 1.f;
+            if (width < kHugeWidth && box->width > width && width > 0) scale = std::max(0.5f, width / box->width);
             const FamilyMetrics& fm = MetricsOf(family);
-            auto* obj = new EmojiObject(this, o.image, size, st.size * fm.ascent, st.size * fm.descent);
+            auto* obj = new MathObject(this, box, scale, st.size * fm.ascent, st.size * fm.descent, spacing);
+            layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, o.length});
+            obj->Release();
+            continue;
+        }
+        if (o.image < 0) continue;
+        if (o.length > 1) {
+            const FamilyMetrics& fm = MetricsOf(family);
+            auto* obj = new EmojiObject(this, o.image, run_size(), st.size * fm.ascent, st.size * fm.descent);
             layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, o.length});
             obj->Release();
             continue;
@@ -566,7 +647,7 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
     return layout;
 }
 
-float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width) const {
+float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width) {
     const LeafStyle& st = s.style;
     const float line_h = st.size * st.line_height;
     const std::wstring& t = b->text;
@@ -589,19 +670,32 @@ float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width
         lines += std::max(1.f, std::ceil(col / per_line));
         return lines * line_h;
     }
-    float total;
-    if (s.nowrap_w > 0) {
-        total = s.nowrap_w;
-    } else {
-        float units = 0;
-        for (wchar_t c : t) units += (c >= 0x1100) ? 1.f : 0.52f;
-        total = units * st.size;
+    // Formulas count with their typeset size (cheap, cached) instead of
+    // their TeX source; a tall one adds its extra height.
+    float total = 0, formulas_w = 0, extra_h = 0;
+    size_t next = 0;
+    float units = 0;
+    for (size_t i = 0; i < t.size(); ++i) {
+        const wchar_t c = t[i];
+        if (next < b->objects.size() && b->objects[next].pos == i) {
+            const InlineObject& o = b->objects[next++];
+            if (o.math >= 0) {
+                if (const auto box = MathFormula(o.math, st.mono ? mono_family_ : cfg_.font_family, st.size)) {
+                    formulas_w += box->width;
+                    extra_h += std::max(0.f, box->ascent + box->descent - line_h);
+                    i += o.length - 1;
+                    continue;
+                }
+            }
+        }
+        units += (c >= 0x1100) ? 1.f : 0.52f;
     }
+    total = s.nowrap_w > 0 ? s.nowrap_w : units * st.size + formulas_w;
     float lines = std::max(1.f, std::ceil(total / std::max(width, 1.f) * 1.04f));
     for (wchar_t c : t) {
         if (c == 0x2028) lines += 1.f;
     }
-    return lines * line_h;
+    return lines * line_h + extra_h;
 }
 
 float LayoutEngine::MeasureLeaf(Block* b, float width, bool exact) {
@@ -948,7 +1042,10 @@ float LayoutEngine::LayoutLeaf(Block* b, float x, float y, float w, const Ctx& c
     } else {
         const float est = EstimateLeaf(b, s, tw);
         const bool is_near = y < exact_y1_ && y + est + pad_t + pad_b > exact_y0_;
-        th = MeasureLeaf(b, tw, is_near || !b->objects.empty() || s.layout != nullptr);
+        // Images can't be estimated (their sizes vary too much): measured right away.
+        const bool images = std::any_of(b->objects.begin(), b->objects.end(),
+                                        [](const InlineObject& o) { return o.image >= 0 && o.length == 1; });
+        th = MeasureLeaf(b, tw, is_near || images || s.layout != nullptr);
     }
     if (!s.exact) ++estimated_count_;
     s.tx = x + pad_l;
@@ -1033,7 +1130,21 @@ void LayoutEngine::MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& ma
             const LeafStyle st = ResolveStyle(b, ctx);
             const float cw = st.mono ? st.size * 0.6f : st.size * 0.52f;
             float line = 0, word = 0, longest = 0, widest = 0;
-            for (wchar_t c : b->text) {
+            size_t next = 0;  // objects are in text order
+            const std::wstring& family = st.mono ? MonoFamily() : cfg_.font_family;
+            for (size_t i = 0; i < b->text.size(); ++i) {
+                while (next < b->objects.size() && b->objects[next].pos < i) ++next;
+                if (next < b->objects.size() && b->objects[next].pos == i && b->objects[next].math >= 0) {
+                    // A formula counts with its typeset width, not its source.
+                    const auto box = MathFormula(b->objects[next].math, family, st.size);
+                    if (box) {
+                        word += box->width;
+                        line += box->width;
+                        i += b->objects[next].length - 1;
+                        continue;
+                    }
+                }
+                const wchar_t c = b->text[i];
                 const float adv = (c >= 0x1100 && !st.mono) ? st.size : cw;
                 if (c == L'\n' || c == 0x2028) {
                     widest = std::max(widest, line);

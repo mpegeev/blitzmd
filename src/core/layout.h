@@ -13,6 +13,7 @@
 #include <dwrite_3.h>
 
 #include <algorithm>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -25,6 +26,8 @@ namespace mdv {
 
 class ImageStore;
 class LayoutEngine;
+class MathTypesetter;
+struct MathBox;
 
 struct LayoutConfig {
     std::wstring font_family = L"Segoe UI";
@@ -150,6 +153,8 @@ public:
 
     DrawContext& draw_context() { return draw_ctx_; }
     ImageStore* images() const { return images_; }
+    // Formula typesetter (created on first use; nullptr without a math font).
+    MathTypesetter* math();
     Palette* palette() const { return palette_; }
 
     // Details toggling: marks descendants visible/hidden.
@@ -180,13 +185,14 @@ private:
 
     LeafStyle ResolveStyle(const Block* b, const Ctx& ctx) const;
     float MeasureLeaf(Block* b, float width, bool exact);
-    float EstimateLeaf(const Block* b, const LeafState& s, float width) const;
+    float EstimateLeaf(const Block* b, const LeafState& s, float width);
     void MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& max_w, bool estimate);
     ComPtr<IDWriteTextLayout> BuildTextLayout(Block* b, const LeafStyle& st, float width);
     IDWriteTextFormat* Format(const std::wstring& family, float size, uint16_t weight, bool italic);
     // Ascent, descent (+ line gap) and their sum per em of a font family.
     struct FamilyMetrics {
         float ascent = 0.92f, descent = 0.41f;
+        float x_height = 0.5f;
         float natural() const { return ascent + descent; }
     };
     const FamilyMetrics& MetricsOf(const std::wstring& family);
@@ -216,6 +222,11 @@ private:
     };
     std::unordered_map<uint64_t, NumberLabel> numbers_;   // (size, number) -> label
     float GutterWidth(const Block* b, const LeafStyle& st);
+    // A formula of the document laid out at the math size for `family` / `size`.
+    std::shared_ptr<const MathBox> MathFormula(int32_t index, const std::wstring& family, float size);
+    std::unique_ptr<MathTypesetter> math_;
+    bool math_failed_ = false;
+    std::unordered_map<uint64_t, std::shared_ptr<const MathBox>> math_boxes_;  // (index, size) -> box
     float viewport_w_ = 0.f;
     float doc_h_ = 0.f;
     float doc_w_ = 0.f;

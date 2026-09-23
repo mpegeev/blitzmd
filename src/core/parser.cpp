@@ -17,7 +17,6 @@
 #include "core/frontmatter.h"
 #include "core/highlight.h"
 #include "core/html.h"
-#include "core/texmath.h"
 #include "core/util.h"
 #include "md4c.h"
 
@@ -333,6 +332,7 @@ private:
     void AppendNormal(std::wstring_view s);
     void FlushText();
     void AppendMath(const std::wstring& tex, bool display);
+    void AddMath(Block* leaf, const std::wstring& tex, std::wstring source, bool display);
     void AppendImage(ImageRef img);
     void RegisterAnchor(const std::wstring& id);
     void BindPendingAnchors(Block* b);
@@ -539,15 +539,11 @@ void Builder::FinalizeCode(Block* b) {
         b->runs.clear();
         b->type = BlockType::Paragraph;
         b->align = Align::Center;
-        std::vector<MathPiece> pieces;
-        TexToUnicode(tex, true, pieces);
-        for (MathPiece& p : pieces) {
-            for (wchar_t& c : p.text) {
-                if (c == L'\n') c = kLineBreak;
-            }
-            AppendToLeaf(b, p.text, kMath | kMathDisplay | p.flags, -1);
+        if (Trim(tex).empty()) {
+            AppendToLeaf(b, L"​", 0, -1);
+            return;
         }
-        if (b->text.empty()) AppendToLeaf(b, L"​", 0, -1);
+        AddMath(b, tex, tex, true);
         return;
     }
     if (b->from_html) {
@@ -704,16 +700,38 @@ void Builder::AppendNormal(std::wstring_view text) {
     Append(w.substr(last));
 }
 
-void Builder::AppendMath(const std::wstring& tex, bool display) {
-    std::vector<MathPiece> pieces;
-    TexToUnicode(tex, display, pieces);
-    const uint32_t base = kMath | (display ? kMathDisplay : 0);
-    for (MathPiece& p : pieces) {
-        for (wchar_t& c : p.text) {
-            if (c == L'\n') c = kLineBreak;
-        }
-        Append(p.text, base | p.flags);
+// A formula becomes an inline object over its source, so copying and
+// searching see the TeX.
+void Builder::AppendMath(const std::wstring& source_tex, bool display) {
+    if (hidden_depth_ > 0) return;
+    std::wstring delimiter = display ? L"$$" : L"$";
+    std::wstring tex = source_tex;
+    if (tex.size() >= 2 && tex.front() == L'`' && tex.back() == L'`') {
+        // GitHub's $`...`$ form: the backticks are delimiters.
+        tex = tex.substr(1, tex.size() - 2);
+        delimiter += L'`';
     }
+    const std::wstring closing(delimiter.rbegin(), delimiter.rend());
+    if (image_depth_ > 0) {
+        image_alt_.append(delimiter + tex + closing);
+        return;
+    }
+    Block* leaf = EnsureLeaf();
+    if (!leaf) return;
+    AddMath(leaf, tex, delimiter + tex + closing, display);
+}
+
+void Builder::AddMath(Block* leaf, const std::wstring& tex, std::wstring source, bool display) {
+    for (wchar_t& c : source) {
+        if (c == L'\n' || c == L'\r' || c == L'\t') c = L' ';
+    }
+    InlineObject obj;
+    obj.pos = static_cast<uint32_t>(leaf->text.size());
+    obj.length = static_cast<uint32_t>(source.size());
+    obj.math = static_cast<int32_t>(doc_.maths.size());
+    doc_.maths.push_back(MathRef{tex, display});
+    leaf->objects.push_back(obj);
+    AppendToLeaf(leaf, source, mask_ | kMath | (display ? kMathDisplay : 0), links_.empty() ? -1 : links_.back());
 }
 
 void Builder::FlushText() {
@@ -904,8 +922,10 @@ void Builder::AppendFootnoteBody(Block* def) {
     std::unique_ptr<Document> sub = ParseMarkdown(it->second, doc_.path, sub_opt);
     const int32_t link_off = static_cast<int32_t>(doc_.links.size());
     const int32_t image_off = static_cast<int32_t>(doc_.images.size());
+    const int32_t math_off = static_cast<int32_t>(doc_.maths.size());
     for (Link& l : sub->links) doc_.links.push_back(std::move(l));
     for (ImageRef& im : sub->images) doc_.images.push_back(std::move(im));
+    for (MathRef& m : sub->maths) doc_.maths.push_back(std::move(m));
     for (auto& up : sub->storage) {
         Block* b = up.get();
         for (StyleRun& r : b->runs) {
@@ -913,6 +933,7 @@ void Builder::AppendFootnoteBody(Block* def) {
         }
         for (InlineObject& o : b->objects) {
             if (o.image >= 0) o.image += image_off;
+            if (o.math >= 0) o.math += math_off;
         }
         b->leaf_index = -1;
     }

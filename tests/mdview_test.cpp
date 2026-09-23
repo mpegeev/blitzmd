@@ -15,6 +15,7 @@
 #include <shellapi.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -23,6 +24,7 @@
 
 #include "core/texmath.h"
 #include "core/flags.h"
+#include "core/mathlayout.h"
 #include "core/offscreen.h"
 #include "core/parser.h"
 #include "core/print.h"
@@ -749,6 +751,139 @@ int main(int argc, char** ansi_argv) {
         std::printf(failures ? "flags FAILED\n" : "flags OK\n");
         return failures ? 1 : 0;
     }
+    if (cmd == "math") {
+        // math <file.md> [iterations]: TeX parsing, layout of the file's
+        // formulas, hostile input and a TeX fuzzer (no crash, bounded time).
+        int failures = 0;
+        struct Case {
+            const char* tex;
+            const char* dump;
+        };
+        const Case cases[] = {
+            {"x^2_i", "list(scripts(g:𝑥,list(g:𝑖),list(g:2)))"},
+            {"\\frac12", "list(frac(list(g:1),list(g:2)))"},
+            {"a-b", "list(g:𝑎,g:−,g:𝑏)"},
+            {"\\sum_{i=1}^n", "list(scripts(g:∑,list(g:𝑖,g:=,g:1),list(g:𝑛)))"},
+            {"\\left( x \\middle| y \\right.", "list(fenced:(|.(list(g:𝑥),list(g:𝑦)))"},
+            {"\\begin{pmatrix} 1 & 2 \\\\ 3 & 4 \\end{pmatrix}",
+             "list(array:c[()](list(list(g:1),list(g:2)),list(list(g:3),list(g:4))))"},
+            {"\\begin{cases} 1 & x \\\\ 0 & y \\end{cases}",
+             "list(array:ll[{.](list(list(g:1),list(g:𝑥)),list(list(g:0),list(g:𝑦))))"},
+            {"\\text{if } x", "list(list(text:if ),g:𝑥)"},
+            {"\\color{red} x + \\textcolor{blue}{y}", "list(g:𝑥#ff0000,g:+#ff0000,g:𝑦#0000ff)"},
+            {"\\foo{x}", "list(text:\\foo!,list(g:𝑥))"},
+            {"f'(x)", "list(g:𝑓,g:′,g:(,g:𝑥,g:))"},
+            {"\\not= \\not\\in", "list(g:≠,g:∉)"},
+            {"{a \\over b}", "list(list(frac(list(g:𝑎),list(g:𝑏))))"},
+            {"\\sqrt[3]{x}", "list(sqrt(list(g:𝑥),list(g:3)))"},
+            {"\\overbrace{x}^{n}", "list(scripts(over:⏞(list(g:𝑥),list),list,list(g:𝑛)))"},
+            {"\\mathbb{R}\\mathbf{v}\\boldsymbol{\\alpha}", "list(g:ℝ,g:𝐯,g:𝜶)"},
+            {"a \\\\ b", "list(array:c(list(list(g:𝑎)),list(list(g:𝑏))))"},
+            {"\\binom{n}{k}", "list(frac[()](list(g:𝑛),list(g:𝑘)))"},
+            {"\\big( \\Bigr]", "list(delim:(,delim:])"},
+            {"\\alpha\\Gamma\\partial", "list(g:𝛼,g:Γ,g:𝜕)"},
+            {"\\lim_{x\\to 0}", "list(scripts(text:lim,list(g:𝑥,g:→,g:0),list))"},
+        };
+        for (const Case& c : cases) {
+            const std::string got = WideToUtf8(DumpMath(ParseTex(Utf8ToWide(c.tex))));
+            if (got != c.dump) {
+                std::printf("FAIL: %s\n  got      %s\n  expected %s\n", c.tex, got.c_str(), c.dump);
+                ++failures;
+            }
+        }
+        ComPtr<IDWriteFactory> dw;
+        DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(dw.GetAddressOf()));
+        MathTypesetter ts;
+        if (!dw || !ts.Init(dw.Get())) {
+            std::printf("math FAILED: no math font\n");
+            return 1;
+        }
+        auto finite = [](float v) { return std::isfinite(v) && std::fabs(v) < 1e7f; };
+        auto sane = [&](const MathBox& b) {
+            if (!finite(b.width) || !finite(b.ascent) || !finite(b.descent) || b.width < 0) return false;
+            for (const auto& g : b.glyphs) {
+                if (!finite(g.x) || !finite(g.y) || !(g.size > 0)) return false;
+            }
+            for (const auto& r : b.rules) {
+                if (!finite(r.x) || !finite(r.y) || !finite(r.w) || !finite(r.h)) return false;
+            }
+            return true;
+        };
+        // Every formula of the file, in both styles.
+        std::string md;
+        if (!LoadMarkdown(argv[2], md)) return 1;
+        auto doc = ParseMarkdown(md, FullPath(argv[2]));
+        for (const MathRef& m : doc->maths) {
+            for (bool display : {false, true}) {
+                auto box = ts.Layout(m.tex, display, 16.f);
+                if (!sane(*box) || box->width <= 0 || box->glyphs.empty()) {
+                    std::printf("FAIL: layout of %s\n", WideToUtf8(m.tex).c_str());
+                    ++failures;
+                }
+            }
+        }
+        std::printf("%zu formulas of %s laid out\n", doc->maths.size(), argv[2]);
+        // Hostile input: deep nesting, huge and malformed sources.
+        auto repeat = [](const wchar_t* s, int n) {
+            std::wstring r;
+            for (int i = 0; i < n; ++i) r += s;
+            return r;
+        };
+        const std::wstring hostile[] = {
+            std::wstring(20000, L'{'), repeat(L"\\sqrt", 5000), repeat(L"x^", 5000), repeat(L"\\left(", 3000),
+            repeat(L"\\begin{matrix}", 500), repeat(L"\\frac", 5000), repeat(L"\\text{", 2000),
+            repeat(L"\\textbf{", 3000), std::wstring(30000, L'x'), repeat(L"&\\\\", 3000), repeat(L"\\overbrace{", 1000),
+            repeat(L"\\mathbb{", 1000), repeat(L"\\text{$", 1000), repeat(L"{\\over", 2000), repeat(L"\\sqrt[", 2000),
+            repeat(L"\\substack{", 500), repeat(L"\\xrightarrow[", 500), repeat(L"\\qquad", 3000),
+            L"\\hspace{1e30em}\\kern-1e30mu", L"\\color{#zzz}x\\color[rgb]{9,9}y", L"\\big", L"\\left", L"\\right)",
+            L"\\end{x}", L"}}}}", L"\\\\", L"^_^_", L"\\frac{", L"\\begin{array}{", L"\\operatorname*", L"\\not",
+            L"\\", L"\\text{\\", L"\\sqrt[\\frac]{}", L"\\begin{pmatrix}\\left( & \\right) \\\\ } \\end{pmatrix}",
+        };
+        for (const std::wstring& h : hostile) {
+            const double t0 = NowMs();
+            auto box = ts.Layout(h, true, 16.f);
+            const double ms = NowMs() - t0;
+            if (!sane(*box) || ms > 3000) {
+                std::printf("FAIL: hostile input %s... (%.0f ms)\n", WideToUtf8(h.substr(0, 30)).c_str(), ms);
+                ++failures;
+            }
+        }
+        // Fuzz: random formulas from TeX fragments.
+        static const wchar_t* kPieces[] = {
+            L"x", L"2", L"+", L"-", L"=", L"^", L"_", L"{", L"}", L"\\frac", L"\\sqrt", L"[", L"]", L"\\left(",
+            L"\\right)", L"\\middle|", L"\\begin{pmatrix}", L"\\end{pmatrix}", L"\\begin{cases}", L"\\end{cases}",
+            L"\\begin{aligned}", L"\\end{aligned}", L"&", L"\\\\", L"\\sum", L"\\int", L"\\limits", L"\\text{a b}",
+            L"\\mathbb{R}", L"\\hat", L"\\widehat", L"\\overbrace", L"\\underbrace", L"\\overset", L"\\color{red}",
+            L"\\textcolor{blue}", L"\\boxed", L"\\phantom", L"\\not", L"\\big(", L"\\Bigg]", L"\\alpha", L"\\foo",
+            L"'", L"\\,", L"\\quad", L"\\over", L"\\binom", L"\\xrightarrow", L"\\operatorname", L"\\displaystyle",
+            L"\\scriptstyle", L" ", L"\\mathrm{d}", L"\\lim", L"\\to", L"\\infty", L"\\vec", L"\\dot", L"\\{", L"\\}",
+            L"\\|", L"$", L"%", L"#", L"\\substack{a\\\\b}", L"\\hspace{2em}", L"\\mathstrut", L"\U0001D465",
+            L"日本", L"\\text{$x$}", L"\\overline", L"\\underline", L"\\bmod", L"\\pmod", L"\\left.",
+            L"\\right\\}", L"\\begin{array}{lcr}", L"\\end{array}", L"\\tag{1}", L"\\iff", L"\\prod", L"\\oint",
+        };
+        uint32_t seed = 4242;
+        auto rnd = [&seed] {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            return seed;
+        };
+        const int iterations = argc >= 4 ? std::atoi(argv[3]) : 3000;
+        const double f0 = NowMs();
+        for (int it = 0; it < iterations; ++it) {
+            std::wstring tex;
+            const int n = 1 + static_cast<int>(rnd() % 60);
+            for (int k = 0; k < n; ++k) tex += kPieces[rnd() % std::size(kPieces)];
+            auto box = ts.Layout(tex, (rnd() & 1) != 0, 8.f + static_cast<float>(rnd() % 40));
+            if (!sane(*box)) {
+                std::printf("FAIL: fuzz %s\n", WideToUtf8(tex).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d random formulas in %.0f ms\n", iterations, NowMs() - f0);
+        std::printf(failures ? "math FAILED\n" : "math OK\n");
+        return failures ? 1 : 0;
+    }
     if (cmd == "text") {
         // text <file.md>: the plain text "Select all + Copy" puts on the clipboard.
         std::string md;
@@ -799,16 +934,8 @@ int main(int argc, char** ansi_argv) {
         return 0;
     }
     if (cmd == "tex") {
-        // tex "<TeX source>": shows the Unicode conversion used for math.
-        std::vector<MathPiece> pieces;
-        TexToUnicode(Utf8ToWide(argv[2]), true, pieces);
-        for (const auto& p : pieces) {
-            std::string t = WideToUtf8(p.text);
-            for (char& c : t) {
-                if (c == '\n') c = '|';
-            }
-            std::printf("[%s%s]%s\n", (p.flags & kSup) ? "sup" : "", (p.flags & kSub) ? "sub" : "", t.c_str());
-        }
+        // tex "<TeX source>": the parsed formula tree.
+        std::printf("%s\n", WideToUtf8(DumpMath(ParseTex(Utf8ToWide(argv[2])))).c_str());
         return 0;
     }
     if (cmd == "fuzz") {
@@ -838,6 +965,9 @@ int main(int argc, char** ansi_argv) {
             "\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82 ", "\xE6\x97\xA5\xE6\x9C\xAC ",
             "\xD9\x85\xD8\xB1\xD8\xAD\xD8\xA8\xD8\xA7 ", "\xF0\x9F\x9A\x80", "\xE2\x80\xA8", "\xEF\xBF\xBC",
             "\xC3", "\xFF", "\xED\xA0\x80", "\r\n", "\r", "[link]: /url\n", "[link]", "<https://a.b>",
+            // TeX inside $...$ (typeset by mathlayout).
+            "$\\frac{a}{b}$", "$$\\sum_{i=1}^n$$", "\\left(", "\\right)", "\\begin{pmatrix}",
+            "\\end{pmatrix}", "&", "\\\\", "\\sqrt[", "^{", "_{", "\\text{", "\\color{red}", "```math\n",
             // Regional indicators (flags pair them up) and tag characters.
             "\xF0\x9F\x87\xBA", "\xF0\x9F\x87\xB8", "\xF0\x9F\x87\xA6", "\xF0\x9F\x8F\xB4",
             "\xF3\xA0\x81\xA7\xF3\xA0\x81\xA2", "\xF3\xA0\x81\xBF", ":us:",
