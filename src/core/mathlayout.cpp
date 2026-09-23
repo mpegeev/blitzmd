@@ -31,6 +31,7 @@ enum Constant : int {
 };
 
 constexpr uint32_t kErrorColor = 0xFFD1242F;  // unknown commands (MathJax shows them red)
+constexpr int kMaxAssemblyGlyphs = 1000;      // parts of one stretched glyph
 
 // Big-endian reads with bounds checks (0 outside the table).
 struct Table {
@@ -125,6 +126,7 @@ struct Box {
     float w = 0, h = 0, d = 0;
     std::vector<MathBox::Glyph> glyphs;
     std::vector<MathBox::Rule> rules;
+    std::vector<MathBox::Text> texts;
 
     // Puts `b` with its origin at (dx, dy) and grows to include it.
     void Add(const Box& b, float dx, float dy) {
@@ -138,12 +140,18 @@ struct Box {
             r.y += dy;
             rules.push_back(r);
         }
+        for (MathBox::Text t : b.texts) {
+            t.x += dx;
+            t.y += dy;
+            texts.push_back(std::move(t));
+        }
         h = std::max(h, b.h - dy);
         d = std::max(d, b.d + dy);
     }
     void Shift(float dy) {  // moves the contents down
         for (auto& g : glyphs) g.y += dy;
         for (auto& r : rules) r.y += dy;
+        for (auto& t : texts) t.y += dy;
         h -= dy;
         d += dy;
     }
@@ -195,6 +203,25 @@ constexpr int8_t kSpacing[8][8] = {
 };
 
 bool IsCombining(uint32_t c) { return (c >= 0x0300 && c <= 0x036F) || (c >= 0x20D0 && c <= 0x20FF); }
+
+bool IsPrime(const MathNode& k) {
+    return k.kind == MathKind::Glyphs && !k.text.empty() && k.text[0] >= 0x2032 && k.text[0] <= 0x2034;
+}
+
+// Text in scripts that need shaping (joining, reordering, marks) or color
+// (emoji): laid out with DirectWrite instead of glyph by glyph.
+bool NeedsShaping(std::wstring_view s) {
+    for (size_t k = 0; k < s.size(); ++k) {
+        const wchar_t c = s[k];
+        if ((c >= 0x0300 && c <= 0x036F) || (c >= 0x0590 && c <= 0x1FFF) || c == 0x200C || c == 0x200D ||
+            (c >= 0xA800 && c <= 0xABFF) || (c >= 0xFB1D && c <= 0xFDFF) || (c >= 0xFE00 && c <= 0xFE0F) ||
+            (c >= 0xFE70 && c <= 0xFEFF)) {
+            return true;
+        }
+        if (c >= 0xD83C && c <= 0xD83E) return true;  // U+1F000..U+1FBFF: emoji
+    }
+    return false;
+}
 
 }  // namespace
 
@@ -443,7 +470,11 @@ private:
         }
         int reps = 0;
         auto length = [&](int r) { return fixed + r * ext - (n_fixed + r * n_ext - 1) * overlap; };
-        while (n_ext > 0 && reps < 64 && length(reps) < target) ++reps;
+        if (n_ext > 0 && length(0) < target) {
+            const float per = ext - n_ext * overlap;  // what one more round of extenders adds
+            if (per > 0) reps = static_cast<int>(std::min(std::ceil((target - length(0)) / per), 1e6f));
+            reps = std::clamp(reps, 0, std::max(0, (kMaxAssemblyGlyphs - n_fixed) / n_ext));
+        }
         std::vector<Part> seq;
         for (const Part& p : parts) {
             if (!p.extender) seq.push_back(p);
@@ -455,11 +486,13 @@ private:
         const float s = size / f_.upem[0];
         Box b;
         float pos = 0;
+        if (++group_ == 0) group_ = 1;
         for (size_t k = 0; k < seq.size(); ++k) {
             const GlyphMetrics& m = f_.Metrics(0, seq[k].glyph);
             MathBox::Glyph g;
             g.size = size;
             g.index = seq[k].glyph;
+            g.group = group_;  // overlapping parts are filled as one shape
             g.color = color;
             if (vertical) {
                 // Parts stack by their ink; y is measured up from the bottom.
@@ -555,6 +588,7 @@ private:
             Atom atom;
             float space = 0;
             bool is_space = false;
+            int style = 1;  // a style switch only affects what follows it
         };
         std::vector<Item> items;
         items.reserve(n.kids.size());
@@ -564,9 +598,10 @@ private:
                 continue;
             }
             Item it;
+            it.style = ctx.style;
             if (k.kind == MathKind::Space) {
                 it.is_space = true;
-                it.space = k.value * Mu(ctx);
+                it.space = std::isfinite(k.value) ? k.value * Mu(ctx) : 0.f;
             } else {
                 it.atom = Node(k, ctx);
             }
@@ -608,9 +643,11 @@ private:
             }
             if (last != -1) {
                 const int s = kSpacing[static_cast<int>(cls_of(last))][static_cast<int>(it.atom.cls)];
-                if (s > 0 || (s < 0 && ctx.style <= 1)) {
+                if (s > 0 || (s < 0 && it.style <= 1)) {
                     static const float kMu[] = {0, 3, 4, 5};
-                    x += kMu[std::abs(s)] * Mu(ctx);
+                    Ctx at = ctx;
+                    at.style = it.style;
+                    x += kMu[std::abs(s)] * Mu(at);
                 }
             }
             out.box.Add(it.atom.box, x, 0);
@@ -642,9 +679,19 @@ private:
             if (cp >= 0xD800 && cp <= 0xDBFF && k + 1 < n.text.size()) cp = 0x10000 + ((cp - 0xD800) << 10) + (n.text[++k] - 0xDC00);
             cps.push_back(cp);
         }
-        float x = 0;
+        float x = 0, prev_x = 0;
+        const GlyphMetrics* prev = nullptr;
+        float prev_s = 0;
         for (uint32_t cp : cps) {
             auto [face, glyph] = f_.Lookup(cp);
+            if (IsCombining(cp) && prev) {
+                // A combining mark (\not's slash) is centered over the glyph before it.
+                const GlyphMetrics& mm = f_.Metrics(face, glyph);
+                const float ms = size / f_.upem[face];
+                const float dx = prev_x + (prev->xmin + prev->xmax) / 2 * prev_s - (mm.xmin + mm.xmax) / 2 * ms;
+                a.box.Add(GlyphBox(face, glyph, size, ctx.color), dx, 0);
+                continue;
+            }
             if (n.large && ctx.style == 0 && face == 0) {
                 // Display style: the first variant at least DisplayOperatorMinHeight
                 // tall; integrals about twice the text size, as in TeX.
@@ -661,6 +708,9 @@ private:
             }
             Box g = GlyphBox(face, glyph, size, ctx.color);
             a.box.Add(g, x, 0);
+            prev_x = x;
+            prev = &f_.Metrics(face, glyph);
+            prev_s = size / f_.upem[face];
             x += g.w;
             a.glyph = glyph;
             a.is_char = face == 0 && cps.size() == 1 && !IsCombining(cp);
@@ -686,6 +736,13 @@ private:
         Atom a;
         a.cls = n.cls;
         const float size = Size(ctx);
+        if (NeedsShaping(n.text) && ShapedText(n.text, size, ctx.color, &a.box)) {
+            if (n.cls == MathClass::Op) {
+                a.op = true;
+                a.limits = n.limits;
+            }
+            return a;
+        }
         float x = 0;
         for (size_t k = 0; k < n.text.size(); ++k) {
             uint32_t cp = n.text[k];
@@ -704,16 +761,60 @@ private:
         return a;
     }
 
+    // Text laid out by DirectWrite (shaping, bidi, color fonts); its box is
+    // the ink around the baseline.
+    bool ShapedText(const std::wstring& text, float size, uint32_t color, Box* box) {
+        ComPtr<IDWriteTextFormat> format;
+        ComPtr<IDWriteTextLayout> layout;
+        constexpr float kFar = 10000.f;
+        if (FAILED(f_.dw->CreateTextFormat(L"Cambria Math", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                                           DWRITE_FONT_STRETCH_NORMAL, size, L"", &format)) ||
+            FAILED(f_.dw->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), format.Get(), kFar, kFar,
+                                           &layout))) {
+            return false;
+        }
+        layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+        DWRITE_TEXT_METRICS tm{};
+        DWRITE_OVERHANG_METRICS om{};
+        DWRITE_LINE_METRICS line{};
+        UINT32 lines = 0;
+        if (FAILED(layout->GetMetrics(&tm)) || FAILED(layout->GetOverhangMetrics(&om)) ||
+            FAILED(layout->GetLineMetrics(&line, 1, &lines)) || lines == 0) {
+            return false;
+        }
+        const float baseline = line.baseline;
+        box->w = tm.widthIncludingTrailingWhitespace;
+        box->h = std::max(0.f, baseline + om.top);             // ink above the layout top: om.top
+        box->d = std::max(0.f, kFar + om.bottom - baseline);  // ink below its bottom: om.bottom
+        MathBox::Text t;
+        t.y = -baseline;
+        t.color = color;
+        t.layout = std::move(layout);
+        box->texts.push_back(std::move(t));
+        return true;
+    }
+
     Atom Scripts(const MathNode& n, const Ctx& ctx) {
         Atom base = Node(n.kids[0], ctx);
-        const bool has_sub = n.kids.size() > 1 && !n.kids[1].kids.empty();
-        const bool has_sup = n.kids.size() > 2 && !n.kids[2].kids.empty();
-        if (!has_sub && !has_sup) return base;
+        const MathNode empty;
+        const MathNode& sub_node = n.kids.size() > 1 ? n.kids[1] : empty;
+        const MathNode& sup_node = n.kids.size() > 2 ? n.kids[2] : empty;
+        const bool limits = base.op && (base.limits == 1 || (base.limits == 0 && ctx.style == 0));
+        // Primes (x', x^\prime) are drawn at the base's size right after it
+        // (U+2032 sits high already); the rest of the superscript follows.
+        size_t primes = 0;
+        while (!limits && primes < sup_node.kids.size() && IsPrime(sup_node.kids[primes])) ++primes;
+        MathNode prime_list, sup_rest;
+        prime_list.color = sup_rest.color = sup_node.color;
+        prime_list.kids.assign(sup_node.kids.begin(), sup_node.kids.begin() + static_cast<ptrdiff_t>(primes));
+        sup_rest.kids.assign(sup_node.kids.begin() + static_cast<ptrdiff_t>(primes), sup_node.kids.end());
+        const bool has_sub = !sub_node.kids.empty();
+        const bool has_sup = !sup_rest.kids.empty();
+        if (!has_sub && !has_sup && !primes) return base;
         const Ctx sup_ctx = ScriptCtx(ctx, false), sub_ctx = ScriptCtx(ctx, true);
         Atom sup, sub;
-        if (has_sup) sup = List(n.kids[2], sup_ctx);
-        if (has_sub) sub = List(n.kids[1], sub_ctx);
-        const bool limits = base.op && (base.limits == 1 || (base.limits == 0 && ctx.style == 0));
+        if (has_sup) sup = List(sup_rest, sup_ctx);
+        if (has_sub) sub = List(sub_node, sub_ctx);
         const float italic = base.italic;
         const float base_w = base.ink_right >= 0 ? base.box.w : base.box.w - italic;
         Atom out;
@@ -763,8 +864,14 @@ private:
         float w = base.box.w;
         float sup_x = base_w + italic, sub_x = base_w;
         if (base.ink_right >= 0) {  // integrals: at the top hook, the bottom one further left
-            sup_x = base.ink_right + 0.05f * Size(ctx);
+            sup_x = base.ink_right + (italic > 0 ? 0.05f * Size(ctx) : 0.f);
             sub_x = std::max(0.f, base.ink_right - italic);
+        }
+        if (primes) {
+            const Atom p = List(prime_list, ctx);
+            out.box.Add(p.box, sup_x, 0);
+            sup_x += p.box.w;
+            w = std::max(w, sup_x);
         }
         if (has_sup) {
             out.box.Add(sup.box, sup_x, -u);
@@ -774,7 +881,7 @@ private:
             out.box.Add(sub.box, sub_x, v);
             w = std::max(w, sub_x + sub.box.w);
         }
-        out.box.w = w + C(kSpaceAfterScript, ctx);
+        out.box.w = w + (has_sup || has_sub ? C(kSpaceAfterScript, ctx) : 0.f);
         return out;
     }
 
@@ -870,21 +977,22 @@ private:
         const uint32_t accent = n.text.empty() ? 0x0302 : n.text[0];
         const float size = Size(ctx);
         const float s = size / f_.upem[0];
+        const auto [acc_face, acc_glyph] = f_.Lookup(accent);
         Box acc = n.stretchy ? Stretch(accent, base.box.w - base.italic, false, size, ctx.color)
-                             : GlyphBox(f_.Lookup(accent).first, f_.Lookup(accent).second, size, ctx.color);
+                             : GlyphBox(acc_face, acc_glyph, size, ctx.color);
         // Horizontal: attachment points (MATH table) or centers.
         float base_x = (base.box.w - base.italic) / 2;
         float attach = 0;
         if (base.is_char && f_.TopAccent(base.glyph, &attach)) base_x = attach * base.size / f_.upem[0];
-        float acc_x;
-        const uint16_t acc_glyph = acc.glyphs.size() == 1 ? acc.glyphs[0].index : 0;
-        const GlyphMetrics& am = f_.Metrics(0, acc_glyph);
-        if (acc.glyphs.size() == 1 && acc.glyphs[0].face == 0 && f_.TopAccent(acc_glyph, &attach)) {
-            acc_x = attach * s;
-        } else if (acc.glyphs.size() == 1) {
-            acc_x = (am.xmin + am.xmax) / 2 * s;
-        } else {
-            acc_x = acc.w / 2;
+        float acc_x = acc.w / 2;
+        if (acc.glyphs.size() == 1) {
+            const MathBox::Glyph& ag = acc.glyphs[0];
+            if (ag.face == 0 && f_.TopAccent(ag.index, &attach)) {
+                acc_x = attach * s;
+            } else {
+                const GlyphMetrics& am = f_.Metrics(ag.face, ag.index);
+                acc_x = (am.xmin + am.xmax) / 2 * size / f_.upem[ag.face];
+            }
         }
         Atom a;
         a.cls = MathClass::Ord;
@@ -1124,6 +1232,7 @@ private:
 
     MathTypesetter::Impl& f_;
     float size_;
+    uint16_t group_ = 0;  // last id of a stretched glyph's parts
 };
 
 }  // namespace
@@ -1141,11 +1250,20 @@ std::shared_ptr<const MathBox> MathTypesetter::Layout(std::wstring_view tex, boo
     const MathNode root = ParseTex(tex);
     Typesetter ts(*impl_, size);
     Atom a = ts.Run(root, display);
-    out->width = a.box.w;
-    out->ascent = a.box.h;
-    out->descent = a.box.d;
-    out->glyphs = std::move(a.box.glyphs);
-    out->rules = std::move(a.box.rules);
+    // Nothing non-finite or negative reaches the text layout.
+    auto finite = [](float v) { return std::isfinite(v) && std::fabs(v) < 1e6f; };
+    out->width = finite(a.box.w) ? std::max(0.f, a.box.w) : 0.f;
+    out->ascent = finite(a.box.h) ? std::max(0.f, a.box.h) : 0.f;
+    out->descent = finite(a.box.d) ? std::max(0.f, a.box.d) : 0.f;
+    for (const MathBox::Glyph& g : a.box.glyphs) {
+        if (finite(g.x) && finite(g.y)) out->glyphs.push_back(g);
+    }
+    for (const MathBox::Rule& r : a.box.rules) {
+        if (finite(r.x) && finite(r.y) && finite(r.w) && finite(r.h)) out->rules.push_back(r);
+    }
+    for (MathBox::Text& t : a.box.texts) {
+        if (finite(t.x) && finite(t.y)) out->texts.push_back(std::move(t));
+    }
     return out;
 }
 
@@ -1160,28 +1278,95 @@ void MathTypesetter::Draw(ID2D1RenderTarget* rt, const MathBox& box, D2D1_POINT_
         colored->SetColor(c);
         return colored.Get();
     };
-    // Rules on whole device pixels: a 1-pixel fraction bar stays crisp.
+    D2D1_MATRIX_3X2_F world;
+    rt->GetTransform(&world);
+
+    // Rules on whole device pixels (after the scroll transform), with their
+    // thickness rounded on its own: bars of equal weight stay equal and crisp.
     float dpi_x = 96, dpi_y = 96;
     rt->GetDpi(&dpi_x, &dpi_y);
-    const float px = dpi_y / 96.f;
-    auto snap = [px](float v) { return std::round(v * px) / px; };
+    const float px = dpi_y / 96.f * world._22;  // device pixels per DIP, vertically
+    const bool snap = world._12 == 0 && world._21 == 0 && px > 0;
     for (const MathBox::Rule& r : box.rules) {
-        const float top = snap(origin.y + r.y * scale);
-        const float bottom = std::max(snap(origin.y + (r.y + r.h) * scale), top + 1.f / px);
-        rt->FillRectangle(D2D1::RectF(origin.x + r.x * scale, top, origin.x + (r.x + r.w) * scale, bottom),
+        float top = origin.y + r.y * scale, height = r.h * scale;
+        if (snap) {
+            const float dev_top = std::round((top * world._22 + world._32) * dpi_y / 96.f);
+            top = (dev_top * 96.f / dpi_y - world._32) / world._22;
+            height = std::max(1.f, std::round(height * px)) / px;
+        }
+        rt->FillRectangle(D2D1::RectF(origin.x + r.x * scale, top, origin.x + (r.x + r.w) * scale, top + height),
                           brush_for(r.color));
     }
-    for (const MathBox::Glyph& g : box.glyphs) {
-        if (g.face >= impl_->faces.size()) continue;
-        DWRITE_GLYPH_RUN run{};
-        run.fontFace = impl_->faces[g.face].Get();
-        run.fontEmSize = g.size * scale;
-        run.glyphCount = 1;
-        const UINT16 index = g.index;
-        const FLOAT advance = 0;
-        run.glyphIndices = &index;
-        run.glyphAdvances = &advance;
-        rt->DrawGlyphRun(D2D1::Point2F(origin.x + g.x * scale, origin.y + g.y * scale), &run, brush_for(g.color));
+
+    // Glyphs: runs of one face, size and color; the parts of a stretched
+    // glyph as one filled shape, so their overlaps aren't blended twice.
+    std::vector<UINT16> indices;
+    std::vector<FLOAT> advances;
+    std::vector<DWRITE_GLYPH_OFFSET> offsets;
+    const auto& glyphs = box.glyphs;
+    for (size_t k = 0; k < glyphs.size();) {
+        const MathBox::Glyph& g0 = glyphs[k];
+        size_t e = k + 1;
+        if (g0.group) {
+            while (e < glyphs.size() && glyphs[e].group == g0.group && glyphs[e].face == g0.face) ++e;
+        } else {
+            while (e < glyphs.size() && !glyphs[e].group && glyphs[e].face == g0.face && glyphs[e].size == g0.size &&
+                   glyphs[e].color == g0.color) {
+                ++e;
+            }
+        }
+        if (g0.face >= impl_->faces.size()) {
+            k = e;
+            continue;
+        }
+        indices.clear();
+        advances.assign(e - k, 0.f);
+        offsets.clear();
+        for (size_t i = k; i < e; ++i) {
+            indices.push_back(glyphs[i].index);
+            offsets.push_back(DWRITE_GLYPH_OFFSET{(glyphs[i].x - g0.x) * scale, -(glyphs[i].y - g0.y) * scale});
+        }
+        const D2D1_POINT_2F at = D2D1::Point2F(origin.x + g0.x * scale, origin.y + g0.y * scale);
+        IDWriteFontFace* face = impl_->faces[g0.face].Get();
+        bool drawn = false;
+        if (g0.group && e - k > 1) {
+            ComPtr<ID2D1Factory> factory;
+            ComPtr<ID2D1PathGeometry> shape;
+            ComPtr<ID2D1GeometrySink> sink;
+            rt->GetFactory(&factory);
+            if (factory && SUCCEEDED(factory->CreatePathGeometry(&shape)) && SUCCEEDED(shape->Open(&sink))) {
+                sink->SetFillMode(D2D1_FILL_MODE_WINDING);
+                const bool ok = SUCCEEDED(face->GetGlyphRunOutline(g0.size * scale, indices.data(), advances.data(),
+                                                                   offsets.data(), static_cast<UINT32>(indices.size()),
+                                                                   FALSE, FALSE, sink.Get()));
+                if (SUCCEEDED(sink->Close()) && ok) {
+                    rt->SetTransform(D2D1::Matrix3x2F::Translation(at.x, at.y) * world);
+                    rt->FillGeometry(shape.Get(), brush_for(g0.color));
+                    rt->SetTransform(world);
+                    drawn = true;
+                }
+            }
+        }
+        if (!drawn) {
+            DWRITE_GLYPH_RUN run{};
+            run.fontFace = face;
+            run.fontEmSize = g0.size * scale;
+            run.glyphCount = static_cast<UINT32>(indices.size());
+            run.glyphIndices = indices.data();
+            run.glyphAdvances = advances.data();
+            run.glyphOffsets = offsets.data();
+            rt->DrawGlyphRun(at, &run, brush_for(g0.color));
+        }
+        k = e;
+    }
+
+    // Shaped text, laid out at the formula's own size.
+    for (const MathBox::Text& t : box.texts) {
+        if (!t.layout) continue;
+        rt->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale) *
+                         D2D1::Matrix3x2F::Translation(origin.x + t.x * scale, origin.y + t.y * scale) * world);
+        rt->DrawTextLayout(D2D1::Point2F(0, 0), t.layout.Get(), brush_for(t.color), D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+        rt->SetTransform(world);
     }
 }
 

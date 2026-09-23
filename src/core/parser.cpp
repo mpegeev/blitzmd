@@ -712,18 +712,17 @@ void Builder::AppendMath(const std::wstring& source_tex, bool display) {
         delimiter += L'`';
     }
     const std::wstring closing(delimiter.rbegin(), delimiter.rend());
-    if (image_depth_ > 0) {
-        image_alt_.append(delimiter + tex + closing);
-        return;
-    }
     Block* leaf = EnsureLeaf();
     if (!leaf) return;
     AddMath(leaf, tex, delimiter + tex + closing, display);
 }
 
 void Builder::AddMath(Block* leaf, const std::wstring& tex, std::wstring source, bool display) {
+    // Lines of a ```math block stay lines when copied; they don't break the
+    // formula's line (it is one inline object).
     for (wchar_t& c : source) {
-        if (c == L'\n' || c == L'\r' || c == L'\t') c = L' ';
+        if (c == L'\n') c = kLineBreak;
+        else if (c == L'\r' || c == L'\t') c = L' ';
     }
     InlineObject obj;
     obj.pos = static_cast<uint32_t>(leaf->text.size());

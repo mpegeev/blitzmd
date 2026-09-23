@@ -64,6 +64,7 @@ struct LeafState {
     float first_baseline = 0.f;         // first line baseline, relative to text top
     float tx = 0.f, ty = 0.f;           // text origin in document coordinates
     float gutter = 0.f;                 // code blocks: width of the line-number column
+    float overflow_w = 0.f;             // text wider than its column (a formula): scrolls
     bool exact = false;
     bool minmax_valid = false;
     uint32_t used = 0;                  // frame stamp for eviction
@@ -222,11 +223,15 @@ private:
     };
     std::unordered_map<uint64_t, NumberLabel> numbers_;   // (size, number) -> label
     float GutterWidth(const Block* b, const LeafStyle& st);
-    // A formula of the document laid out at the math size for `family` / `size`.
-    std::shared_ptr<const MathBox> MathFormula(int32_t index, const std::wstring& family, float size);
+    // Formula `index` of the document at kMathRefSize DIPs per em (it scales
+    // linearly); nullptr without a math font, or if not typeset yet and
+    // `create` is false.
+    std::shared_ptr<const MathBox> MathFormula(int32_t index, bool create = true);
+    // Math font size next to text of `size` in `family`: x-heights match.
+    float MathSize(const std::wstring& family, float size);
     std::unique_ptr<MathTypesetter> math_;
     bool math_failed_ = false;
-    std::unordered_map<uint64_t, std::shared_ptr<const MathBox>> math_boxes_;  // (index, size) -> box
+    std::unordered_map<int32_t, std::shared_ptr<const MathBox>> math_boxes_;
     float viewport_w_ = 0.f;
     float doc_h_ = 0.f;
     float doc_w_ = 0.f;

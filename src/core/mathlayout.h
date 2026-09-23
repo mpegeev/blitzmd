@@ -23,6 +23,7 @@ struct MathBox {
         float x = 0, y = 0;   // pen position on the baseline
         float size = 0;       // em size
         uint16_t index = 0;
+        uint16_t group = 0;   // nonzero: parts of one stretched glyph, filled as one shape
         uint8_t face = 0;
         uint32_t color = 0;   // 0 = the text color, else 0xAARRGGBB
     };
@@ -30,9 +31,16 @@ struct MathBox {
         float x = 0, y = 0, w = 0, h = 0;  // y: top edge
         uint32_t color = 0;
     };
+    // Text that needs shaping (\text in complex scripts, emoji).
+    struct Text {
+        float x = 0, y = 0;   // top-left corner of the layout
+        uint32_t color = 0;
+        ComPtr<IDWriteTextLayout> layout;
+    };
     float width = 0, ascent = 0, descent = 0;
     std::vector<Glyph> glyphs;
     std::vector<Rule> rules;
+    std::vector<Text> texts;
 };
 
 class MathTypesetter {

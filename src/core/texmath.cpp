@@ -1,6 +1,8 @@
 #include "core/texmath.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cwctype>
 #include <cwchar>
 
 #include "core/util.h"
@@ -47,7 +49,7 @@ constexpr Symbol kSymbols[] = {
     {L"infty", L"∞", 0}, {L"emptyset", L"∅", 0}, {L"varnothing", L"∅", 0}, {L"forall", L"∀", 0},
     {L"exists", L"∃", 0}, {L"nexists", L"∄", 0}, {L"neg", L"¬", 0}, {L"lnot", L"¬", 0}, {L"top", L"⊤", 0},
     {L"bot", L"⊥", 0}, {L"angle", L"∠", 0}, {L"measuredangle", L"∡", 0}, {L"sphericalangle", L"∢", 0},
-    {L"triangle", L"△", 0}, {L"square", L"□", 0}, {L"Box", L"□", 0}, {L"blacksquare", L"■", 0},
+    {L"triangle", L"△", 'o'}, {L"square", L"□", 0}, {L"Box", L"□", 0}, {L"blacksquare", L"■", 0},
     {L"Diamond", L"◇", 0}, {L"lozenge", L"◊", 0}, {L"blacklozenge", L"⧫", 0}, {L"bigstar", L"★", 0},
     {L"clubsuit", L"♣", 0}, {L"diamondsuit", L"♢", 0}, {L"heartsuit", L"♡", 0}, {L"spadesuit", L"♠", 0},
     {L"flat", L"♭", 0}, {L"natural", L"♮", 0}, {L"sharp", L"♯", 0}, {L"prime", L"′", 0},
@@ -293,8 +295,10 @@ std::wstring Styled(uint32_t c, Alphabet a) {
         else if (!AppendGreek(out, c, 0x1D6A8)) AppendCodepoint(out, c);
         return out;
     case Alphabet::BoldItalic:
+        // \boldsymbol: what is italic becomes bold italic, capital Greek bold upright.
         if (latin) AppendLatin(out, c, 0x1D468, 0x1D482);
         else if (digit) AppendCodepoint(out, 0x1D7CE + (c - '0'));
+        else if ((c >= 0x0391 && c <= 0x03A9) || c == 0x2207) AppendGreek(out, c, 0x1D6A8);
         else if (!AppendGreek(out, c, 0x1D71C)) AppendCodepoint(out, c);
         return out;
     case Alphabet::DoubleStruck:
@@ -371,7 +375,9 @@ uint32_t ParseColor(std::wstring_view model, std::wstring_view spec) {
         return got == n;
     };
     auto rgb = [](float r, float g, float b) {
-        auto c = [](float v) { return static_cast<uint32_t>(std::clamp(v, 0.f, 1.f) * 255.f + 0.5f); };
+        auto c = [](float v) {
+            return std::isfinite(v) ? static_cast<uint32_t>(std::clamp(v, 0.f, 1.f) * 255.f + 0.5f) : 0u;
+        };
         return 0xFF000000u | (c(r) << 16) | (c(g) << 8) | c(b);
     };
     float v[3] = {};
@@ -448,6 +454,7 @@ public:
             Stop stop = kEnd;
             rows.push_back(List(kModeTop, &stop));
             if (stop != kRow) break;
+            RawOptional(nullptr, true);  // \\[4pt]
         }
         while (rows.size() > 1 && rows.back().kids.empty()) rows.pop_back();
         if (rows.size() == 1) return std::move(rows[0]);
@@ -541,21 +548,48 @@ private:
         return r;
     }
 
-    // [...] after a command, raw.
-    bool RawOptional(std::wstring* out) {
+    // [...] after a command, raw. Nothing is consumed unless a matching ]
+    // follows (and, for \\[4pt], unless it holds a dimension).
+    bool RawOptional(std::wstring* out, bool dimension = false) {
+        const size_t save = i_;
         SkipSpaces();
-        if (Peek() != '[') return false;
+        if (Peek() != '[') {
+            i_ = save;
+            return false;
+        }
         const size_t b = ++i_;
         int depth = 0;
         while (!AtEnd()) {
-            if (s_[i_] == '{') ++depth;
-            else if (s_[i_] == '}') --depth;
-            else if (s_[i_] == ']' && depth <= 0) break;
+            const wchar_t c = s_[i_];
+            if (c == '\\' && i_ + 1 < s_.size()) {
+                i_ += 2;
+                continue;
+            }
+            if (c == '{') ++depth;
+            else if (c == '}' && --depth < 0) break;
+            else if (c == ']' && depth == 0) break;
             ++i_;
         }
+        if (AtEnd() || s_[i_] != ']' || (dimension && !IsDimension(s_.substr(b, i_ - b)))) {
+            i_ = save;
+            return false;
+        }
         if (out) *out = std::wstring(s_.substr(b, i_ - b));
-        if (!AtEnd()) ++i_;
+        ++i_;
         return true;
+    }
+
+    static bool IsDimension(std::wstring_view d) {
+        d = Trim(d);
+        size_t k = 0;
+        if (k < d.size() && (d[k] == '-' || d[k] == '+')) ++k;
+        bool digits = false;
+        while (k < d.size() && ((d[k] >= '0' && d[k] <= '9') || d[k] == '.')) {
+            digits = digits || d[k] != '.';
+            ++k;
+        }
+        d = Trim(d.substr(k));
+        return digits && (d.empty() || (d.size() == 2 && iswlower(d[0]) && iswlower(d[1])));
     }
 
     void Push(MathNode& list, MathNode node) {
@@ -716,6 +750,7 @@ private:
             return;
         }
         if (c == '\'') {
+            // x' is x^{\prime}: the prime is a superscript (layout draws it big).
             std::wstring primes;
             while (Peek() == '\'') {
                 primes.push_back(0x2032);
@@ -723,7 +758,14 @@ private:
             }
             if (primes.size() == 2) primes = L"″";
             else if (primes.size() == 3) primes = L"‴";
-            Push(list, MakeGlyphs(primes, MathClass::Ord));
+            MathNode sup = MakeList();
+            Push(sup, MakeGlyphs(primes, MathClass::Ord));
+            AddScript(list, true, std::move(sup));
+            return;
+        }
+        if (operator_name_ && (c == '-' || c == '*')) {  // text characters in \operatorname
+            ++i_;
+            Push(list, MakeGlyphs(c == '-' ? L"-" : L"*", MathClass::Ord));
             return;
         }
         if (c == '~') {
@@ -760,6 +802,11 @@ private:
         }
         MathNode* last = &list.kids.back();
         const size_t slot = sup ? 2 : 1;
+        if (sup && last->kind == MathKind::Scripts && (IsPrimes(last->kids[2]) || IsPrimes(script))) {
+            // x'^2 = x^{\prime 2}: primes and a superscript share the slot.
+            for (MathNode& k : script.kids) last->kids[2].kids.push_back(std::move(k));
+            return;
+        }
         if (last->kind == MathKind::Scripts && !last->kids[slot].kids.empty()) {
             // Double superscript: TeX complains; start over on an empty base.
             list.kids.push_back(MakeList());
@@ -775,6 +822,14 @@ private:
             *last = std::move(s);
         }
         last->kids[slot] = std::move(script);
+    }
+
+    static bool IsPrimes(const MathNode& list) {
+        if (list.kids.empty()) return false;
+        for (const MathNode& k : list.kids) {
+            if (k.kind != MathKind::Glyphs || k.text.empty() || k.text[0] < 0x2032 || k.text[0] > 0x2034) return false;
+        }
+        return true;
     }
 
     // Delimiter after \left, \right, \middle, \big…: its character, 0 for none.
@@ -851,7 +906,7 @@ private:
             a.left = '|', a.right = '|';
         } else if (name == L"Vmatrix") {
             a.left = 0x2016, a.right = 0x2016;
-        } else if (name == L"smallmatrix" || name == L"subarray") {
+        } else if (name == L"smallmatrix" || name == L"subarray" || name == L"substack") {
             a.env = MathEnv::Small;
             if (name == L"subarray") align = RawGroup();
         } else if (name == L"cases" || name == L"dcases" || name == L"rcases") {
@@ -886,7 +941,7 @@ private:
             }
             a.kids.push_back(std::move(row));
             if (stop != kRow) break;
-            RawOptional(nullptr);  // \\[4pt]
+            RawOptional(nullptr, true);  // \\[4pt]
         }
         // A trailing \\ leaves an empty row.
         if (a.kids.size() > 1 && a.kids.back().kids.size() == 1 && a.kids.back().kids[0].kids.empty()) {
@@ -1088,7 +1143,13 @@ private:
         if (name == L"operatorname") {
             const bool star = Peek() == '*';
             if (star) ++i_;
-            MathNode op = TextArgument(Alphabet::Upright);
+            const Alphabet saved = alphabet_;
+            const bool saved_op = operator_name_;
+            alphabet_ = Alphabet::Upright;
+            operator_name_ = true;
+            MathNode op = Argument();
+            alphabet_ = saved;
+            operator_name_ = saved_op;
             op.cls = MathClass::Op;
             op.limits = star ? 0 : 2;
             Push(list, std::move(op));
@@ -1267,7 +1328,7 @@ private:
             Parser sub(rows);
             sub.depth_ = depth_ + 1;
             sub.color_ = color_;
-            MathNode a = sub.Environment(L"subarray");
+            MathNode a = sub.Environment(L"substack");
             Push(list, std::move(a));
             return;
         }
@@ -1323,9 +1384,7 @@ private:
             return;
         }
         if (name == L"not") {
-            SkipSpaces();
-            MathNode next = MakeList();
-            if (!AtEnd()) Step(next, kModeGroup);
+            MathNode next = Argument();  // counts depth; leaves }, & and \\ alone
             static const wchar_t kPairs[][2] = {
                 {'=', 0x2260},    {0x2208, 0x2209}, {0x2282, 0x2284}, {0x2283, 0x2285}, {0x2286, 0x2288},
                 {0x2287, 0x2289}, {0x2261, 0x2262}, {0x2203, 0x2204}, {0x223C, 0x2241}, {0x2243, 0x2244},
@@ -1334,19 +1393,27 @@ private:
                 {0x2190, 0x219A}, {0x2192, 0x219B}, {0x2194, 0x21AE}, {0x21D0, 0x21CD}, {0x21D2, 0x21CF},
                 {0x21D4, 0x21CE}, {0x220B, 0x220C}, {0x22A2, 0x22AC}, {0x22A8, 0x22AD},
             };
-            MathNode n = next.kids.empty() ? MakeGlyphs(L"/", MathClass::Rel) : std::move(next.kids[0]);
-            if (n.kind == MathKind::Glyphs && n.text.size() == 1) {
+            if (next.kids.empty()) {
+                Push(list, MakeGlyphs(L"/", MathClass::Rel));
+                return;
+            }
+            // The first symbol gets its negated form, else a slash over it.
+            for (MathNode& k : next.kids) {
+                if (k.kind != MathKind::Glyphs || k.text.empty()) continue;
                 bool mapped = false;
-                for (const auto& p : kPairs) {
-                    if (n.text[0] == p[0]) {
-                        n.text[0] = p[1];
-                        mapped = true;
-                        break;
+                if (k.text.size() == 1) {
+                    for (const auto& p : kPairs) {
+                        if (k.text[0] == p[0]) {
+                            k.text[0] = p[1];
+                            mapped = true;
+                            break;
+                        }
                     }
                 }
-                if (!mapped) n.text.push_back(0x0338);  // combining long solidus overlay
+                if (!mapped) k.text.push_back(0x0338);  // combining long solidus overlay
+                break;
             }
-            Push(list, std::move(n));
+            for (MathNode& k : next.kids) Push(list, std::move(k));
             return;
         }
         if (name == L"limits" || name == L"nolimits" || name == L"displaylimits") {
@@ -1470,6 +1537,7 @@ private:
         wchar_t* end = nullptr;
         const std::wstring s(d);
         const float v = std::wcstof(s.c_str(), &end);
+        if (!std::isfinite(v)) return 0;
         const std::wstring_view unit = Trim(std::wstring_view(end));
         float mu = v * 18.f;                      // em
         if (unit == L"mu") mu = v;
@@ -1489,6 +1557,7 @@ private:
     int cells_ = 0;    // open array cells
     Alphabet alphabet_ = Alphabet::Normal;
     uint32_t color_ = 0;
+    bool operator_name_ = false;  // inside \operatorname: - and * are text
 };
 
 void Dump(const MathNode& n, std::wstring& out) {

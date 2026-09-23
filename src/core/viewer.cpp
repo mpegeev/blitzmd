@@ -1356,6 +1356,15 @@ void Viewer::SelectWordAt(const Hit& hit) {
     if (p >= t.size() && p > 0) --p;
     if (t.empty()) return;
     uint32_t a = p, b = p;
+    for (const InlineObject& o : leaf->objects) {
+        if (o.length > 1 && p >= o.pos && p < o.pos + o.length) {  // a formula or flag: all of it
+            anchor_ = leaf->text_start + o.pos;
+            selection_ = TextRange{leaf->text_start + o.pos, leaf->text_start + o.pos + o.length};
+            selecting_ = false;
+            Invalidate();
+            return;
+        }
+    }
     if (IsWordChar(t[p])) {
         while (a > 0 && IsWordChar(t[a - 1])) --a;
         while (b < t.size() && IsWordChar(t[b])) ++b;
@@ -1709,7 +1718,21 @@ void Viewer::OnContextMenu(int sx, int sy) {
             HMENU contents = CreatePopupMenu();
             for (size_t i = 0; i < toc.size(); ++i) {
                 std::wstring label(static_cast<size_t>((toc[i]->level - min_level) * 4), L' ');
-                for (wchar_t c : toc[i]->text) {
+                const Block* h = toc[i];
+                for (size_t k = 0; k < h->text.size(); ++k) {
+                    const InlineObject* math = nullptr;
+                    for (const InlineObject& o : h->objects) {
+                        if (o.math >= 0 && o.pos == k && static_cast<size_t>(o.math) < doc_->maths.size()) math = &o;
+                    }
+                    if (math) {  // a formula: its TeX without the $ delimiters
+                        for (wchar_t m : Trim(doc_->maths[static_cast<size_t>(math->math)].tex)) {
+                            if (m == L'&') label += L"&&";
+                            else label.push_back(IsSpace(m) ? L' ' : m);
+                        }
+                        k += math->length - 1;
+                        continue;
+                    }
+                    const wchar_t c = h->text[k];
                     if (c == 0xFFFC || c == 0x200B) continue;
                     if (c == L'&') label += L"&&";
                     else label.push_back(c == 0x2028 ? L' ' : c);
