@@ -16,7 +16,7 @@ jobs:
   build:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Tag matches the version in CMakeLists.txt
         if: startsWith(github.ref, 'refs/tags/v')
@@ -41,20 +41,43 @@ jobs:
         run: .\scripts\test.ps1 -Build out/build/x86-release -Quick
 
       - name: Upload the package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mdview
           path: dist/mdview.zip
           if-no-files-found: error
 
+  # The uploaded package, downloaded the way the release job gets it, has what
+  # Total Commander's auto-installer needs.
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: mdview
+
+      - name: Check the package contents
+        shell: python
+        run: |
+          import sys, zipfile
+          z = zipfile.ZipFile("mdview.zip")
+          for info in z.infolist():
+              print(f"{info.file_size:>10}  {info.filename}")
+          missing = {"mdview.wlx", "mdview.wlx64", "pluginst.inf", "README.md", "LICENSE"} - set(z.namelist())
+          if missing:
+              sys.exit(f"::error::mdview.zip lacks {', '.join(sorted(missing))}")
+          if not z.read("pluginst.inf").startswith(b"[plugininstall]\r\n"):
+              sys.exit("::error::pluginst.inf must start with [plugininstall] and use CRLF line endings")
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: package
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: mdview
 
