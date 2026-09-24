@@ -46,6 +46,7 @@ Step 'mermaid' { & $t mermaid samples/gfm/20-mermaid-flowchart.md | Where-Object
 Step 'mermaid sequence' { & $t mermaid samples/gfm/21-mermaid-sequence.md | Where-Object { $_ -match 'FAIL|mermaid' } }
 Step 'mermaid class' { & $t mermaid samples/gfm/22-mermaid-class.md | Where-Object { $_ -match 'FAIL|mermaid' } }
 Step 'mermaid state' { & $t mermaid samples/gfm/23-mermaid-state.md | Where-Object { $_ -match 'FAIL|mermaid' } }
+Step 'mermaid er' { & $t mermaid samples/gfm/24-mermaid-er.md | Where-Object { $_ -match 'FAIL|mermaid' } }
 
 # Every sample renders (parse + layout + Direct2D) without failing.
 $widths = if ($Quick) { @(900) } else { @(320, 900) }

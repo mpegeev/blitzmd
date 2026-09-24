@@ -1486,6 +1486,20 @@ int main(int argc, char** ansi_argv) {
             {L"stateDiagram-v2\n--", false, L"Line 2"},
             {L"stateDiagram-v2\nnote right of A\ntext", false, L"Line 2"},
             {L"stateDiagram-v2\nA -> B", false, L"Line 2"},
+            {L"erDiagram\nCUSTOMER ||--o{ ORDER : places\nORDER ||--|{ LINE-ITEM : contains\nCUSTOMER }|..|{ DELIVERY-ADDRESS : uses", true, nullptr},
+            {L"erDiagram\nCAR {\nstring registrationNumber PK\nstring(99) firstName \"Only 99\"\nstring[] parts\nint id PK, FK\n}", true, nullptr},
+            {L"erDiagram\nMANUFACTURER only one to zero or more CAR : makes\nPERSON many(0) optionally to 0+ NAMED-DRIVER : is", true, nullptr},
+            {L"erDiagram\np[Person] ||--o| a[\"Customer Account\"] : has\n\"A name\" |o--o| \"A name\" : \"self\"\ndirection LR", true, nullptr},
+            {L"erDiagram\nsubgraph title1\nCUSTOMER {\nstring name\n}\nend\nsubgraph grp [\"Nice title\"]\ndirection LR\nCAR ||--o{ NAMED-DRIVER : allows\nsubgraph inner\nENGINE\nend\nend\nCUSTOMER ||--o{ CAR : owns\ngrp ||--|| CUSTOMER : links\nCUSTOMER }o--o{ title1 : in\ngrp |o--o| grp : self", true, nullptr},
+            {L"erDiagram\nA one to many B : x\nC o|--|o D : y\nE |o.-o| F : z\nE |o-.o| F : z2\npublic.users ||--o{ public.orders : places\nI |O--O{ J : v\nx*y ||--|| a-b- : t", true, nullptr},
+            {L"erDiagram\nclassDef c1 fill:#f00\nclassDef c2 stroke:#00f\nclass A,B c1,c2\nA:::c1,c2 ||--|| B : x\nA { string a int b PK,FK \"note\" }\nB {\n`some type` `some name` PK\n}", true, nullptr},
+            {L"erDiagram\nsubgraph \"Customer Domain\"\nCUSTOMER ||--o{ ORDER : places\nend\n\"Customer Domain\" ||--o{ INVOICE : has\nsubgraph outer\nsubgraph inner\nA\nend\nA\nB\nend\nsubgraph Empty\nend\nA ||--o{ Empty : lost\nstyle outer fill:#f96\nclass inner c\nC { string x } C ||--|| A : r\nE |o--o| E : a\nE |o--o| E : b\nE |o--o| E : c", true, nullptr},
+            {L"erDiagram\nsubgraph S\nA ||--|| B : x", false, L"Line 2"},
+            {L"erDiagram\nA {\n`unclosed type\n}", false, L"Line 3"},
+            {L"erDiagram\nA ||--o{ B", false, L"Line 2"},
+            {L"erDiagram\nA ||-o{ B : x", false, L"Line 2"},
+            {L"erDiagram\nA {\nstring", false, L"Line 3"},
+            {L"erDiagram\nA {\nstring x", false, L"Line 2"},
             {L"classDiagram\nnote for A x", false, L"Line 2"},
             {L"gitGraph\ncommit", false, L"gitGraph"},
             {L"", false, nullptr},
@@ -1599,6 +1613,26 @@ int main(int argc, char** ansi_argv) {
             [&] {  // states moved from composite to composite
                 std::wstring s = L"stateDiagram-v2\n";
                 for (int i = 0; i < 200; ++i) s += L"state C" + std::to_wstring(i) + L" {\nA --> B\nB --> C" + std::to_wstring((i + 1) % 200) + L"\n}\n";
+                return s;
+            }(),
+            [&] {  // a chain of entities, and relationships from the first to all
+                std::wstring s = L"erDiagram\n";
+                for (int i = 0; i < 249; ++i) s += L"E" + std::to_wstring(i) + L" ||--o{ E" + std::to_wstring(i + 1) + L" : r\n";
+                for (int k = 2; k < 252; ++k) s += L"E0 ||--|{ E" + std::to_wstring(k) + L" : f\n";
+                return s;
+            }(),
+            L"erDiagram\nA {\n" + repeat(L"string(255) name PK, FK, UK \"comment\"\n", 1200) + L"}",
+            L"erDiagram\n" + repeat(L"A |o..o| A : \"again\"\n", 300),
+            L"erDiagram\n" + repeat(L"A ||--|| B : x\n", 2100),
+            L"erDiagram\n" + repeat(L"subgraph S\n", 30) + L"A\n" + repeat(L"end\n", 30),
+            [&] {  // many subgraphs, related as boxes, to their members and to themselves
+                std::wstring s = L"erDiagram\n";
+                for (int i = 0; i < 60; ++i) {
+                    const std::wstring n = std::to_wstring(i);
+                    s += L"subgraph G" + n + L"\nE" + n + L" ||--o{ F" + n + L" : r\nend\n";
+                    s += L"G" + n + L" }o--|| G" + std::to_wstring((i * 7 + 3) % 60) + L" : g\nG" + n + L" |o--o| E" + n +
+                         L" : in\nG" + n + L" ||--|| G" + n + L" : self\n";
+                }
                 return s;
             }(),
         };
@@ -1827,6 +1861,37 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated state diagrams in %.0f ms\n", iterations / 4, NowMs() - s0);
+        // Well-formed random ER diagrams.
+        static const wchar_t* kCards[][2] = {{L"|o", L"o|"}, {L"||", L"||"}, {L"}o", L"o{"}, {L"}|", L"|{"}};
+        const double e0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            std::wstring src = std::wstring(L"erDiagram\n") + ((rnd() & 3) == 0 ? L"direction LR\n" : L"");
+            const int count = 1 + static_cast<int>(rnd() % 10);
+            for (int k = 0; k < count * 2; ++k) {
+                const std::wstring a = L"E" + std::to_wstring(rnd() % count), b = L"E" + std::to_wstring(rnd() % count);
+                if (rnd() % 4 == 0) {
+                    src += a + L" {\n";
+                    for (int m = static_cast<int>(rnd() % 5); m > 0; --m) {
+                        src += std::wstring(rnd() & 1 ? L"string" : L"int(10)") + L" f" + std::to_wstring(m) +
+                               (rnd() & 1 ? L" PK" : L"") + (rnd() & 1 ? L" \"note\"" : L"") + L"\n";
+                    }
+                    src += L"}\n";
+                } else if (rnd() % 6 == 0) {
+                    src += L"subgraph G" + std::to_wstring(k % 3) + L"\n" + a + L" ||--|{ " + b + L" : in\nend\n";
+                } else if (rnd() % 8 == 0) {
+                    src += L"G" + std::to_wstring(rnd() % 3) + L" |o--o{ " + b + L" : box\n";
+                } else {
+                    src += a + L" " + kCards[rnd() % 4][0] + (rnd() & 1 ? L"--" : L"..") + kCards[rnd() % 4][1] + L" " + b + L" : rel\n";
+                }
+            }
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 200)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated ER diagrams in %.0f ms\n", iterations / 4, NowMs() - e0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();

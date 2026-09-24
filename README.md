@@ -47,7 +47,10 @@ autolink `www.` / `https://` / e-mail), изображения, HTML-сущно�
     обобщения `List~int~`), все виды связей с кратностями и подписями, lollipop-интерфейсы,
     заметки, `namespace`, `direction`, стили;
   - stateDiagram: состояния с описаниями, начало и конец `[*]`, `<<choice>>` / `<<fork>>` / `<<join>>`,
-    составные состояния (со своими `[*]` и параллельными областями `--`), заметки, стили.
+    составные состояния (со своими `[*]` и параллельными областями `--`), заметки, стили;
+  - erDiagram: сущности с атрибутами (тип, имя, ключи PK/FK/UK, комментарий), связи с кратностями
+    в нотации «вороньей лапки» (символами и словами), идентифицирующие и нет, псевдонимы, подграфы
+    (связи и с ними самими), стили.
   Диаграммы масштабируются и открываются на всё окно, как картинки; копирование даёт исходный
   текст, поиск подсвечивает подписи. Неподдержанный тип или ошибка — блок кода с пометкой о причине.
   Темы Mermaid (`%%{init: {theme: ...}}%%`, `themeVariables`) не применяются: цвета всегда
@@ -219,6 +222,7 @@ out\build\x64-release\emoji_test.exe          # таблица эмодзи-ко
 & $t mermaid samples\gfm\21-mermaid-sequence.md   # то же для диаграмм последовательностей
 & $t mermaid samples\gfm\22-mermaid-class.md      # и для диаграмм классов
 & $t mermaid samples\gfm\23-mermaid-state.md      # и для диаграмм состояний
+& $t mermaid samples\gfm\24-mermaid-er.md         # и для ER-диаграмм
 & $t mmd diagram.mmd out.png [--dark]          # одна диаграмма Mermaid в PNG
 & $t tex "\frac{a}{b}"                        # дерево разобранной формулы
 ```
@@ -260,7 +264,7 @@ src/core/layout.*     разметка: DirectWrite, точная у видим�
 src/core/render.*     отрисовка Direct2D (темы GitHub Primer)
 src/core/images.*     WIC, SVG, фоновая загрузка по http(s) с кешем
 src/core/zoom.*       масштаб картинок и диаграмм в их рамке и на всё окно, кнопки масштаба
-src/core/mermaid*     диаграммы Mermaid: разбор (flowchart, sequence, class, state), построение сцены
+src/core/mermaid*     диаграммы Mermaid: разбор (flowchart, sequence, class, state, er), построение сцены
 src/core/graphlayout.* послойная раскладка графов (Sugiyama) с кластерами
 src/core/diagram.*    сцена диаграммы: фигуры, пути, текст DirectWrite; отрисовка по теме
 src/core/viewer.*     окно Lister: прокрутка, выделение, ссылки, поиск, меню
