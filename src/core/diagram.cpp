@@ -33,6 +33,11 @@ constexpr uint32_t kLight[kDgRoleCount] = {
     // its primary, secondary and tertiary colors)
     0xFFECECFF, 0xFFFFFFDE, 0xFFB5FF20, 0xFFB9B9FF, 0xFFFFFF45, 0xFFD7FF86,
     0xFFFF86FF, 0xFF20FFFF, 0xFFFF2020, 0xFFFF20FF, 0xFF20FF8F, 0xFFFF5353,
+    // the same, not blended
+    0xFFECECFF, 0xFFFFFFDE, 0xFFB5FF20, 0xFFB9B9FF, 0xFFFFFF45, 0xFFD7FF86,
+    0xFFFF86FF, 0xFF20FFFF, 0xFFFF2020, 0xFFFF20FF, 0xFF20FF8F, 0xFFFF5353,
+    // fillType0..7
+    0xFFECECFF, 0xFFFFFFDE, 0xFFFFECFE, 0xFFDEFFE0, 0xFFECFFFE, 0xFFFFDEE0, 0xFFFFEFEC, 0xFFDEFBFF,
 };
 constexpr uint32_t kDark[kDgRoleCount] = {
     0x00000000,  // none
@@ -58,6 +63,11 @@ constexpr uint32_t kDark[kDgRoleCount] = {
     // categories: the dark theme's pie1..pie12
     0xFF0B0000, 0xFF4D1037, 0xFF3F5258, 0xFF4F2F1B, 0xFF6E0A0A, 0xFF3B0048,
     0xFF995A01, 0xFF154706, 0xFF161722, 0xFF00296F, 0xFF01629C, 0xFF010029,
+    // the same, not blended
+    0xFF0B0000, 0xFF4D1037, 0xFF3F5258, 0xFF4F2F1B, 0xFF6E0A0A, 0xFF3B0048,
+    0xFF995A01, 0xFF154706, 0xFF161722, 0xFF00296F, 0xFF01629C, 0xFF010029,
+    // fillType0..7
+    0xFF1F2020, 0xFF474949, 0xFF1F1F20, 0xFF474749, 0xFF1F201F, 0xFF474947, 0xFF201F20, 0xFF494749,
 };
 
 D2D1_COLOR_F ToColor(uint32_t argb) {
@@ -76,7 +86,7 @@ uint32_t Resolve(const DgColor& c, bool dark) {
     if (c.role == kDgTint) return dark ? (c.argb & 0xFFFFFF) | (std::min(c.argb >> 24, 0x40u) << 24) : c.argb;
     if (c.role >= kDgRoleCount) return 0;
     const uint32_t* table = dark ? kDark : kLight;
-    if (c.role < kDgCategory) return table[c.role];
+    if (c.role < kDgCategory || c.role >= kDgCategorySolid) return table[c.role];
     // Categories as Mermaid paints pie slices: at 70% over the page.
     const uint32_t v = table[c.role], page = table[kDgPage];
     uint32_t out = 0xFF000000;

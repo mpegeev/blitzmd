@@ -68,15 +68,16 @@ gantt
     Add another diagram to demo page    :doc1, after a1  , 48h
 ```
 
-## Gantt chart: hours, compact rows, a marker, the axis on top
+## Gantt chart: hours, compact rows, a marker
 
 ```mermaid
+---
+displayMode: compact
+---
 gantt
     title Release day
     dateFormat YYYY-MM-DD HH:mm
     axisFormat %H:%M
-    displayMode compact
-    topAxis
     tickInterval 2hour
     section Build
     Compile          :a1, 2024-01-01 08:00, 3h

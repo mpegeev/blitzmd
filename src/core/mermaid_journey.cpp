@@ -17,7 +17,7 @@ struct Text {
 
 struct Task {
     Text text;
-    int score = 3;
+    double score = 3;
     std::vector<int> actors;
     int section = -1;
 };
@@ -36,12 +36,26 @@ public:
             c_.SkipBlanks();
             if (!c_.AtStatementEnd()) c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
         }
+        // Actors in order, as Mermaid lists (and colors) them.
+        std::vector<int> order(actors.size());
+        for (size_t i = 0; i < order.size(); ++i) order[i] = static_cast<int>(i);
+        std::sort(order.begin(), order.end(), [&](int a, int b) { return actors[static_cast<size_t>(a)].raw < actors[static_cast<size_t>(b)].raw; });
+        std::vector<int> rank(actors.size());
+        std::vector<Text> sorted;
+        for (size_t i = 0; i < order.size(); ++i) {
+            rank[static_cast<size_t>(order[i])] = static_cast<int>(i);
+            sorted.push_back(actors[static_cast<size_t>(order[i])]);
+        }
+        actors = std::move(sorted);
+        for (Task& t : tasks) {
+            for (int& a : t.actors) a = rank[static_cast<size_t>(a)];
+        }
     }
 
     Text title;
     std::vector<Text> sections;
     std::vector<Task> tasks;
-    std::vector<std::wstring> actors;
+    std::vector<Text> actors;  // where each is first named
 
 private:
     void Statement() {
@@ -81,17 +95,18 @@ private:
         c_.SkipBlanks();
         const size_t num = c_.pos();
         while (!c_.AtStatementEnd() && c_.Peek() != L':') c_.Advance();
+        // A number (as JavaScript's Number reads it: none is 0).
         const std::wstring score(Trim(src_.text.substr(num, c_.pos() - num)));
         wchar_t* end = nullptr;
-        const long v = std::wcstol(score.c_str(), &end, 10);
-        if (score.empty() || !end || *end) c_.Fail(Tr(L"Expected a score", L"Ожидалась оценка"));
-        t.score = static_cast<int>(std::clamp(v, 0L, 5L));
+        const double v = score.empty() ? 0.0 : std::wcstod(score.c_str(), &end);
+        if (!score.empty() && (!end || *end || !std::isfinite(v))) c_.Fail(Tr(L"Expected a score", L"Ожидалась оценка"));
+        t.score = std::clamp(v, 0.0, 5.0);
         if (c_.Eat(L':')) {
             for (const std::wstring_view a : Split(c_.LineRest())) {
-                auto it = std::find(actors.begin(), actors.end(), a);
+                auto it = std::find_if(actors.begin(), actors.end(), [&](const Text& x) { return x.raw == a; });
                 if (it == actors.end()) {
                     if (actors.size() >= 64) c_.Fail(Tr(L"Too many actors", L"Слишком много участников"));
-                    actors.emplace_back(a);
+                    actors.push_back(Text{std::wstring(a), static_cast<uint32_t>(a.data() - src_.text.data()), static_cast<uint32_t>(a.size())});
                     it = actors.end() - 1;
                 }
                 t.actors.push_back(static_cast<int>(it - actors.begin()));
@@ -137,16 +152,16 @@ constexpr float kFaceR = 15, kScoreStep = 30;
 constexpr uint32_t kActorColors[] = {0xFF8FBC8F, 0xFF7CFC00, 0xFF00FFFF, 0xFF20B2AA, 0xFFB0E0E6, 0xFFFFFFE0};
 
 // A face: a smile for good scores, a frown for bad, a straight mouth between.
-void AddFace(SceneBuilder& b, D2D1_POINT_2F c, int score) {
+void AddFace(SceneBuilder& b, D2D1_POINT_2F c, double score) {
     const DgColor edge = Argb(0xFF999999);
     b.Ellipse(D2D1::RectF(c.x - kFaceR, c.y - kFaceR, c.x + kFaceR, c.y + kFaceR), Argb(0xFFFFF8DC), edge, 2.f);
     for (const float dx : {-5.f, 5.f}) {
         b.Ellipse(D2D1::RectF(c.x + dx - 1.5f, c.y - 6.5f, c.x + dx + 1.5f, c.y - 3.5f), Argb(0xFF666666), Argb(0xFF666666));
     }
-    if (score >= 4) {
+    if (score > 3) {
         b.Begin(D2D1::Point2F(c.x - 7, c.y + 2));
         b.CubicTo(D2D1::Point2F(c.x - 5, c.y + 8), D2D1::Point2F(c.x + 5, c.y + 8), D2D1::Point2F(c.x + 7, c.y + 2));
-    } else if (score <= 2) {
+    } else if (score < 3) {
         b.Begin(D2D1::Point2F(c.x - 7, c.y + 8));
         b.CubicTo(D2D1::Point2F(c.x - 5, c.y + 2), D2D1::Point2F(c.x + 5, c.y + 2), D2D1::Point2F(c.x + 7, c.y + 8));
     } else {
@@ -165,8 +180,8 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
     // The actors: a colored dot and the name each, on the left.
     std::vector<M> names;
     float legend_w = 0;
-    for (const std::wstring& a : p.actors) {
-        names.push_back(b.Measure(ParseLabel(a, false), 0, false, 1.f, false));
+    for (const Text& a : p.actors) {
+        names.push_back(b.Measure(ParseLabel(a.raw, false), 0, false, 1.f, false));
         legend_w = std::max(legend_w, names.back().w + 26);
     }
     const float x0 = kMargin + (legend_w > 0 ? legend_w + 20 : 0.f);
@@ -196,15 +211,15 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
         const float y = top + 10 + static_cast<float>(i) * 28;
         const DgColor c = Argb(kActorColors[i % std::size(kActorColors)]);
         b.Ellipse(D2D1::RectF(kMargin, y - 7, kMargin + 14, y + 7), c, Argb(0xFF000000), 1.f);
-        b.Text(names[i], D2D1::Point2F(kMargin + 22, y - names[i].h / 2), Role(kDgText));
+        b.Text(names[i], D2D1::Point2F(kMargin + 22, y - names[i].h / 2), Role(kDgText), p.actors[i].pos, p.actors[i].len);
     }
-    // Sections over their tasks, in turn colors.
+    // Sections over their tasks, in Mermaid's fillType colors in turn.
     for (size_t k = 0; k < p.tasks.size();) {
         const int s = p.tasks[k].section;
         size_t e = k;
         while (e < p.tasks.size() && p.tasks[e].section == s) ++e;
         if (s >= 0) {
-            const DgColor fill = Role(static_cast<uint8_t>(kDgCategory + s % 12));
+            const DgColor fill = Role(static_cast<uint8_t>(kDgFillType + s % 8));
             const D2D1_RECT_F r = D2D1::RectF(xs[k], section_y, xs[e - 1] + kTaskW, section_y + kTaskH);
             b.Rect(r, 3, fill, Role(kDgNodeStroke), 1.f);
             const Text& st = p.sections[static_cast<size_t>(s)];
@@ -217,11 +232,11 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
     for (size_t k = 0; k < p.tasks.size(); ++k) {
         const Task& t = p.tasks[k];
         const float cx = xs[k] + kTaskW / 2;
-        const float face_y = face_top + static_cast<float>(5 - std::max(1, t.score)) * kScoreStep;
+        const float face_y = face_top + static_cast<float>(5 - std::max(1.0, t.score)) * kScoreStep;
         b.Begin(D2D1::Point2F(cx, task_y + kTaskH));
         b.LineTo(D2D1::Point2F(cx, face_y - kFaceR));
         b.End(Role(kDgNone), Role(kDgMuted), 1.f, 1);
-        const DgColor fill = t.section >= 0 ? Role(static_cast<uint8_t>(kDgCategory + t.section % 12)) : Role(kDgNodeFill);
+        const DgColor fill = t.section >= 0 ? Role(static_cast<uint8_t>(kDgFillType + t.section % 8)) : Role(kDgNodeFill);
         b.Rect(D2D1::RectF(xs[k], task_y, xs[k] + kTaskW, task_y + kTaskH), 3, fill, Role(kDgNodeStroke), 1.f);
         const M& m = texts[k];
         b.Text(m, D2D1::Point2F(cx - m.w / 2, task_y + (kTaskH - m.h) / 2), Role(kDgText), t.text.pos, t.text.len);

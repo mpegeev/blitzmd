@@ -54,10 +54,12 @@ Source Preprocess(std::wstring_view text) {
                 src.title_pos = static_cast<uint32_t>(t.data() - text.data());
                 src.title_len = static_cast<uint32_t>(t.size());
             }
+            if (line.starts_with(L"displayMode:")) src.display_mode = Trim(line.substr(12));
             if (after == p) break;
             p = after;
         }
         src.title.clear();  // not closed: not front matter
+        src.display_mode.clear();
     }
     return src;
 }
@@ -101,6 +103,12 @@ void Cursor::SkipToLineEnd() {
 std::wstring_view Cursor::LineRest() {
     const size_t start = pos_;
     while (!AtStatementEnd()) ++pos_;
+    return Trim(s_.substr(start, pos_ - start));
+}
+
+std::wstring_view Cursor::WholeLine() {
+    const size_t start = pos_;
+    while (pos_ < s_.size() && s_[pos_] != L'\n') ++pos_;
     return Trim(s_.substr(start, pos_ - start));
 }
 

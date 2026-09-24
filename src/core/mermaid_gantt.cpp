@@ -54,13 +54,26 @@ long long DayOf(double t) { return static_cast<long long>(std::floor(t / kDay));
 // 0 Sunday (1970-01-01 was a Thursday).
 int Weekday(long long day) { return static_cast<int>(((day % 7) + 11) % 7); }
 
+// Now as a date and time in the local calendar (as Mermaid's today).
+double LocalNow() {
+    const std::time_t now = std::time(nullptr);
+    std::tm lt{};
+    localtime_s(&lt, &now);
+    return FromDays(DaysFromCivil(lt.tm_year + 1900LL, static_cast<unsigned>(lt.tm_mon + 1), static_cast<unsigned>(lt.tm_mday))) +
+           ((lt.tm_hour * 60.0 + lt.tm_min) * 60.0 + lt.tm_sec) * 1000.0;
+}
+
 const wchar_t* const kMonths[] = {L"January", L"February", L"March",     L"April",   L"May",      L"June",
                                   L"July",    L"August",   L"September", L"October", L"November", L"December"};
 const wchar_t* const kWeekdays[] = {L"Sunday", L"Monday", L"Tuesday", L"Wednesday", L"Thursday", L"Friday", L"Saturday"};
 
 // A date in a dayjs format (YYYY-MM-DD, DD/MM/YYYY HH:mm, MMM D YYYY, X...).
-std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format) {
-    long long year = 1970, month = 1, day = 1, hour = 0, minute = 0, second = 0;
+// Strictly as dayjs reads it for Mermaid (MM two digits, M no leading zero);
+// else leniently, as JavaScript's Date takes more. Parts not given are
+// today's, as in dayjs.
+std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format, bool strict = true) {
+    long long year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+    bool has_year = false, has_month = false, has_day = false;
     double fraction = 0;
     bool pm = false, ampm = false;
     size_t i = 0, f = 0;
@@ -76,6 +89,13 @@ std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format) {
         *out = v;
         return true;
     };
+    // A two-digit token (MM): exactly two, strictly; a one-digit one (M):
+    // one or two, no leading zero strictly.
+    auto two = [&](long long* out) { return digits(strict ? 2 : 1, 2, out); };
+    auto one = [&](long long* out) {
+        const size_t from = i;
+        return digits(1, 2, out) && !(strict && i - from == 2 && s[from] == L'0');
+    };
     while (f < format.size()) {
         const std::wstring_view rest = format.substr(f);
         auto token = [&](std::wstring_view t) {
@@ -89,15 +109,19 @@ std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format) {
             if (sign) ++i;
             if (!digits(4, sign ? 6 : 4, &year)) return std::nullopt;
             if (minus) year = -year;
+            has_year = true;
         } else if (token(L"YY")) {
             if (!digits(2, 2, &year)) return std::nullopt;
             year += year < 69 ? 2000 : 1900;  // as dayjs
+            has_year = true;
         } else if (token(L"MMMM") || token(L"MMM")) {
             // Month names, whole or their first three letters.
             bool found = false;
             for (int m = 0; m < 12 && !found; ++m) {
                 const std::wstring_view name = kMonths[m];
+                const bool full = rest.starts_with(L"MMMM");
                 for (const std::wstring_view n : {name, name.substr(0, 3)}) {
+                    if (strict && (n.size() == 3) == full) continue;
                     if (s.size() - i >= n.size() && EqualsNoCase(s.substr(i, n.size()), n)) {
                         i += n.size();
                         month = m + 1;
@@ -107,22 +131,26 @@ std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format) {
                 }
             }
             if (!found) return std::nullopt;
+            has_month = true;
         } else if (token(L"MM") || token(L"M")) {
-            if (!digits(1, 2, &month)) return std::nullopt;
+            if (!(rest[1] == L'M' ? two(&month) : one(&month))) return std::nullopt;
+            has_month = true;
         } else if (token(L"Do")) {
             if (!digits(1, 2, &day) || s.size() - i < 2) return std::nullopt;
             i += 2;  // 1st, 2nd, 3rd, 4th
+            has_day = true;
         } else if (token(L"DD") || token(L"D")) {
-            if (!digits(1, 2, &day)) return std::nullopt;
+            if (!(rest.starts_with(L"DD") ? two(&day) : one(&day))) return std::nullopt;
+            has_day = true;
         } else if (token(L"HH") || token(L"H")) {
-            if (!digits(1, 2, &hour)) return std::nullopt;
+            if (!(rest.starts_with(L"HH") ? two(&hour) : one(&hour))) return std::nullopt;
         } else if (token(L"hh") || token(L"h")) {
-            if (!digits(1, 2, &hour)) return std::nullopt;
+            if (!(rest.starts_with(L"hh") ? two(&hour) : one(&hour))) return std::nullopt;
             ampm = true;
         } else if (token(L"mm") || token(L"m")) {
-            if (!digits(1, 2, &minute)) return std::nullopt;
+            if (!(rest.starts_with(L"mm") ? two(&minute) : one(&minute))) return std::nullopt;
         } else if (token(L"ss") || token(L"s")) {
-            if (!digits(1, 2, &second)) return std::nullopt;
+            if (!(rest.starts_with(L"ss") ? two(&second) : one(&second))) return std::nullopt;
         } else if (rest[0] == L'S') {
             // Fractions of a second: S, SS, SSS.
             size_t n = 0;
@@ -132,7 +160,7 @@ std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format) {
             }
             long long v = 0;
             const size_t from = i;
-            if (!digits(1, n, &v)) return std::nullopt;
+            if (!digits(strict ? std::min<size_t>(n, 9) : 1, std::min<size_t>(n, 9), &v)) return std::nullopt;
             fraction = static_cast<double>(v) / std::pow(10.0, static_cast<double>(i - from));
         } else if (token(L"ZZ") || token(L"Z")) {
             // An offset: +05:00, -0800 or Z, read and left aside.
@@ -182,6 +210,12 @@ std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format) {
         if (hour < 1 || hour > 12) return std::nullopt;
         hour = hour % 12 + (pm ? 12 : 0);
     }
+    if (!has_year || !has_month || !has_day) {
+        const Civil today = CivilFromDays(static_cast<long long>(std::floor(LocalNow() / kDay)));
+        if (!has_day) day = !has_year && !has_month ? today.d : 1;
+        if (!has_month) month = has_year ? 1 : today.m;
+        if (!has_year) year = today.y;
+    }
     if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return std::nullopt;
     // No 31st of April (dayjs's strict parsing).
     const long long days = DaysFromCivil(year, static_cast<unsigned>(month), static_cast<unsigned>(day));
@@ -191,8 +225,24 @@ std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format) {
     return t;
 }
 
-// 3d, 2w, 12h, 30m, 1.5d, 100ms: dayjs durations (M a month of 30 days, y 365).
-std::optional<double> ParseDuration(std::wstring_view s) {
+// Adds n months (whole: dayjs drops the fraction), the day kept within the
+// month: Jan 31 + 1 month is Feb 29 (or 28).
+double AddMonths(double t, double n) {
+    if (std::abs(n) > 200000) return std::copysign(1e300, n);
+    const long long day = DayOf(t);
+    const double time = t - FromDays(day);
+    const Civil c = CivilFromDays(day);
+    const long long m0 = static_cast<long long>(c.m) - 1 + static_cast<long long>(std::trunc(n));
+    const long long y = c.y + (m0 >= 0 ? m0 / 12 : (m0 - 11) / 12);
+    const unsigned m = static_cast<unsigned>(((m0 % 12) + 12) % 12) + 1;
+    const unsigned last = CivilFromDays(DaysFromCivil(m == 12 ? y + 1 : y, m == 12 ? 1 : m + 1, 1) - 1).d;
+    return FromDays(DaysFromCivil(y, m, std::min(c.d, last))) + time;
+}
+
+// 3d, 2w, 12h, 30m, 1.5d, 100ms, 1M, 2y added to t as dayjs adds them:
+// days and weeks in whole days (rounded), months and years by the
+// calendar, the rest exactly.
+std::optional<double> AddDuration(double t, std::wstring_view s) {
     size_t k = 0;
     while (k < s.size() && s[k] >= L'0' && s[k] <= L'9') ++k;
     if (k == 0) return std::nullopt;
@@ -205,17 +255,15 @@ std::optional<double> ParseDuration(std::wstring_view s) {
     const std::wstring number(s.substr(0, k));
     const double v = std::wcstod(number.c_str(), nullptr);
     const std::wstring_view unit = s.substr(k);
-    double scale = 0;
-    if (unit == L"ms") scale = 1;
-    else if (unit == L"s") scale = 1000;
-    else if (unit == L"m") scale = 60000;
-    else if (unit == L"h") scale = 3600000;
-    else if (unit == L"d") scale = kDay;
-    else if (unit == L"w") scale = 7 * kDay;
-    else if (unit == L"M") scale = 30 * kDay;
-    else if (unit == L"y") scale = 365 * kDay;
-    else return std::nullopt;
-    return v * scale;
+    if (unit == L"ms") return t + v;
+    if (unit == L"s") return t + v * 1000;
+    if (unit == L"m") return t + v * 60000;
+    if (unit == L"h") return t + v * 3600000;
+    if (unit == L"d") return t + std::floor(v + 0.5) * kDay;
+    if (unit == L"w") return t + std::floor(v * 7 + 0.5) * kDay;
+    if (unit == L"M") return AddMonths(t, v);
+    if (unit == L"y") return AddMonths(t, std::trunc(v) * 12);
+    return std::nullopt;
 }
 
 // A date in strftime's style (%Y-%m-%d, %b %d, %H:%M...), as d3 formats axes.
@@ -264,6 +312,26 @@ std::wstring FormatDate(double t, std::wstring_view format) {
         case L'L': number(milli, 3, L'0'); break;
         case L'p': out += hour < 12 ? L"AM" : L"PM"; break;
         case L'j': number(day - DaysFromCivil(c.y, 1, 1) + 1, 3, L'0'); break;
+        case L'U': number((day - DaysFromCivil(c.y, 1, 1) + 7 - weekday) / 7, 2, L'0'); break;
+        case L'W': number((day - DaysFromCivil(c.y, 1, 1) + 7 - (weekday + 6) % 7) / 7, 2, L'0'); break;
+        case L'V':
+        case L'G':
+        case L'g': {
+            // ISO weeks: the week (and its year) of its Thursday.
+            const long long thursday = day - (weekday + 6) % 7 + 3;
+            const long long iso_year = CivilFromDays(thursday).y;
+            if (f == L'V') number((thursday - DaysFromCivil(iso_year, 1, 1)) / 7 + 1, 2, L'0');
+            else if (f == L'G') number(iso_year, 0, L'0');
+            else number(((iso_year % 100) + 100) % 100, 2, L'0');
+            break;
+        }
+        case L'c': out += FormatDate(t, L"%-m/%-d/%Y, %-I:%M:%S %p"); break;
+        case L'x': out += FormatDate(t, L"%-m/%-d/%Y"); break;
+        case L'X': out += FormatDate(t, L"%-I:%M:%S %p"); break;
+        case L'Z': out += L"+0000"; break;
+        case L'f': number(milli * 1000, 6, L'0'); break;
+        case L'Q': number(static_cast<long long>(t), 0, L'0'); break;
+        case L's': number(static_cast<long long>(std::floor(t / 1000)), 0, L'0'); break;
         case L'%': out.push_back(L'%'); break;
         default:
             out.push_back(L'%');
@@ -271,7 +339,14 @@ std::wstring FormatDate(double t, std::wstring_view format) {
             break;
         }
     }
-    return out;
+    // (Runs of spaces show as one.)
+    std::wstring collapsed;
+    for (wchar_t ch : out) {
+        if (ch == L' ' && (collapsed.empty() || collapsed.back() == L' ')) continue;
+        collapsed.push_back(ch);
+    }
+    while (!collapsed.empty() && collapsed.back() == L' ') collapsed.pop_back();
+    return collapsed;
 }
 
 // ---------------------------------------------------------------------------
@@ -297,7 +372,9 @@ struct Task {
 
 class Parser {
 public:
-    explicit Parser(const Source& src) : src_(src), c_(src.text, src.body) {}
+    explicit Parser(const Source& src) : src_(src), c_(src.text, src.body) {
+        compact = EqualsNoCase(src.display_mode, L"compact");
+    }
 
     void Parse() {
         c_.SkipStatementGap();
@@ -345,7 +422,7 @@ private:
         };
         if (c_.EatKeyword(L"title")) {
             c_.SkipBlanks();
-            title = TextHere(c_.LineRest());
+            title = TextHere(c_.WholeLine());
             return;
         }
         std::wstring value;
@@ -405,7 +482,7 @@ private:
         if (c_.EatKeyword(L"section")) {
             c_.SkipBlanks();
             if (sections.size() >= kMaxNodes) c_.Fail(Tr(L"Too many sections", L"Слишком много разделов"));
-            sections.push_back(TextHere(c_.LineRest()));
+            sections.push_back(TextHere(c_.WholeLine()));
             return;
         }
         // Task name : [tags,] [id,] [start,] end
@@ -418,6 +495,10 @@ private:
         t.text = TextHere(name);
         std::vector<std::wstring> data;
         const std::wstring_view rest = c_.LineRest();
+        if (const size_t hash = rest.find(L'#'); hash != std::wstring_view::npos) {
+            c_.set_pos(static_cast<size_t>(rest.data() - src_.text.data()) + hash);
+            c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
+        }
         for (size_t s = 0; s <= rest.size();) {
             size_t e = rest.find(L',', s);
             if (e == std::wstring_view::npos) e = rest.size();
@@ -483,24 +564,26 @@ private:
 
     std::optional<double> Date(const std::wstring& s) const {
         if (auto d = ParseDate(s, date_format)) return d;
-        // (Mermaid falls back to JavaScript's Date: ISO dates.)
-        for (const wchar_t* f : {L"YYYY-MM-DD", L"YYYY-MM-DDTHH:mm:ss", L"YYYY-MM-DD HH:mm:ss", L"YYYY-MM-DDTHH:mm",
-                                 L"YYYY-MM-DD HH:mm", L"YYYY-MM-DDTHH:mm:ss.SSS"}) {
-            if (auto d = ParseDate(s, f)) return d;
+        // (Mermaid falls back to JavaScript's Date: ISO dates and the like.)
+        for (const wchar_t* f : {L"YYYY-M-D", L"YYYY-M-DTHH:mm:ss", L"YYYY-M-D HH:mm:ss", L"YYYY-M-DTHH:mm", L"YYYY-M-D HH:mm",
+                                 L"YYYY-M-DTHH:mm:ss.SSS", L"YYYY", L"YYYY-M", L"YYYY/M/D", L"YYYY/M/D HH:mm", L"YYYY/M/D HH:mm:ss",
+                                 L"M/D/YYYY", L"M/D/YYYY HH:mm", L"M.D.YYYY", L"M-D-YYYY", L"MMM D YYYY", L"MMM D, YYYY",
+                                 L"D MMM YYYY", L"MMM D YYYY HH:mm", L"MMM D, YYYY HH:mm"}) {
+            if (auto d = ParseDate(s, f, false)) return d;
         }
         return std::nullopt;
     }
 
-    static double Today() { return FromDays(DayOf(static_cast<double>(std::time(nullptr)) * 1000.0)); }
+    static double Today() { return FromDays(DayOf(LocalNow())); }
 
     // Starts and ends, as far as tasks refer to each other ("after", "until"
-    // in any order). As in Mermaid: unknown tasks after "after" mean today,
-    // an end neither a date nor a duration makes an empty task, and excluded
-    // days lengthen tasks (those not ending at a date).
+    // in any order). As in Mermaid: unknown tasks after "after" or "until"
+    // mean today, an end neither a date nor a duration makes an empty task,
+    // and excluded days lengthen tasks (those not ending at a YYYY-MM-DD).
     void Resolve() {
         std::map<std::wstring, size_t> ids;
         for (size_t k = 0; k < tasks.size(); ++k) {
-            if (!tasks[k].id.empty()) ids.emplace(tasks[k].id, k);
+            if (!tasks[k].id.empty()) ids[tasks[k].id] = k;  // (the last one, as in Mermaid)
         }
         auto refs = [&](std::wstring_view list) {
             std::vector<size_t> out;
@@ -563,22 +646,24 @@ private:
                         missing = true;
                         continue;
                     }
-                    if (first_start) end = *first_start;
-                } else if (auto date = Date(t.end_raw)) {
+                    end = first_start ? *first_start : Today();
+                } else if (auto date = ParseDate(t.end_raw, date_format)) {
                     end = *date + (inclusive_end_ ? kDay : 0.0);
-                    at_date = true;
-                } else if (auto d = ParseDuration(t.end_raw)) {
-                    end = *start + *d;
+                    at_date = ParseDate(t.end_raw, L"YYYY-MM-DD").has_value();
+                } else if (auto d = AddDuration(*start, t.end_raw)) {
+                    end = *d;
                 }
-                if (std::abs(end) > kMaxTime) mermaid::Fail(t.line, Tr(L"The date is out of range", L"Дата вне допустимого диапазона"));
+                if (!(std::abs(end) <= kMaxTime)) mermaid::Fail(t.line, Tr(L"The date is out of range", L"Дата вне допустимого диапазона"));
+                // (An end before the start stays: the next task starts there.)
                 t.start = *start;
-                t.end = t.render_end = std::max(end, *start);
-                // Excluded days push the end further (Mermaid's fixTaskDates;
-                // the bar stops before those at its end).
+                t.end = t.render_end = end;
+                // Excluded days push the end further, counted from the day
+                // after the start (Mermaid's checkTaskDates); the bar stops
+                // before those at its end.
                 if (excludes && !at_date) {
                     bool excluded = false;
                     int steps = 0;
-                    for (double day = t.start; day <= t.end && steps < 20000; day += kDay, ++steps) {
+                    for (double day = t.start + kDay; day <= t.end && steps < 20000; day += kDay, ++steps) {
                         if (!excluded) t.render_end = t.end;
                         excluded = Excluded(DayOf(day));
                         if (excluded) t.end += kDay;
@@ -641,12 +726,27 @@ double TickStep(double start, double stop, double count) {
     return step1;
 }
 
+constexpr Interval kIntervals[] = {
+    {Unit::Second, 1},  {Unit::Second, 5}, {Unit::Second, 15}, {Unit::Second, 30}, {Unit::Minute, 1}, {Unit::Minute, 5},
+    {Unit::Minute, 15}, {Unit::Minute, 30}, {Unit::Hour, 1},   {Unit::Hour, 3},     {Unit::Hour, 6},   {Unit::Hour, 12},
+    {Unit::Day, 1},     {Unit::Day, 2},    {Unit::Week, 1},    {Unit::Month, 1},    {Unit::Month, 3},  {Unit::Year, 1}};
+
+// The next coarser interval than iv.
+Interval Coarser(Interval iv) {
+    auto ms = [](const Interval& i) { return UnitMs(i.unit) * static_cast<double>(i.n); };
+    for (const Interval& i : kIntervals) {
+        if (ms(i) > ms(iv)) return i;
+    }
+    // Years: 1, 2, 5, 10, 20, 50...
+    long long n = std::max(1LL, iv.unit == Unit::Year ? iv.n : 1);
+    long long p = 1;
+    while (p * 10 <= n) p *= 10;
+    const long long lead = n / p;
+    return {Unit::Year, lead < 2 ? 2 * p : lead < 5 ? 5 * p : 10 * p};
+}
+
 // The interval d3 picks for about ten ticks.
 Interval AutoInterval(double t0, double t1) {
-    static const Interval kIntervals[] = {
-        {Unit::Second, 1},  {Unit::Second, 5}, {Unit::Second, 15}, {Unit::Second, 30}, {Unit::Minute, 1}, {Unit::Minute, 5},
-        {Unit::Minute, 15}, {Unit::Minute, 30}, {Unit::Hour, 1},   {Unit::Hour, 3},     {Unit::Hour, 6},   {Unit::Hour, 12},
-        {Unit::Day, 1},     {Unit::Day, 2},    {Unit::Week, 1},    {Unit::Month, 1},    {Unit::Month, 3},  {Unit::Year, 1}};
     auto ms = [](const Interval& i) { return UnitMs(i.unit) * static_cast<double>(i.n); };
     const double target = (t1 - t0) / 10;
     size_t i = 0;
@@ -749,7 +849,8 @@ constexpr float kChartW = 680;           // the time axis: all about as wide as 
 constexpr float kBar = 20, kBarGap = 4;  // Mermaid's barHeight, barGap
 constexpr float kMargin = 20;
 constexpr float kSide = 75;              // Mermaid's leftPadding / rightPadding
-constexpr float kScale = 0.75f;          // task and axis text: 12px
+constexpr float kScale = 0.75f;          // task text: 12px
+constexpr float kAxisScale = 0.625f;     // axis labels: 10px, as Mermaid's
 
 std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Source& src) {
     using M = SceneBuilder::Measured;
@@ -762,37 +863,33 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
         t0 = std::min(t0, t.start);
         t1 = std::max(t1, t.vert ? t.start : t.render_end);
     }
-    if (p.tasks.empty()) t0 = t1 = FromDays(DayOf(static_cast<double>(std::time(nullptr)) * 1000.0));
+    if (p.tasks.empty()) t0 = t1 = FromDays(DayOf(LocalNow()));
     if (t1 <= t0) t1 = t0 + kDay;
-    // Rows: a task each, or packed per section in compact mode; vert
-    // markers take none.
+    // Rows: a task each, or in compact mode packed per section by start
+    // (Mermaid's getMaxIntersections); vert markers take none.
     std::vector<int> row(p.tasks.size(), -1);
     int rows = 0;
-    {
-        std::vector<double> ends;  // compact: where each row of the section is free from
-        int section = -2, first = 0;
-        for (size_t k = 0; k < p.tasks.size(); ++k) {
-            const Task& t = p.tasks[k];
-            if (t.vert) continue;
-            if (t.section != section) {
-                section = t.section;
-                first = rows;
-                ends.clear();
-            }
-            if (!p.compact) {
-                row[k] = rows++;
-                continue;
-            }
-            size_t r = 0;
-            while (r < ends.size() && ends[r] > t.start) ++r;
-            if (r == ends.size()) {
-                ends.push_back(t.render_end);
-                ++rows;
-            } else {
-                ends[r] = t.render_end;
-            }
-            row[k] = first + static_cast<int>(r);
+    for (size_t k = 0; k < p.tasks.size();) {
+        size_t e = k;
+        std::vector<size_t> section;
+        for (; e < p.tasks.size() && p.tasks[e].section == p.tasks[k].section; ++e) {
+            if (!p.tasks[e].vert) section.push_back(e);
         }
+        k = e;
+        if (!p.compact) {
+            for (size_t i : section) row[i] = rows++;
+            continue;
+        }
+        std::stable_sort(section.begin(), section.end(), [&](size_t a, size_t b) { return p.tasks[a].start < p.tasks[b].start; });
+        std::vector<double> ends;  // where each row is free from
+        for (size_t i : section) {
+            size_t r = 0;
+            while (r < ends.size() && ends[r] > p.tasks[i].start) ++r;
+            if (r == ends.size()) ends.push_back(0);
+            ends[r] = p.tasks[i].end;
+            row[i] = rows + static_cast<int>(r);
+        }
+        rows += static_cast<int>(ends.size());
     }
     // Section titles on the left, as wide as they need.
     std::vector<M> section_titles;
@@ -839,22 +936,38 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
             if (z > a) b.Rect(D2D1::RectF(a, chart_top, z, chart_bottom), 0, Tint(0xFFEEEEEE), Role(kDgNone));
         }
     }
-    // The grid and the axis labels.
-    Interval iv = AutoInterval(t0, t1);
-    if (const auto set = ParseInterval(p.tick_interval)) iv = *set;
-    const float axis_y = p.top_axis ? chart_top - axis_h + 4 : chart_bottom + 6;
-    for (double t : Ticks(t0, t1, iv, p.week_start)) {
-        const float x = X(t);
-        b.Begin(D2D1::Point2F(x, chart_top));
-        b.LineTo(D2D1::Point2F(x, chart_bottom));
-        b.End(Role(kDgNone), Tint(0xCCD3D3D3), 1.f);
+    // The grid and the axis labels: tickInterval's ticks, or d3's (coarser
+    // while their labels would run into each other).
+    const auto set = ParseInterval(p.tick_interval);
+    Interval iv = set ? *set : AutoInterval(t0, t1);
+    std::vector<double> ticks = Ticks(t0, t1, iv, p.week_start);
+    if (set && ticks.empty()) ticks = Ticks(t0, t1, iv = AutoInterval(t0, t1), p.week_start);
+    std::vector<M> labels;
+    auto axis_label = [&](double t) {
         // Mermaid's %Y-%m-%d, but times between days when ticks are hours apart.
         std::wstring_view format = p.axis_format;
         if (format.empty()) format = iv.unit < Unit::Day && std::fmod(t, kDay) != 0 ? L"%H:%M" : L"%Y-%m-%d";
-        RichText label;
-        label.text = FormatDate(t, format);
-        const M m = b.Measure(label, 0, false, kScale);
-        b.Text(m, D2D1::Point2F(x - m.w / 2, axis_y), Role(kDgText));
+        RichText text;
+        text.text = FormatDate(t, format);
+        return b.Measure(text, 0, false, kAxisScale);
+    };
+    for (int round = 0; round < 12; ++round) {
+        labels.clear();
+        bool fits = true;
+        for (size_t i = 0; i < ticks.size(); ++i) {
+            labels.push_back(axis_label(ticks[i]));
+            if (i > 0 && X(ticks[i]) - X(ticks[i - 1]) < (labels[i].w + labels[i - 1].w) / 2 + 6) fits = false;
+        }
+        if (fits || set) break;
+        ticks = Ticks(t0, t1, iv = Coarser(iv), p.week_start);
+    }
+    const float axis_y = p.top_axis ? chart_top - axis_h + 6 : chart_bottom + 6;
+    for (size_t i = 0; i < ticks.size(); ++i) {
+        const float x = X(ticks[i]);
+        b.Begin(D2D1::Point2F(x, chart_top));
+        b.LineTo(D2D1::Point2F(x, chart_bottom));
+        b.End(Role(kDgNone), Tint(0xCCD3D3D3), 1.f);
+        b.Text(labels[i], D2D1::Point2F(x - labels[i].w / 2, axis_y), Role(kDgText));
     }
     // Tasks.
     for (size_t k = 0; k < p.tasks.size(); ++k) {
@@ -868,11 +981,14 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
         if (t.milestone) {
             // A diamond at the middle of its time.
             const float cx = (a + z) / 2, cy = y + kBar / 2, r = kBar * 0.57f;
-            b.Polygon({{cx, cy - r}, {cx + r, cy}, {cx, cy + r}, {cx - r, cy}}, Tint(fill), Argb(stroke), 2.f);
+            const std::vector<D2D1_POINT_2F> diamond{{cx, cy - r}, {cx + r, cy}, {cx, cy + r}, {cx - r, cy}};
+            b.Polygon(diamond, Role(kDgPage), Role(kDgNone));  // (opaque in the dark theme too)
+            b.Polygon(diamond, Tint(fill), Argb(stroke), 2.f);
             a = cx - r;
             z = cx + r;
         } else {
             z = std::max(z, a + 1);
+            b.Rect(D2D1::RectF(a, y, z, y + kBar), 3, Role(kDgPage), Role(kDgNone));  // (opaque in the dark theme too)
             b.Rect(D2D1::RectF(a, y, z, y + kBar), 3, Tint(fill), Argb(stroke), 2.f);
         }
         // The name inside (white on the plain bars), or else beside it:
@@ -900,7 +1016,7 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
     }
     // Today, if in the chart.
     if (p.today_marker) {
-        const double now = static_cast<double>(std::time(nullptr)) * 1000.0;
+        const double now = LocalNow();
         if (now >= t0 && now <= t1) {
             const float x = X(now);
             b.Begin(D2D1::Point2F(x, chart_top));
