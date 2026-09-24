@@ -698,10 +698,9 @@ LayeredLayout LayoutLayered(const LayeredGraph& g, bool ranks_only) {
         for (int c = 0; c < nc; ++c) {
             const int p = parent[static_cast<size_t>(c)];
             if (!used[static_cast<size_t>(c)] || p < 0) continue;
-            // A box without a title (a state's concurrent region) may start
-            // and end on its parent's ranks: no empty rank rows inside.
-            const auto& cl = g.clusters[static_cast<size_t>(c)];
-            const int gap = cl.title_w > 0 || cl.title_h > 0 ? 1 : 0;
+            // A box sharing its parent's ranks (a state's concurrent region)
+            // may start and end on them: no empty rank rows inside.
+            const int gap = g.clusters[static_cast<size_t>(c)].share_ranks ? 0 : 1;
             add(top[static_cast<size_t>(p)], top[static_cast<size_t>(c)], gap, 1.f);
             add(bottom[static_cast<size_t>(c)], bottom[static_cast<size_t>(p)], gap, 1.f);
         }
@@ -898,6 +897,7 @@ LayeredLayout LayoutLayered(const LayeredGraph& g, bool ranks_only) {
             nodes.push_back(l);
             WNode rt = l;
             rt.kind = Kind::Right;
+            rt.after = std::clamp(g.clusters[static_cast<size_t>(c)].after, 0.f, 10000.f);
             rights[static_cast<size_t>(c)].push_back(static_cast<int>(nodes.size()));
             nodes.push_back(rt);
         }
@@ -1191,9 +1191,10 @@ LayeredLayout LayoutLayered(const LayeredGraph& g, bool ranks_only) {
         const Kind ka = kind(a), kb = kind(b);
         const bool sa = ka == Kind::Left || ka == Kind::Right, sb = kb == Kind::Left || kb == Kind::Right;
         if (ka == Kind::Left) return pad + side_band(nodes[static_cast<size_t>(a)].owner) + (sb ? 0.f : half(b));
-        if (kb == Kind::Right) return (sa ? 0.f : right(a)) + pad;
-        if (ka == Kind::Right && kb == Kind::Left) return g.node_sep * 0.5f;
-        if (ka == Kind::Right) return half(b) + gap(b) * 0.5f;
+        // (A right side's `after`: the room kept beside its box.)
+        if (kb == Kind::Right) return (sa ? (ka == Kind::Right ? right(a) : 0.f) : right(a)) + pad;
+        if (ka == Kind::Right && kb == Kind::Left) return right(a) + g.node_sep * 0.5f;
+        if (ka == Kind::Right) return right(a) + half(b) + gap(b) * 0.5f;
         if (kb == Kind::Left) return right(a) + gap(a) * 0.5f;
         return right(a) + gap(a) / 2 + gap(b) / 2 + half(b);
     };
@@ -1457,6 +1458,20 @@ LayeredLayout LayoutLayered(const LayeredGraph& g, bool ranks_only) {
         if (!valid[i]) continue;
         auto& b = out.bends[i];
         for (int d : chains[i]) b.push_back(map_node(d));
+        // A box end: the edge meets the box's border (leaving through its
+        // bottom, entering through its top) in line with its next bend.
+        auto border = [&](int end, int next, bool leaving) {
+            const WNode& d = nodes[static_cast<size_t>(end)];
+            const size_t c = static_cast<size_t>(d.owner);
+            const float inset = std::min(pad, (cx1[c] - cx0[c]) / 2);
+            const float x = next >= 0 ? nodes[static_cast<size_t>(next)].x : (cx0[c] + cx1[c]) / 2;
+            return map(std::clamp(x, cx0[c] + inset, cx1[c] - inset), leaving ? d.y + d.h / 2 : d.y - d.h / 2);
+        };
+        const int u = upper(i), v = lower(i);
+        const int first = chains[i].empty() ? (v < n ? v : -1) : chains[i].front();
+        const int last = chains[i].empty() ? (u < n ? u : -1) : chains[i].back();
+        if (u >= n && kind(u) == Kind::Bottom) b.insert(b.begin(), border(u, first, true));
+        if (v >= n && kind(v) == Kind::Top) b.push_back(border(v, last, false));
         if (reversed[i]) std::reverse(b.begin(), b.end());
         if (label_node[i] >= 0) {
             out.labels[i] = map_node(label_node[i]);

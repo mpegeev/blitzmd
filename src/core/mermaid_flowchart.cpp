@@ -832,6 +832,7 @@ struct Placed {
     int loops = 0;                    // self loops: right of it, one around the other
     bool loop_below = false;          // below it instead (LR/RL)
     float loop_labels = 0;            // where their labels end, out from its box
+    float loop_side = 0;              // their labels across
 };
 
 // The point halfway along a polyline.
@@ -1195,7 +1196,10 @@ private:
                     pl.loop_below = g.dir == RankDir::LR || g.dir == RankDir::RL;
                     const SceneBuilder::Measured& m = edge_labels_[static_cast<size_t>(ei)];
                     ++pl.loops;
-                    if (m.layout) pl.loop_labels += (pl.loop_below ? m.h : m.w) + 6;
+                    if (m.layout) {
+                        pl.loop_labels += (pl.loop_below ? m.h : m.w) + 6;
+                        pl.loop_side = std::max(pl.loop_side, pl.loop_below ? m.w : m.h);
+                    }
                 }
                 continue;
             }
@@ -1227,6 +1231,9 @@ private:
             if (r.cluster || P(r.index).loops == 0) continue;
             const Placed& pl = P(r.index);
             g.nodes[k].after = LoopReach(pl.loops - 1) * 0.75f + 6 + pl.loop_labels;
+            // Across, laid out as wide as its loops' labels (drawn its own size).
+            float& across = pl.loop_below ? g.nodes[k].w : g.nodes[k].h;
+            across = std::max(across, pl.loop_side + 8);
         }
         lv.layout = LayoutLayered(g);
         if (lv.layout.too_large) TooLarge();
@@ -1379,6 +1386,7 @@ private:
                 }
                 pts.front() = Clip(e.from, pts[1]);
                 pts.back() = Clip(e.to, pts[pts.size() - 2]);
+                DropDoubledEnds(&pts);
                 const D2D1_POINT_2F tip_end = pts.back(), tip_start = pts.front();
                 const D2D1_POINT_2F before_end = pts[pts.size() - 2], after_start = pts[1];
                 if (e.end != Marker::None) pts.back() = Retreat(pts.back(), before_end, MarkerLength(e.end));

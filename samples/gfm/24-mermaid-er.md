@@ -45,8 +45,30 @@ erDiagram
 ```mermaid
 erDiagram
     direction LR
-    p[Person] ||--o| a["Customer Account"] : has
-    a |o--|{ o[Order] : "places"
-    o }|..o{ i[Item] : lists
+    p[Person]
+    a["Customer Account"]
+    o[Order]
+    i[Item]
+    p ||--o| a : has
+    a |o--|{ o : "places"
+    o }|..o{ i : lists
     EMPLOYEE |o--o{ EMPLOYEE : manages
+```
+
+## Subgraphs
+
+```mermaid
+erDiagram
+    subgraph sales ["Sales"]
+        CUSTOMER ||--o{ ORDER : places
+        ORDER ||--|{ LINE-ITEM : contains
+    end
+    subgraph catalog ["Catalog"]
+        PRODUCT {
+            string sku PK
+            string name
+        }
+    end
+    LINE-ITEM }o--|| PRODUCT : refers
+    sales }o..o{ catalog : browses
 ```

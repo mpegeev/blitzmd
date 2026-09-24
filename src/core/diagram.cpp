@@ -438,8 +438,8 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
     };
     std::vector<Stroke> strokes;
     auto stroke_style = [&](uint8_t dash, float width) -> ID2D1StrokeStyle* {
-        // Dashes under a pixel look solid anyway, and cost dearly to draw.
-        if (k * 2.f < 0.75f) dash = 0;
+        // Gaps under a pixel look solid anyway, and cost dearly to draw.
+        if (k < 0.2f) dash = 0;
         for (const Stroke& st : strokes) {
             if (st.dash == dash && st.width == width) return st.style.Get();
         }

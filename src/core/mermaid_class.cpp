@@ -101,8 +101,16 @@ public:
             c_.Fail(Tr(L"'{' without '}'", L"«{» без «}»"));
         }
         // Notes for classes named anywhere; for no class, a note alone.
+        size_t links = 0;
         for (size_t k = 0; k < notes.size(); ++k) {
-            if (auto it = ids_.find(note_targets_[k]); it != ids_.end()) notes[k].target = it->second;
+            if (auto it = ids_.find(note_targets_[k]); it != ids_.end()) {
+                notes[k].target = it->second;
+                ++links;
+            }
+        }
+        // A note's link is a line to draw like a relation: they count together.
+        if (relations.size() + links > kMaxEdges) {
+            mermaid::Fail(kNoLine, Tr(L"Too many relations: Mermaid draws at most 500", L"Слишком много связей: Mermaid рисует не больше 500"));
         }
     }
 
@@ -355,10 +363,6 @@ private:
         if (c_.Peek() != L'"') c_.Fail(Tr(L"Expected a note in quotes", L"Ожидалась заметка в кавычках"));
         n.text = Quoted();
         if (notes.size() >= kMaxNodes) c_.Fail(Tr(L"Too many notes", L"Слишком много заметок"));
-        // A note's link is a line to draw like a relation: they count together.
-        if (!target.empty() && ++links_ + relations.size() > kMaxEdges) {
-            c_.Fail(Tr(L"Too many relations: Mermaid draws at most 500", L"Слишком много связей: Mermaid рисует не больше 500"));
-        }
         note_targets_.push_back(std::move(target));
         notes.push_back(std::move(n));
     }
@@ -397,7 +401,7 @@ private:
             r.label.len = static_cast<uint32_t>(l.size());
             if (l.size() > kMaxLabel) c_.Fail(Tr(L"Label too long", L"Слишком длинная подпись"));
         }
-        if (relations.size() + links_ >= kMaxEdges) {
+        if (relations.size() >= kMaxEdges) {
             c_.Fail(Tr(L"Too many relations: Mermaid draws at most 500", L"Слишком много связей: Mermaid рисует не больше 500"));
         }
         relations.push_back(std::move(r));
@@ -520,7 +524,6 @@ private:
     std::vector<int> open_;         // namespaces being read
     std::vector<size_t> open_at_;   // where their '{' is
     bool opened_ = false;           // the statement just read opened one
-    size_t links_ = 0;              // notes for a class
     std::vector<std::wstring> note_targets_;  // per note: the class named
 };
 
@@ -547,6 +550,7 @@ struct Box {                         // a class or a note, as laid out
     M note;
     Style style;
     int loops = 0;
+    float loop_side = 0;          // its loops' texts, across (the layout keeps room)
 };
 
 class Builder {
@@ -718,13 +722,15 @@ private:
             if (r.a == r.b) {
                 // Counted, with its label's length: loops go around each
                 // other, their labels past the outermost one (DrawLoop).
+                // Its cardinalities and label one after another outward;
+                // across, the class is laid out as wide as the widest.
                 Box& b = boxes_[static_cast<size_t>(r.a)];
                 ++b.loops;
-                float len = 0;
                 for (const M* t : {&labels_[k], &cards_[k].first, &cards_[k].second}) {
-                    if (t->layout) len = std::max(len, sideways ? t->h : t->w);
+                    if (!t->layout) continue;
+                    loop_room[static_cast<size_t>(r.a)] += (sideways ? t->h : t->w) + 6;
+                    b.loop_side = std::max(b.loop_side, sideways ? t->w : t->h);
                 }
-                if (len > 0) loop_room[static_cast<size_t>(r.a)] += len + 6;
                 continue;
             }
             LayeredGraph::Edge e;
@@ -742,6 +748,8 @@ private:
         for (size_t i = 0; i < boxes_.size(); ++i) {
             if (boxes_[i].loops > 0) {
                 g.nodes[i].after = kLoopReach * (1 + 0.6f * static_cast<float>(boxes_[i].loops - 1)) * 0.75f + 6 + loop_room[i];
+                float& across = sideways ? g.nodes[i].w : g.nodes[i].h;
+                across = std::max(across, boxes_[i].loop_side + 8);
             }
         }
         // A note hangs off its class.
@@ -860,27 +868,22 @@ private:
         b_.End(Role(kDgNone), line, 1.f, dash);
         AddMarker(b_, r.end, a1, c2, line, 1.f);
         AddMarker(b_, r.start, a0, c1, line, 1.f);
-        // Its label past the outermost loop and the labels before (Layout
-        // keeps room), the cardinalities on either side of it.
-        const M& m = labels_[k];
-        const M& ca = cards_[k].first;
-        const M& cb = cards_[k].second;
-        auto out_len = [&](const M& t) { return t.layout ? (below ? t.h : t.w) : 0.f; };
-        auto side_len = [&](const M& t) { return t.layout ? (below ? t.w : t.h) : 0.f; };
-        const float len = std::max({out_len(m), out_len(ca), out_len(cb)});
-        if (len <= 0) return;
-        const float start = std::max(kLoopReach * (1 + 0.6f * static_cast<float>(b.loops - 1)) * 0.75f + 6, *labels > 0 ? *labels + 6 : 0.f);
-        *labels = start + len;
-        const D2D1_POINT_2F c = at(edge + start + len / 2, 0);
-        if (m.layout) {
-            b_.Rect(D2D1::RectF(c.x - m.w / 2 - 2, c.y - m.h / 2, c.x + m.w / 2 + 2, c.y + m.h / 2), 0, Role(kDgLabelBg), Role(kDgNone));
-            b_.Text(m, D2D1::Point2F(c.x - m.w / 2, c.y - m.h / 2), Role(kDgText), r.label.pos, r.label.len);
-        }
-        const float half = side_len(m) / 2 + 2;
-        for (const auto& [t, sign, src] : {std::tuple{&ca, -1.f, &r.card_a}, std::tuple{&cb, 1.f, &r.card_b}}) {
+        // Past the outermost loop and what the loops before put there
+        // (Layout keeps the room): its cardinalities with its label between.
+        float out = std::max(kLoopReach * (1 + 0.6f * static_cast<float>(b.loops - 1)) * 0.75f + 6, *labels > 0 ? *labels + 6 : 0.f);
+        const std::tuple<const M*, const Text*, bool> pieces[] = {
+            {&cards_[k].first, &r.card_a, false}, {&labels_[k], &r.label, true}, {&cards_[k].second, &r.card_b, false}};
+        for (const auto& [t, src, boxed] : pieces) {
             if (!t->layout) continue;
-            const D2D1_POINT_2F p = at(edge + start + len / 2, sign * (half + side_len(*t) / 2));
-            b_.Text(*t, D2D1::Point2F(p.x - t->w / 2, p.y - t->h / 2), Role(kDgText), src->pos, src->len);
+            const float len = below ? t->h : t->w;
+            const D2D1_POINT_2F c = at(edge + out + len / 2, 0);
+            if (boxed) {
+                b_.Rect(D2D1::RectF(c.x - t->w / 2 - 2, c.y - t->h / 2, c.x + t->w / 2 + 2, c.y + t->h / 2), 0, Role(kDgLabelBg),
+                        Role(kDgNone));
+            }
+            b_.Text(*t, D2D1::Point2F(c.x - t->w / 2, c.y - t->h / 2), Role(kDgText), src->pos, src->len);
+            *labels = out + len;
+            out += len + 6;
         }
     }
 

@@ -1471,6 +1471,16 @@ int main(int argc, char** ansi_argv) {
             {L"stateDiagram\nstate c <<choice>>\nstate f <<fork>>\nstate j <<join>>\n[*] --> c\nc --> f : x\nf --> A\nf --> B\nA --> j\nB --> j\nj --> [*]", true, nullptr},
             {L"stateDiagram-v2\nstate \"A long name\" as s2\ns2 : more\ns2 : and more\nnote right of s2 : a note\nnote left of s2\nline one\nline two\nend note", true, nullptr},
             {L"stateDiagram-v2\ndirection LR\nclassDef bad fill:#f00\nA --> B:::bad\nclass A bad\nstyle B stroke:#00f\nA --> A : again", true, nullptr},
+            {L"stateDiagram-v2\nstate \"Waiting\" as Wait\n[*] --> Main\nstate Main {\n[*] --> Wait\nWait --> [*]\n}\nMain --> [*]", true, nullptr},
+            {L"stateDiagram-v2\n[*] --> Show\nShow --> Hide : toggle\nHide --> Show : toggle\nhide empty description\nscale 350 width", true, nullptr},
+            {L"stateDiagram-v2\nclassDef c fill:#f00\nA --> [*]:::c\n[*]:::c --> A\nclass B c\nstyle B fill:#0f0\nB --> A\naccTitle: t", true, nullptr},
+            {L"stateDiagram-v2\nstate C {\nX --> Y\n}\nC --> C : again\nC --> X : in\nY --> C : out", true, nullptr},
+            {L"stateDiagram-v2\nstate A\n{\nB --> C\n-- %% next\nD --> E\n} A --> F\nstate G { H --> I }\nnote \"floating\" as N1\nstate f [[fork]]\n# a comment", true, nullptr},
+            {L"stateDiagram-v2\nstate A {\nB --> C\n}\nstate A {\nD --> E\n}\nnote left of B extra\nmore\nend note", true, nullptr},
+            {L"stateDiagram-v2\nstate A {\nB\n}\nstate B {\nA\n}", true, nullptr},
+            {L"stateDiagram-v2\nstate A {\nB --> C\n-- D --> E\n}\nA --> F # a comment\nnote left of F\ntext\nend note here", true, nullptr},
+            {L"stateDiagram-v2\nstate f [[fork\nA", false, L"Line 2"},
+            {L"stateDiagram-v2\naccDescr {\nnever closed", false, L"Line 2"},
             {L"stateDiagram-v2\nstate A {\nB --> C", false, L"Line 2"},
             {L"stateDiagram-v2\n}", false, L"Line 2"},
             {L"stateDiagram-v2\n--", false, L"Line 2"},
@@ -1480,6 +1490,11 @@ int main(int argc, char** ansi_argv) {
             {L"erDiagram\nCAR {\nstring registrationNumber PK\nstring(99) firstName \"Only 99\"\nstring[] parts\nint id PK, FK\n}", true, nullptr},
             {L"erDiagram\nMANUFACTURER only one to zero or more CAR : makes\nPERSON many(0) optionally to 0+ NAMED-DRIVER : is", true, nullptr},
             {L"erDiagram\np[Person] ||--o| a[\"Customer Account\"] : has\n\"A name\" |o--o| \"A name\" : \"self\"\ndirection LR", true, nullptr},
+            {L"erDiagram\nsubgraph title1\nCUSTOMER {\nstring name\n}\nend\nsubgraph grp [\"Nice title\"]\ndirection LR\nCAR ||--o{ NAMED-DRIVER : allows\nsubgraph inner\nENGINE\nend\nend\nCUSTOMER ||--o{ CAR : owns\ngrp ||--|| CUSTOMER : links\nCUSTOMER }o--o{ title1 : in\ngrp |o--o| grp : self", true, nullptr},
+            {L"erDiagram\nA one to many B : x\nC o|--|o D : y\nE |o.-o| F : z\nE |o-.o| F : z2\npublic.users ||--o{ public.orders : places\nI |O--O{ J : v\nx*y ||--|| a-b- : t", true, nullptr},
+            {L"erDiagram\nclassDef c1 fill:#f00\nclassDef c2 stroke:#00f\nclass A,B c1,c2\nA:::c1,c2 ||--|| B : x\nA { string a int b PK,FK \"note\" }\nB {\n`some type` `some name` PK\n}", true, nullptr},
+            {L"erDiagram\nsubgraph S\nA ||--|| B : x", false, L"Line 2"},
+            {L"erDiagram\nA {\n`unclosed type\n}", false, L"Line 3"},
             {L"erDiagram\nA ||--o{ B", false, L"Line 2"},
             {L"erDiagram\nA ||-o{ B : x", false, L"Line 2"},
             {L"erDiagram\nA {\nstring", false, L"Line 3"},
@@ -1608,7 +1623,17 @@ int main(int argc, char** ansi_argv) {
             }(),
             L"stateDiagram-v2\n" + repeat(L"A --> A : again\n", 400),
             L"stateDiagram-v2\n" + repeat(L"note right of A : " + std::wstring(200, L'n') + L"\n", 150),
-            L"stateDiagram-v2\n" + repeat(L"[*] --> A\n--\n", 1000),
+            L"stateDiagram-v2\nstate X {\n" + repeat(L"[*] --> A\n--\n", 450) + L"}",
+            [&] {  // composites named inside one another: nested deeper than written
+                std::wstring s = L"stateDiagram-v2\n";
+                for (int i = 0; i < 60; ++i) s += L"state C" + std::to_wstring(i) + L" {\nC" + std::to_wstring(i + 1) + L" --> X" + std::to_wstring(i) + L"\n}\n";
+                return s;
+            }(),
+            [&] {  // states moved from composite to composite
+                std::wstring s = L"stateDiagram-v2\n";
+                for (int i = 0; i < 200; ++i) s += L"state C" + std::to_wstring(i) + L" {\nA --> B\nB --> C" + std::to_wstring((i + 1) % 200) + L"\n}\n";
+                return s;
+            }(),
             [&] {  // a chain of entities, and relationships from the first to all
                 std::wstring s = L"erDiagram\n";
                 for (int i = 0; i < 249; ++i) s += L"E" + std::to_wstring(i) + L" ||--o{ E" + std::to_wstring(i + 1) + L" : r\n";
@@ -1617,6 +1642,18 @@ int main(int argc, char** ansi_argv) {
             }(),
             L"erDiagram\nA {\n" + repeat(L"string(255) name PK, FK, UK \"comment\"\n", 1200) + L"}",
             L"erDiagram\n" + repeat(L"A |o..o| A : \"again\"\n", 300),
+            L"erDiagram\n" + repeat(L"A ||--|| B : x\n", 2100),
+            L"erDiagram\n" + repeat(L"subgraph S\n", 30) + L"A\n" + repeat(L"end\n", 30),
+            [&] {  // many subgraphs, related as boxes, to their members and to themselves
+                std::wstring s = L"erDiagram\n";
+                for (int i = 0; i < 60; ++i) {
+                    const std::wstring n = std::to_wstring(i);
+                    s += L"subgraph G" + n + L"\nE" + n + L" ||--o{ F" + n + L" : r\nend\n";
+                    s += L"G" + n + L" }o--|| G" + std::to_wstring((i * 7 + 3) % 60) + L" : g\nG" + n + L" |o--o| E" + n +
+                         L" : in\nG" + n + L" ||--|| G" + n + L" : self\n";
+                }
+                return s;
+            }(),
             L"pie showData\n" + repeat(L"\"slice\" : 1e300\n", 2000),
             L"pie\n" + repeat(L"\"" + std::wstring(200, L's') + L"\" : 0.000001\n", 1000),
             [&] {  // many actors on many tasks
@@ -1880,6 +1917,10 @@ int main(int argc, char** ansi_argv) {
                                (rnd() & 1 ? L" PK" : L"") + (rnd() & 1 ? L" \"note\"" : L"") + L"\n";
                     }
                     src += L"}\n";
+                } else if (rnd() % 6 == 0) {
+                    src += L"subgraph G" + std::to_wstring(k % 3) + L"\n" + a + L" ||--|{ " + b + L" : in\nend\n";
+                } else if (rnd() % 8 == 0) {
+                    src += L"G" + std::to_wstring(rnd() % 3) + L" |o--o{ " + b + L" : box\n";
                 } else {
                     src += a + L" " + kCards[rnd() % 4][0] + (rnd() & 1 ? L"--" : L"..") + kCards[rnd() % 4][1] + L" " + b + L" : rel\n";
                 }
@@ -1943,6 +1984,8 @@ int main(int argc, char** ansi_argv) {
                 cl.parent = c > 0 && rnd() % 3 == 0 ? static_cast<int>(rnd() % static_cast<uint32_t>(c)) : -1;
                 cl.title_w = rnd() % 2 ? static_cast<float>(40 + rnd() % 200) : 0.f;
                 cl.title_h = cl.title_w > 0 ? 20.f : 0.f;
+                cl.share_ranks = cl.title_w <= 0 && cl.parent >= 0 && rnd() % 2;  // a concurrent region
+                if (rnd() % 6 == 0) cl.after = 50;  // a composite state's loops
                 g.clusters.push_back(cl);
             }
             const int n = 2 + static_cast<int>(rnd() % 12);
@@ -2004,6 +2047,22 @@ int main(int argc, char** ansi_argv) {
                 for (int d = c + 1; d < nc && bad.empty(); ++d) {
                     const D2D1_RECT_F& other = l.clusters[static_cast<size_t>(d)];
                     if (!empty(other) && !inside(c, d) && !inside(d, c) && meet(box, other)) bad = "boxes overlap";
+                }
+                // The room beside a box: nothing else in it.
+                const float room = g.clusters[static_cast<size_t>(c)].after;
+                if (room > 0 && bad.empty()) {
+                    const bool side = g.dir == RankDir::LR || g.dir == RankDir::RL;
+                    const D2D1_RECT_F r = side ? D2D1::RectF(box.left, box.bottom, box.right, box.bottom + room)
+                                               : D2D1::RectF(box.right, box.top, box.right + room, box.bottom);
+                    for (int v = 0; v < n && bad.empty(); ++v) {
+                        const D2D1_POINT_2F p = l.centers[static_cast<size_t>(v)];
+                        const float hw = g.nodes[static_cast<size_t>(v)].w / 2, hh = g.nodes[static_cast<size_t>(v)].h / 2;
+                        if (meet(r, D2D1::RectF(p.x - hw, p.y - hh, p.x + hw, p.y + hh))) bad = "a node beside a box, in its room";
+                    }
+                    for (int d = 0; d < nc && bad.empty(); ++d) {
+                        const D2D1_RECT_F& other = l.clusters[static_cast<size_t>(d)];
+                        if (d != c && !empty(other) && !inside(d, c) && meet(r, other)) bad = "a box beside a box, in its room";
+                    }
                 }
             }
             if (!bad.empty()) {

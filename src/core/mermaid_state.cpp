@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <numeric>
 #include <unordered_map>
 
 #include "core/mermaid_internal.h"
@@ -33,7 +34,7 @@ struct State {
 
 struct Cluster {
     int state = -1;                  // the composite state; -1: one of its concurrent regions
-    int parent = -1;
+    int parent = -1;                 // (a composite's: its state's)
     std::vector<int> regions;        // a composite's regions (two or more)
     bool folded = false;             // a lone region: its contents belong to the composite
 };
@@ -81,14 +82,17 @@ public:
         for (;;) {
             c_.SkipStatementGap();
             if (c_.AtEnd()) break;
-            Statement();
+            // '{' and '}' end their statements: more may follow on the line.
+            if (Statement()) continue;
             c_.SkipBlanks();
+            if (c_.Peek() == L'#') c_.SkipToLineEnd();  // a comment
             if (!c_.AtStatementEnd() && c_.Peek() != L'}') c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
         }
         if (!scopes_.empty()) {
             c_.set_pos(scopes_.back().open);
             c_.Fail(Tr(L"'{' without '}'", L"«{» без «}»"));
         }
+        Finish();
     }
 
     RankDir dir = RankDir::TB;
@@ -106,24 +110,33 @@ private:
 
     int Current() const { return scopes_.empty() ? -1 : scopes_.back().cluster; }
 
-    // Keywords as Mermaid's lexer reads them: in any case.
-    void Statement() {
+    // Keywords as Mermaid's lexer reads them: in any case. True after a
+    // brace.
+    bool Statement() {
         if (c_.Peek() == L'}') {
             if (scopes_.empty()) c_.Fail(Tr(L"'}' without '{'", L"«}» без «{»"));
             c_.Advance();
-            Close();
-            return;
+            scopes_.pop_back();
+            return true;
         }
-        if (c_.Rest().starts_with(L"--") && Trim(LinePeek()) == L"--") {
-            // Concurrency: the composite's next region.
+        if (c_.Peek() == L'#') {  // a comment
+            c_.SkipToLineEnd();
+            return false;
+        }
+        if (c_.Rest().starts_with(L"--") && !c_.Rest().starts_with(L"-->")) {
+            // Concurrency: the composite's next region (a statement may
+            // follow on the line, as in Mermaid).
             if (scopes_.empty()) c_.Fail(Tr(L"'--' outside a composite state", L"«--» вне составного состояния"));
             c_.Advance(2);
             const int composite = clusters[static_cast<size_t>(Current())].parent;
             scopes_.back().cluster = NewRegion(composite);
-            return;
+            return true;
         }
         if (c_.EatKeyword(L"state")) return StateDecl();
-        if (c_.EatKeyword(L"note")) return NoteStmt();
+        if (c_.EatKeyword(L"note")) {
+            NoteStmt();
+            return false;
+        }
         if (c_.EatKeyword(L"direction")) {
             c_.SkipBlanks();
             const std::wstring_view d = c_.LineRest();
@@ -134,7 +147,7 @@ private:
             else if (EqualsNoCase(d, L"RL")) r = RankDir::RL;
             else c_.Fail(Tr(L"Unknown direction", L"Неизвестное направление"));
             if (scopes_.empty()) dir = r;  // (inside composites: the whole diagram's applies)
-            return;
+            return false;
         }
         if (c_.EatKeyword(L"classDef")) {
             c_.SkipBlanks();
@@ -143,17 +156,16 @@ private:
             Style st;
             st.Apply(c_.LineRest());
             for (const std::wstring& n : names) class_defs[n].Merge(st);
-            return;
+            return false;
         }
+        // class and style: for states named before or after them.
         if (c_.EatKeyword(L"class")) {
             c_.SkipBlanks();
             const std::vector<std::wstring> ids = Names();
             c_.SkipBlanks();
             const std::wstring name(c_.LineRest());
-            for (const std::wstring& id : ids) {
-                if (auto it = ids_.find(id); it != ids_.end()) states[static_cast<size_t>(it->second)].classes.push_back(name);
-            }
-            return;
+            for (const std::wstring& id : ids) pending_classes_.push_back({id, name});
+            return false;
         }
         if (c_.EatKeyword(L"style")) {
             c_.SkipBlanks();
@@ -161,32 +173,57 @@ private:
             c_.SkipBlanks();
             Style st;
             st.Apply(c_.LineRest());
-            for (const std::wstring& id : ids) states[static_cast<size_t>(StateIndex(Text{id, 0, 0}))].style.Merge(st);
-            return;
+            for (const std::wstring& id : ids) pending_styles_.push_back({id, st});
+            return false;
         }
-        if (c_.EatKeyword(L"accDescr")) {
+        // Statements Mermaid knows by more than their first word (else
+        // "Hide" or "scale" may be states).
+        const size_t at = c_.pos();
+        if (c_.EatKeyword(L"accTitle")) {
             c_.SkipBlanks();
-            if (c_.Eat(L'{')) {
+            if (c_.Eat(L':')) {
+                c_.LineRest();
+                return false;
+            }
+        } else if (c_.EatKeyword(L"accDescr")) {
+            c_.SkipBlanks();
+            if (c_.Peek() == L'{') {
+                const size_t open = c_.pos();
                 while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
-                c_.Eat(L'}');
-            } else {
-                c_.LineRest();
+                if (!c_.Eat(L'}')) {
+                    c_.set_pos(open);
+                    c_.Fail(Tr(L"'{' without '}'", L"«{» без «}»"));
+                }
+                return false;
             }
-            return;
-        }
-        for (const wchar_t* kw : {L"accTitle", L"hide", L"scale", L"click"}) {
-            if (c_.EatKeyword(kw)) {
+            if (c_.Eat(L':')) {
                 c_.LineRest();
-                return;
+                return false;
+            }
+        } else if (c_.EatKeyword(L"hide")) {
+            c_.SkipBlanks();
+            if (c_.EatKeyword(L"empty")) {
+                c_.SkipBlanks();
+                if (c_.EatKeyword(L"description")) return false;
+            }
+        } else if (c_.EatKeyword(L"scale")) {
+            c_.SkipBlanks();
+            if (c_.Peek() >= L'0' && c_.Peek() <= L'9') {
+                c_.LineRest();
+                return false;
+            }
+        } else if (c_.EatKeyword(L"click")) {
+            c_.SkipBlanks();
+            while (IsWordChar(c_.Peek())) c_.Advance();
+            c_.SkipBlanks();
+            if (c_.Peek() == L'"' || c_.EatKeyword(L"href") || c_.EatKeyword(L"call")) {
+                c_.LineRest();
+                return false;
             }
         }
+        c_.set_pos(at);
         TransitionOrDescription();
-    }
-
-    std::wstring_view LinePeek() const {
-        const std::wstring_view r = c_.Rest();
-        const size_t e = r.find(L'\n');
-        return e == std::wstring_view::npos ? r : r.substr(0, e);
+        return false;
     }
 
     // A state id: letters, digits, _ (and - . inside).
@@ -208,8 +245,12 @@ private:
         return t;
     }
 
+    // A state named here (new, or moved: see Mention).
     int StateIndex(const Text& id) {
-        if (auto it = ids_.find(id.raw); it != ids_.end()) return it->second;
+        if (auto it = ids_.find(id.raw); it != ids_.end()) {
+            Mention(it->second);
+            return it->second;
+        }
         if (states.size() >= kMaxNodes) c_.Fail(Tr(L"Too many states", L"Слишком много состояний"));
         State s;
         s.id = id.raw;
@@ -218,6 +259,21 @@ private:
         ids_.emplace(id.raw, static_cast<int>(states.size()));
         states.push_back(std::move(s));
         return static_cast<int>(states.size()) - 1;
+    }
+
+    // As in Mermaid, a state is in the last composite that names it (the
+    // top level doesn't count) - unless that one is inside the state.
+    void Mention(int s) {
+        const int to = Current();
+        State& st = states[static_cast<size_t>(s)];
+        if (to < 0 || st.parent == to) return;
+        if (st.composite >= 0) {
+            for (int c = to; c >= 0; c = clusters[static_cast<size_t>(c)].parent) {
+                if (c == st.composite) return;
+            }
+            clusters[static_cast<size_t>(st.composite)].parent = to;
+        }
+        st.parent = to;
     }
 
     // [*]: the start of the region being read (as the source of a
@@ -236,10 +292,9 @@ private:
         return static_cast<int>(states.size()) - 1;
     }
 
-    // A state in a transition: an id (with :::class) or [*].
+    // A state in a transition: an id or [*] (with :::class).
     int Ref(bool end) {
-        if (c_.EatStr(L"[*]")) return Terminal(end);
-        const int s = StateIndex(Id());
+        const int s = c_.EatStr(L"[*]") ? Terminal(end) : StateIndex(Id());
         Classes(s);
         return s;
     }
@@ -264,7 +319,7 @@ private:
             c_.SkipBlanks();
             if (c_.Eat(L':')) t.label = Rest();
             if (transitions.size() >= kMaxEdges) {
-                c_.Fail(Tr(L"Too many transitions: Mermaid draws at most 500", L"Слишком много переходов: Mermaid рисует не больше 500"));
+                c_.Fail(Tr(L"Too many transitions (at most 500)", L"Слишком много переходов (не больше 500)"));
             }
             transitions.push_back(std::move(t));
             return;
@@ -276,7 +331,7 @@ private:
     }
 
     // state A | state "label" as A | state A <<fork>> | state A { ... }
-    void StateDecl() {
+    bool StateDecl() {
         c_.SkipBlanks();
         Text label;
         if (c_.Peek() == L'"') {
@@ -289,11 +344,14 @@ private:
         const int s = StateIndex(id);
         if (!label.raw.empty()) states[static_cast<size_t>(s)].label = label;
         c_.SkipBlanks();
-        if (c_.EatStr(L"<<")) {
+        const bool angle = c_.EatStr(L"<<");
+        if (angle || c_.EatStr(L"[[")) {
+            // <<fork>> or [[fork]]
+            const std::wstring_view close = angle ? L">>" : L"]]";
             const size_t start = c_.pos();
-            while (!c_.AtEnd() && !c_.Rest().starts_with(L">>") && c_.Peek() != L'\n') c_.Advance();
+            while (!c_.AtEnd() && !c_.Rest().starts_with(close) && c_.Peek() != L'\n') c_.Advance();
             const std::wstring_view kind = Trim(src_.text.substr(start, c_.pos() - start));
-            if (!c_.EatStr(L">>")) c_.Fail(Tr(L"Expected '>>'", L"Ожидалось «>>»"));
+            if (!c_.EatStr(close)) c_.Fail(angle ? Tr(L"Expected '>>'", L"Ожидалось «>>»") : Tr(L"Expected ']]'", L"Ожидалось «]]»"));
             if (EqualsNoCase(kind, L"fork")) states[static_cast<size_t>(s)].kind = Kind::Fork;
             else if (EqualsNoCase(kind, L"join")) states[static_cast<size_t>(s)].kind = Kind::Join;
             else if (EqualsNoCase(kind, L"choice")) states[static_cast<size_t>(s)].kind = Kind::Choice;
@@ -304,20 +362,33 @@ private:
         if (c_.Eat(L':')) {
             Text d = Rest();
             if (!d.raw.empty()) states[static_cast<size_t>(s)].descriptions.push_back(std::move(d));
-            return;
+            return false;
         }
-        if (!c_.Eat(L'{')) return;
-        // A composite state: its contents are its first region.
+        if (!c_.Eat(L'{')) {
+            // (The brace may open the next line.)
+            const size_t at = c_.pos();
+            c_.SkipStatementGap();
+            if (!c_.Eat(L'{')) {
+                c_.set_pos(at);
+                return false;
+            }
+        }
+        // A composite state: its contents are its first region (defined
+        // again, its last).
         if (static_cast<int>(scopes_.size()) >= kMaxNesting) c_.Fail(Tr(L"States nested too deep", L"Слишком глубокая вложенность состояний"));
-        if (states[static_cast<size_t>(s)].composite >= 0) c_.Fail(Tr(L"The state is defined twice", L"Состояние определено дважды"));
+        State& st = states[static_cast<size_t>(s)];
+        if (st.composite >= 0) {
+            scopes_.push_back({clusters[static_cast<size_t>(st.composite)].regions.back(), c_.pos() - 1});
+            return true;
+        }
         if (clusters.size() + 2 > kMaxNodes) c_.Fail(Tr(L"Too many states", L"Слишком много состояний"));
         Cluster cl;
         cl.state = s;
-        cl.parent = Current();
-        const int composite = static_cast<int>(clusters.size());
+        cl.parent = st.parent;
+        st.composite = static_cast<int>(clusters.size());
         clusters.push_back(cl);
-        states[static_cast<size_t>(s)].composite = composite;
-        scopes_.push_back({NewRegion(composite), c_.pos() - 1});
+        scopes_.push_back({NewRegion(st.composite), c_.pos() - 1});
+        return true;
     }
 
     int NewRegion(int composite) {
@@ -330,27 +401,15 @@ private:
         return index;
     }
 
-    // The end of a composite: with a single region, its contents are the
-    // composite's own.
-    void Close() {
-        const int region = scopes_.back().cluster;
-        scopes_.pop_back();
-        Cluster& composite = clusters[static_cast<size_t>(clusters[static_cast<size_t>(region)].parent)];
-        if (composite.regions.size() != 1) return;
-        const int to = clusters[static_cast<size_t>(region)].parent;
-        clusters[static_cast<size_t>(region)].folded = true;
-        composite.regions.clear();
-        for (State& s : states) {
-            if (s.parent == region) s.parent = to;
-        }
-        for (Cluster& c : clusters) {
-            if (c.parent == region) c.parent = to;
-        }
-    }
-
     // note left of A : text | note right of A \n text \n end note
     void NoteStmt() {
         c_.SkipBlanks();
+        if (c_.Peek() == L'"') {
+            // note "text" as N: Mermaid reads it and draws nothing.
+            Quoted();
+            c_.LineRest();
+            return;
+        }
         Note n;
         if (c_.EatKeyword(L"left")) n.left = true;
         else if (!c_.EatKeyword(L"right")) c_.Fail(Tr(L"Expected \"left of\" or \"right of\"", L"Ожидалось «left of» или «right of»"));
@@ -362,23 +421,24 @@ private:
         if (c_.Eat(L':')) {
             n.text = Rest();
         } else {
-            // Up to "end note" on a line of its own.
-            const size_t open = c_.pos();
+            // Up to "end note" on a line of its own (with what follows the
+            // state on this line).
+            const size_t start = c_.pos();
             c_.SkipToLineEnd();
             c_.Advance();
-            const size_t start = c_.pos();
             size_t end = std::wstring_view::npos;
             while (!c_.AtEnd()) {
                 const size_t line = c_.pos();
                 c_.SkipToLineEnd();
-                if (EqualsNoCase(Trim(src_.text.substr(line, c_.pos() - line)), L"end note")) {
+                const std::wstring_view l = Trim(src_.text.substr(line, c_.pos() - line));
+                if (StartsWithNoCase(l, L"end note") && (l.size() == 8 || !IsWordChar(l[8]))) {
                     end = line;
                     break;
                 }
                 c_.Advance();
             }
             if (end == std::wstring_view::npos) {
-                c_.set_pos(open);
+                c_.set_pos(start);
                 c_.Fail(Tr(L"A note without \"end note\"", L"Заметка без «end note»"));
             }
             const std::wstring_view body = Trim(src_.text.substr(start, end - start));
@@ -438,11 +498,101 @@ private:
         return out;
     }
 
+    // Classes and styles of the states there are; lone regions folded
+    // into their composites; how deep states ended up nested.
+    void Finish() {
+        for (const auto& [id, name] : pending_classes_) {
+            if (auto it = ids_.find(id); it != ids_.end()) states[static_cast<size_t>(it->second)].classes.push_back(name);
+        }
+        for (const auto& [id, st] : pending_styles_) {
+            if (auto it = ids_.find(id); it != ids_.end()) states[static_cast<size_t>(it->second)].style.Merge(st);
+        }
+        for (Cluster& c : clusters) {
+            if (c.state < 0 || c.regions.size() != 1) continue;
+            clusters[static_cast<size_t>(c.regions[0])].folded = true;
+            c.regions.clear();
+        }
+        auto unfold = [&](int c) { return c >= 0 && clusters[static_cast<size_t>(c)].folded ? clusters[static_cast<size_t>(c)].parent : c; };
+        for (State& s : states) s.parent = unfold(s.parent);
+        for (Cluster& c : clusters) c.parent = unfold(c.parent);
+        for (const Cluster& c : clusters) {
+            int depth = 0;
+            for (int k = c.parent; k >= 0; k = clusters[static_cast<size_t>(k)].parent) {
+                if (++depth > 2 * kMaxNesting) Fail(kNoLine, Tr(L"States nested too deep", L"Слишком глубокая вложенность состояний"));
+            }
+        }
+    }
+
     const Source& src_;
     Cursor c_;
     std::unordered_map<std::wstring, int> ids_;
     std::map<int, int> starts_, ends_;  // per region (-1: the diagram's)
     std::vector<Scope> scopes_;
+    std::vector<std::pair<std::wstring, std::wstring>> pending_classes_;
+    std::vector<std::pair<std::wstring, Style>> pending_styles_;
+};
+
+// ---------------------------------------------------------------------------
+// The structure laid out: composites (with states in them) as boxes, the
+// other states as nodes.
+// ---------------------------------------------------------------------------
+
+class Structure {
+public:
+    explicit Structure(const Parser& p) : p_(p) {
+        // Clusters holding a state (at any depth) are drawn.
+        used_.assign(p.clusters.size(), 0);
+        for (const State& s : p.states) {
+            for (int c = s.parent; c >= 0 && !used_[static_cast<size_t>(c)]; c = p.clusters[static_cast<size_t>(c)].parent) used_[static_cast<size_t>(c)] = 1;
+        }
+        // A composite in the layout: the first plain state inside it.
+        representative_.assign(p.clusters.size(), -1);
+        for (size_t i = 0; i < p.states.size(); ++i) {
+            if (IsComposite(static_cast<int>(i))) continue;
+            for (int c = p.states[i].parent; c >= 0; c = p.clusters[static_cast<size_t>(c)].parent) {
+                if (representative_[static_cast<size_t>(c)] < 0) representative_[static_cast<size_t>(c)] = static_cast<int>(i);
+            }
+        }
+        // Parents before children.
+        std::vector<int> depth(p.clusters.size(), 0);
+        for (size_t c = 0; c < p.clusters.size(); ++c) {
+            for (int k = p.clusters[c].parent; k >= 0; k = p.clusters[static_cast<size_t>(k)].parent) ++depth[c];
+        }
+        order_.resize(p.clusters.size());
+        std::iota(order_.begin(), order_.end(), 0);
+        std::stable_sort(order_.begin(), order_.end(), [&](int a, int b) { return depth[static_cast<size_t>(a)] < depth[static_cast<size_t>(b)]; });
+    }
+
+    bool Used(int c) const { return used_[static_cast<size_t>(c)] != 0; }
+    const std::vector<int>& Order() const { return order_; }
+
+    // Composites with nothing in them are plain states.
+    bool IsComposite(int s) const {
+        const int c = p_.states[static_cast<size_t>(s)].composite;
+        return c >= 0 && used_[static_cast<size_t>(c)];
+    }
+
+    int Representative(int s) const {
+        if (!IsComposite(s)) return s;
+        const int r = representative_[static_cast<size_t>(p_.states[static_cast<size_t>(s)].composite)];
+        return r >= 0 ? r : s;
+    }
+
+    // Whether composite a holds state b (at any depth).
+    bool Holds(int a, int b) const {
+        if (a == b || !IsComposite(a)) return false;
+        const int box = p_.states[static_cast<size_t>(a)].composite;
+        for (int c = p_.states[static_cast<size_t>(b)].parent; c >= 0; c = p_.clusters[static_cast<size_t>(c)].parent) {
+            if (c == box) return true;
+        }
+        return false;
+    }
+
+private:
+    const Parser& p_;
+    std::vector<char> used_;
+    std::vector<int> representative_;  // per composite cluster
+    std::vector<int> order_;
 };
 
 // ---------------------------------------------------------------------------
@@ -456,6 +606,11 @@ constexpr float kClusterPad = 12;
 constexpr float kMargin = 8;
 constexpr float kLoopReach = 36;
 
+// The room loops take beside a state (their labels past them).
+float LoopRoom(int loops, float labels) {
+    return loops > 0 ? kLoopReach * (1 + 0.6f * static_cast<float>(loops - 1)) * 0.75f + 6 + labels : 0.f;
+}
+
 using M = SceneBuilder::Measured;
 
 struct Box {
@@ -467,11 +622,12 @@ struct Box {
     int node = -1;            // in the layered graph (-1: a composite, drawn as its cluster)
     float note_before = 0, note_after = 0;  // notes beside it
     int loops = 0;
+    float loop_labels = 0;    // their labels' length
 };
 
 class Builder {
 public:
-    Builder(Parser& p, SceneBuilder& b, const Source& src) : p_(p), b_(b), src_(src) {}
+    Builder(Parser& p, SceneBuilder& b, const Source& src) : p_(p), b_(b), src_(src), s_(p) {}
 
     std::shared_ptr<DiagramScene> Build() {
         MeasureAll();
@@ -489,6 +645,14 @@ public:
         for (Box& b : boxes_) {
             if (b.node >= 0) b.center = D2D1::Point2F(ox_ + layout_.centers[static_cast<size_t>(b.node)].x,
                                                       oy_ + layout_.centers[static_cast<size_t>(b.node)].y);
+        }
+        for (size_t i = 0; i < p_.states.size(); ++i) {
+            if (!s_.IsComposite(static_cast<int>(i))) continue;
+            // A composite's box, for its loops.
+            const D2D1_RECT_F r = ClusterRect(p_.states[i].composite);
+            boxes_[i].center = D2D1::Point2F((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+            boxes_[i].w = r.right - r.left;
+            boxes_[i].h = r.bottom - r.top;
         }
         for (size_t k = 0; k < p_.notes.size(); ++k) {
             if (note_node_[k] >= 0) {
@@ -529,15 +693,7 @@ private:
         return t;
     }
 
-    // Composites with nothing in them are plain states.
-    bool IsComposite(const State& s) const { return s.composite >= 0 && used_[static_cast<size_t>(s.composite)]; }
-
     void MeasureAll() {
-        // Clusters holding a state (at any depth) are drawn.
-        used_.assign(p_.clusters.size(), 0);
-        for (const State& s : p_.states) {
-            for (int c = s.parent; c >= 0 && !used_[static_cast<size_t>(c)]; c = p_.clusters[static_cast<size_t>(c)].parent) used_[static_cast<size_t>(c)] = 1;
-        }
         boxes_.resize(p_.states.size());
         for (size_t i = 0; i < p_.states.size(); ++i) {
             const State& s = p_.states[i];
@@ -559,7 +715,7 @@ private:
             const std::wstring& name = !s.label.raw.empty() ? s.label.raw : s.id;
             const bool one = s.descriptions.size() == 1 && s.label.raw.empty();
             b.title = b_.Measure(Styled(ParseLabel(Breaks(one ? s.descriptions[0].raw : name), false), bold, italic), 0, false, 1.f);
-            if (IsComposite(s)) {
+            if (s_.IsComposite(static_cast<int>(i))) {
                 composite_titles_[s.composite] = b.title;
                 continue;
             }
@@ -585,50 +741,34 @@ private:
 
     // A composite's box in the layered graph (-1: not a composite).
     int BoxOf(int s) const {
-        const State& st = p_.states[static_cast<size_t>(s)];
-        return IsComposite(st) ? cluster_graph_[static_cast<size_t>(st.composite)] : -1;
-    }
-
-    // A state that stands for a composite in the layout: the first plain
-    // state inside it.
-    int Representative(int s) const {
-        const State& st = p_.states[static_cast<size_t>(s)];
-        if (!IsComposite(st)) return s;
-        for (size_t i = 0; i < p_.states.size(); ++i) {
-            if (IsComposite(p_.states[i])) continue;
-            for (int c = p_.states[i].parent; c >= 0; c = p_.clusters[static_cast<size_t>(c)].parent) {
-                if (c == st.composite) return static_cast<int>(i);
-            }
-        }
-        return s;
+        return s_.IsComposite(s) ? cluster_graph_[static_cast<size_t>(p_.states[static_cast<size_t>(s)].composite)] : -1;
     }
 
     void Layout() {
         LayeredGraph g;
         g.dir = p_.dir;
         g.cluster_pad = kClusterPad;
-        // Clusters (parents first, as read): composites with a title,
-        // regions without; folded regions and empty ones are left out.
+        // Clusters, parents first: composites with a title, regions sharing
+        // their ranks; folded regions and empty ones are left out.
         cluster_graph_.assign(p_.clusters.size(), -1);
-        for (size_t c = 0; c < p_.clusters.size(); ++c) {
-            const Cluster& cl = p_.clusters[c];
-            if (!used_[c] || cl.folded) continue;
+        for (int c : s_.Order()) {
+            const Cluster& cl = p_.clusters[static_cast<size_t>(c)];
+            if (!s_.Used(c) || cl.folded) continue;
             LayeredGraph::Cluster gc;
             gc.parent = cl.parent >= 0 ? cluster_graph_[static_cast<size_t>(cl.parent)] : -1;
             if (cl.state >= 0) {
-                const M& t = composite_titles_[static_cast<int>(c)];
+                const M& t = composite_titles_[c];
                 gc.title_w = t.w + 8;
                 gc.title_h = t.h;
+            } else {
+                gc.share_ranks = true;
             }
-            cluster_graph_[c] = static_cast<int>(g.clusters.size());
+            cluster_graph_[static_cast<size_t>(c)] = static_cast<int>(g.clusters.size());
             g.clusters.push_back(gc);
         }
-        auto cluster = [&](int c) {
-            // A folded region's states belong to its composite (Close did that).
-            return c >= 0 ? cluster_graph_[static_cast<size_t>(c)] : -1;
-        };
+        auto cluster = [&](int c) { return c >= 0 ? cluster_graph_[static_cast<size_t>(c)] : -1; };
         for (size_t i = 0; i < p_.states.size(); ++i) {
-            if (IsComposite(p_.states[i])) continue;
+            if (s_.IsComposite(static_cast<int>(i))) continue;
             Box& b = boxes_[i];
             b.node = static_cast<int>(g.nodes.size());
             LayeredGraph::Node n;
@@ -657,26 +797,26 @@ private:
             nn.cluster = cluster(p_.states[static_cast<size_t>(n.state)].parent);
             note_node_[k] = static_cast<int>(g.nodes.size());
             g.nodes.push_back(nn);
-            note_links.push_back({note_node_[k], boxes_[static_cast<size_t>(Representative(n.state))].node});
+            note_links.push_back({note_node_[k], boxes_[static_cast<size_t>(s_.Representative(n.state))].node});
             note_of_composite_.push_back(BoxOf(n.state));
         }
         // Transitions; one to a composite goes to a state inside it and is
-        // cut at the box.
+        // cut at the box. Loops and those between a composite and a state
+        // in it are drawn by themselves.
         slot_.assign(p_.transitions.size(), -1);
         for (size_t k = 0; k < p_.transitions.size(); ++k) {
             const Transition& t = p_.transitions[k];
-            const int a = boxes_[static_cast<size_t>(Representative(t.from))].node;
-            const int bn = boxes_[static_cast<size_t>(Representative(t.to))].node;
-            if (a < 0 || bn < 0) continue;
-            if (a == bn) {
-                if (t.from == t.to) {
-                    Box& b = boxes_[static_cast<size_t>(t.from)];
-                    const float label = labels_[k].layout ? (sideways() ? labels_[k].h : labels_[k].w) + 6 : 0.f;
-                    loop_labels_[t.from] += label;
-                    ++b.loops;
-                }
+            if (t.from == t.to) {
+                Box& b = boxes_[static_cast<size_t>(t.from)];
+                if (b.node < 0 && !s_.IsComposite(t.from)) continue;
+                b.loop_labels += labels_[k].layout ? (sideways() ? labels_[k].h : labels_[k].w) + 6 : 0.f;
+                ++b.loops;
                 continue;
             }
+            if (s_.Holds(t.from, t.to) || s_.Holds(t.to, t.from)) continue;
+            const int a = boxes_[static_cast<size_t>(s_.Representative(t.from))].node;
+            const int bn = boxes_[static_cast<size_t>(s_.Representative(t.to))].node;
+            if (a < 0 || bn < 0 || a == bn) continue;
             LayeredGraph::Edge e;
             e.from = a;
             e.to = bn;
@@ -700,11 +840,13 @@ private:
         }
         for (size_t i = 0; i < boxes_.size(); ++i) {
             Box& b = boxes_[i];
-            if (b.node < 0) continue;
-            float after = b.note_after;
-            if (b.loops > 0) after += kLoopReach * (1 + 0.6f * static_cast<float>(b.loops - 1)) * 0.75f + 6 + loop_labels_[static_cast<int>(i)];
-            g.nodes[static_cast<size_t>(b.node)].after = after;
-            g.nodes[static_cast<size_t>(b.node)].before = b.note_before;
+            const float loops = LoopRoom(b.loops, b.loop_labels);
+            if (b.node >= 0) {
+                g.nodes[static_cast<size_t>(b.node)].after = b.note_after + loops;
+                g.nodes[static_cast<size_t>(b.node)].before = b.note_before;
+            } else if (const int box = BoxOf(static_cast<int>(i)); box >= 0) {
+                g.clusters[static_cast<size_t>(box)].after = loops;
+            }
         }
         layout_ = LayoutLayered(g);
         if (layout_.too_large) TooLarge();
@@ -722,12 +864,14 @@ private:
         return D2D1::RectF(b.center.x - b.w / 2, b.center.y - b.h / 2, b.center.x + b.w / 2, b.center.y + b.h / 2);
     }
 
+    float Band(int c) const { return composite_titles_.at(c).h + 6; }
+
     // A composite: a rounded box, its title in a band at the top, its
     // contents on the page color below; dashed lines between regions.
     void DrawComposites() {
         for (size_t c = 0; c < p_.clusters.size(); ++c) {
             const Cluster& cl = p_.clusters[c];
-            if (cl.state < 0 || !used_[c]) continue;
+            if (cl.state < 0 || !s_.Used(static_cast<int>(c))) continue;
             const D2D1_RECT_F r = ClusterRect(static_cast<int>(c));
             if (r.right <= r.left) continue;
             const State& s = p_.states[static_cast<size_t>(cl.state)];
@@ -735,7 +879,7 @@ private:
             const DgColor fill = st.fill.role != kDgNone ? st.fill : Role(kDgNodeFill);
             const DgColor stroke = st.stroke.role != kDgNone ? st.stroke : Role(kDgNodeStroke);
             const M& t = composite_titles_[static_cast<int>(c)];
-            const float band = t.h + 6;
+            const float band = Band(static_cast<int>(c));
             b_.Rect(r, 5, fill, stroke, 1.f);
             b_.Rect(D2D1::RectF(r.left + 3, r.top + band, r.right - 3, r.bottom - 3), 0, Role(kDgPage), stroke, 1.f);
             const Text& name = !s.label.raw.empty() ? s.label : (s.descriptions.size() == 1 ? s.descriptions[0] : s.name);
@@ -768,7 +912,7 @@ private:
     // Where a line from inside state i towards `p` leaves it.
     D2D1_POINT_2F Clip(int i, D2D1_POINT_2F p) const {
         const State& s = p_.states[static_cast<size_t>(i)];
-        if (IsComposite(s)) {
+        if (s_.IsComposite(i)) {
             const D2D1_RECT_F r = ClusterRect(s.composite);
             return ClipRect(D2D1::Point2F((r.left + r.right) / 2, (r.top + r.bottom) / 2), r.right - r.left, r.bottom - r.top, p);
         }
@@ -784,68 +928,94 @@ private:
         }
     }
 
-    D2D1_POINT_2F Center(int i) const {
-        const State& s = p_.states[static_cast<size_t>(i)];
-        if (!IsComposite(s)) return boxes_[static_cast<size_t>(i)].center;
-        const D2D1_RECT_F r = ClusterRect(s.composite);
-        return D2D1::Point2F((r.left + r.right) / 2, (r.top + r.bottom) / 2);
-    }
+    D2D1_POINT_2F Center(int i) const { return boxes_[static_cast<size_t>(i)].center; }
 
     bool Inside(int i, D2D1_POINT_2F p) const {
         const State& s = p_.states[static_cast<size_t>(i)];
-        if (!IsComposite(s)) return false;
+        if (!s_.IsComposite(i)) return false;
         const D2D1_RECT_F r = ClusterRect(s.composite);
         return p.x > r.left && p.x < r.right && p.y > r.top && p.y < r.bottom;
     }
 
     void DrawTransitions() {
         const DgColor line = Role(kDgLine);
-        std::vector<size_t> labelled;
+        std::vector<std::pair<size_t, D2D1_POINT_2F>> labelled;
         std::map<int, int> loops;
         std::map<int, float> loop_labels;
         for (size_t k = 0; k < p_.transitions.size(); ++k) {
             const Transition& t = p_.transitions[k];
-            if (slot_[k] < 0) {
-                if (t.from == t.to && boxes_[static_cast<size_t>(t.from)].node >= 0) DrawLoop(t, k, loops[t.from]++, &loop_labels[t.from]);
+            if (t.from == t.to) {
+                if (boxes_[static_cast<size_t>(t.from)].loops > 0) DrawLoop(t, k, loops[t.from]++, &loop_labels[t.from]);
                 continue;
             }
             std::vector<D2D1_POINT_2F> pts;
-            pts.push_back(Center(t.from));
-            for (const D2D1_POINT_2F& q : layout_.bends[static_cast<size_t>(slot_[k])]) pts.push_back(D2D1::Point2F(ox_ + q.x, oy_ + q.y));
-            pts.push_back(Center(t.to));
-            // A composite end: from where the line leaves its box.
-            while (pts.size() > 2 && Inside(t.from, pts[1])) pts.erase(pts.begin() + 1);
-            while (pts.size() > 2 && Inside(t.to, pts[pts.size() - 2])) pts.erase(pts.end() - 2);
-            pts.front() = Clip(t.from, pts[1]);
-            pts.back() = Clip(t.to, pts[pts.size() - 2]);
+            if (slot_[k] >= 0) {
+                pts.push_back(Center(t.from));
+                for (const D2D1_POINT_2F& q : layout_.bends[static_cast<size_t>(slot_[k])]) pts.push_back(D2D1::Point2F(ox_ + q.x, oy_ + q.y));
+                pts.push_back(Center(t.to));
+                // A composite end: from where the line leaves its box.
+                while (pts.size() > 2 && Inside(t.from, pts[1])) pts.erase(pts.begin() + 1);
+                while (pts.size() > 2 && Inside(t.to, pts[pts.size() - 2])) pts.erase(pts.end() - 2);
+                pts.front() = Clip(t.from, pts[1]);
+                pts.back() = Clip(t.to, pts[pts.size() - 2]);
+                DropDoubledEnds(&pts);
+            } else if (!Inner(t, &pts)) {
+                continue;
+            }
             const D2D1_POINT_2F tip = pts.back(), before = pts[pts.size() - 2];
             pts.back() = Retreat(tip, before, MarkerLength(Marker::Arrow));
             AddBasisCurve(b_, pts);
             b_.End(Role(kDgNone), line, 1.f);
             AddMarker(b_, Marker::Arrow, tip, before, line, 1.f);
             if (labels_[k].layout) {
-                const D2D1_POINT_2F lp = layout_.labels[static_cast<size_t>(slot_[k])];
-                label_at_[k] = D2D1::Point2F(ox_ + lp.x, oy_ + lp.y);
-                labelled.push_back(k);
+                D2D1_POINT_2F at;
+                if (slot_[k] >= 0) {
+                    const D2D1_POINT_2F lp = layout_.labels[static_cast<size_t>(slot_[k])];
+                    at = D2D1::Point2F(ox_ + lp.x, oy_ + lp.y);
+                } else {
+                    at = D2D1::Point2F((pts.front().x + tip.x) / 2, (pts.front().y + tip.y) / 2);
+                }
+                labelled.push_back({k, at});
             }
         }
-        for (size_t k : labelled) {
+        for (const auto& [k, c] : labelled) {
             const M& m = labels_[k];
-            const D2D1_POINT_2F c = label_at_[k];
             b_.Rect(D2D1::RectF(c.x - m.w / 2 - 2, c.y - m.h / 2, c.x + m.w / 2 + 2, c.y + m.h / 2), 0, Role(kDgLabelBg), Role(kDgNone));
             b_.Text(m, D2D1::Point2F(c.x - m.w / 2, c.y - m.h / 2), Role(kDgText), p_.transitions[k].label.pos, p_.transitions[k].label.len);
         }
     }
 
-    // A state's transition to itself: a loop beside it (below it
-    // sideways), its label past the outermost loop.
+    // A composite and a state in it: straight from under the title band
+    // down to the state, or from the state down to the box's bottom (left
+    // to right sideways).
+    bool Inner(const Transition& t, std::vector<D2D1_POINT_2F>* pts) const {
+        const bool into = s_.Holds(t.from, t.to);
+        const int box = into ? t.from : t.to, member = into ? t.to : t.from;
+        if (!into && !s_.Holds(t.to, t.from)) return false;
+        const int c = p_.states[static_cast<size_t>(box)].composite;
+        const D2D1_RECT_F r = ClusterRect(c);
+        if (r.right <= r.left) return false;
+        const D2D1_POINT_2F m = Center(member);
+        D2D1_POINT_2F edge;
+        if (sideways()) {
+            edge = D2D1::Point2F(into ? r.left : r.right, std::clamp(m.y, r.top + Band(c), r.bottom - 3));
+        } else {
+            edge = D2D1::Point2F(std::clamp(m.x, r.left + 3, r.right - 3), into ? r.top + Band(c) : r.bottom);
+        }
+        const D2D1_POINT_2F end = Clip(member, edge);
+        pts->assign({into ? edge : end, into ? end : edge});
+        return true;
+    }
+
+    // A state's (or composite's) transition to itself: a loop beside it
+    // (below it sideways), its label past the outermost loop.
     void DrawLoop(const Transition& t, size_t k, int n, float* labels) {
         const Box& b = boxes_[static_cast<size_t>(t.from)];
         const bool below = sideways();
         auto at = [&](float out, float side) {
             return below ? D2D1::Point2F(b.center.x + side, b.center.y + out) : D2D1::Point2F(b.center.x + out, b.center.y + side);
         };
-        const float edge = (below ? b.h : b.w) / 2, s = (below ? b.w : b.h) / 4;
+        const float edge = (below ? b.h : b.w) / 2, s = std::min((below ? b.w : b.h) / 4, 15.f);
         const float reach = kLoopReach * (1 + 0.6f * static_cast<float>(n));
         const D2D1_POINT_2F a0 = at(edge, -s), a1 = at(edge, s);
         const D2D1_POINT_2F c1 = at(edge + reach, -s - 12), c2 = at(edge + reach, s + 12);
@@ -857,7 +1027,7 @@ private:
         const M& m = labels_[k];
         if (m.layout) {
             const float len = below ? m.h : m.w;
-            const float start = std::max(kLoopReach * (1 + 0.6f * static_cast<float>(b.loops - 1)) * 0.75f + 6, *labels > 0 ? *labels + 6 : 0.f);
+            const float start = std::max(LoopRoom(b.loops, 0), *labels > 0 ? *labels + 6 : 0.f);
             *labels = start + len;
             const D2D1_POINT_2F c = at(edge + start + len / 2, 0);
             b_.Rect(D2D1::RectF(c.x - m.w / 2 - 2, c.y - m.h / 2, c.x + m.w / 2 + 2, c.y + m.h / 2), 0, Role(kDgLabelBg), Role(kDgNone));
@@ -948,12 +1118,10 @@ private:
     Parser& p_;
     SceneBuilder& b_;
     const Source& src_;
-    std::vector<char> used_;                  // per cluster: drawn
+    Structure s_;
     std::vector<Box> boxes_;                  // per state
     std::map<int, M> composite_titles_;       // per composite cluster
     std::vector<M> labels_, notes_;
-    std::map<size_t, D2D1_POINT_2F> label_at_;
-    std::map<int, float> loop_labels_;        // per state: its loops' labels' length
     std::vector<int> cluster_graph_;          // cluster -> layered graph cluster
     std::vector<int> slot_, note_node_;
     std::vector<int> note_of_composite_;      // per composite's note: its box
@@ -962,25 +1130,41 @@ private:
     float ox_ = 0, oy_ = 0;
 };
 
-// Whether the layout will fit its budget (see the flowchart's).
+// Whether the layout will fit its budget (see the flowchart's): the graph
+// Builder::Layout makes, with sizes guessed.
 void CheckBudget(const Parser& p) {
+    const Structure s(p);
     LayeredGraph g;
     std::vector<int> graph(p.clusters.size(), -1);
-    for (size_t c = 0; c < p.clusters.size(); ++c) {
-        if (p.clusters[c].folded) continue;
+    for (int c : s.Order()) {
+        const Cluster& cl = p.clusters[static_cast<size_t>(c)];
+        if (!s.Used(c) || cl.folded) continue;
         LayeredGraph::Cluster gc;
-        gc.parent = p.clusters[c].parent >= 0 ? graph[static_cast<size_t>(p.clusters[c].parent)] : -1;
-        graph[c] = static_cast<int>(g.clusters.size());
+        gc.parent = cl.parent >= 0 ? graph[static_cast<size_t>(cl.parent)] : -1;
+        gc.share_ranks = cl.state < 0;
+        gc.title_w = gc.title_h = cl.state >= 0 ? 20.f : 0.f;
+        graph[static_cast<size_t>(c)] = static_cast<int>(g.clusters.size());
         g.clusters.push_back(gc);
     }
-    for (const State& s : p.states) {
+    std::vector<int> node(p.states.size(), -1);
+    for (size_t i = 0; i < p.states.size(); ++i) {
+        if (s.IsComposite(static_cast<int>(i))) continue;
         LayeredGraph::Node n;
         n.w = n.h = 10;
-        n.cluster = s.parent >= 0 ? graph[static_cast<size_t>(s.parent)] : -1;
+        n.cluster = p.states[i].parent >= 0 ? graph[static_cast<size_t>(p.states[i].parent)] : -1;
+        node[i] = static_cast<int>(g.nodes.size());
         g.nodes.push_back(n);
     }
+    auto box = [&](int st) { return s.IsComposite(st) ? graph[static_cast<size_t>(p.states[static_cast<size_t>(st)].composite)] : -1; };
     for (const Transition& t : p.transitions) {
-        if (t.from != t.to) g.edges.push_back({t.from, t.to});
+        if (t.from == t.to || s.Holds(t.from, t.to) || s.Holds(t.to, t.from)) continue;
+        LayeredGraph::Edge e;
+        e.from = node[static_cast<size_t>(s.Representative(t.from))];
+        e.to = node[static_cast<size_t>(s.Representative(t.to))];
+        if (e.from < 0 || e.to < 0 || e.from == e.to) continue;
+        e.from_cluster = box(t.from);
+        e.to_cluster = box(t.to);
+        g.edges.push_back(e);
     }
     if (LayoutLayered(g, true).too_large) TooLarge();
 }

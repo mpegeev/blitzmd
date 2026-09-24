@@ -426,6 +426,12 @@ D2D1_POINT_2F Retreat(D2D1_POINT_2F p, D2D1_POINT_2F from, float d) {
     return D2D1::Point2F(p.x + dx * t, p.y + dy * t);
 }
 
+void DropDoubledEnds(std::vector<D2D1_POINT_2F>* pts) {
+    auto same = [](D2D1_POINT_2F a, D2D1_POINT_2F b) { return std::abs(a.x - b.x) < 0.5f && std::abs(a.y - b.y) < 0.5f; };
+    while (pts->size() > 2 && same((*pts)[1], pts->front())) pts->erase(pts->begin() + 1);
+    while (pts->size() > 2 && same((*pts)[pts->size() - 2], pts->back())) pts->erase(pts->end() - 2);
+}
+
 float MarkerLength(Marker m) {
     switch (m) {
     case Marker::Arrow: return 8.f;
