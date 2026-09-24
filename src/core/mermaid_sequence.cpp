@@ -153,7 +153,7 @@ private:
                 if (depth_ == 0) c_.Fail(std::wstring(L"\"") + kw + Tr(L"\" outside a block", L"» вне блока"));
                 Item it;
                 it.kind = ItemKind::BlockSection;
-                it.text = Rest();
+                it.text = Rest(&it.wrap);
                 Add(std::move(it));
                 return;
             }
@@ -262,15 +262,16 @@ private:
         return static_cast<int>(people.size()) - 1;
     }
 
-    // participant John Doe [as Label]: the name runs to the end, or to its
-    // last " as "; v11 metadata (A@{ "type": "queue" }) is dropped.
+    // participant John Doe [as Label]: the name runs to the end, or to the
+    // first " as " (an alias may say "as" again); v11 metadata
+    // (A@{ "type": "queue" }) is dropped.
     void Declare(bool stick, int created_at) {
         c_.SkipBlanks();
         const std::wstring_view line = c_.LineRest();
         const size_t base = static_cast<size_t>(line.data() - src_.text.data());
         std::wstring_view name = line, alias;
         size_t alias_at = 0;
-        for (size_t k = line.size(); k-- > 0;) {
+        for (size_t k = 0; k < line.size(); ++k) {
             if (k + 4 <= line.size() && IsSpace(line[k]) && StartsWithNoCase(line.substr(k + 1), L"as") &&
                 (k + 3 == line.size() || IsSpace(line[k + 3]))) {
                 name = line.substr(0, k);
@@ -339,7 +340,7 @@ private:
             uint32_t argb = 0;
             it.fill = ParseCssColor(rest, &argb) ? Tint(argb) : Role(kDgBoxFill);  // (a pastel on a dark page glares)
         } else {
-            it.text = Rest();
+            it.text = Rest(&it.wrap);
         }
         Add(std::move(it));
     }
@@ -389,7 +390,8 @@ private:
         else if (c_.Eat(L'-')) it.deactivate = true;
         c_.SkipBlanks();
         const size_t to_start = c_.pos();
-        while (!c_.AtStatementEnd() && c_.Peek() != L':') c_.Advance();
+        while (!c_.AtStatementEnd() && c_.Peek() != L':' && !ArrowAt(c_.Rest())) c_.Advance();
+        if (ArrowAt(c_.Rest())) c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));  // A->>B->>C, as Mermaid
         const std::wstring to(src_.text.substr(to_start, c_.pos() - to_start));
         it.a = Person(from, start);
         it.b = Person(to, to_start);
@@ -521,17 +523,25 @@ private:
                 }
             }
         }
-        // Boxes wider than their members for their titles (BoxExtras).
+        // Boxes wider than their members for their titles (BoxExtras): what
+        // each participant's box juts out on either side; two neighbours'
+        // boxes both take room from the gap between them.
+        std::vector<float> jut_left(n, 0.f), jut_right(n, 0.f);
         for (size_t g = 0; g < box_extra_.size(); ++g) {
             const float e = box_extra_[g];
             const auto& ms = p_.groups[g].members;
             if (e <= 0 || ms.empty()) continue;
             const size_t f = static_cast<size_t>(*std::min_element(ms.begin(), ms.end()));
             const size_t l = static_cast<size_t>(*std::max_element(ms.begin(), ms.end()));
-            if (f > 0) spans.push_back({f - 1, f, widths_[f - 1] / 2 + 18 + e + widths_[f] / 2});
-            else left_need[0] = std::max(left_need[0], widths_[0] / 2 + 8 + e);
-            if (l + 1 < n) spans.push_back({l, l + 1, widths_[l] / 2 + 18 + e + widths_[l + 1] / 2});
-            else right_need[l] = std::max(right_need[l], widths_[l] / 2 + 8 + e);
+            jut_left[f] = std::max(jut_left[f], 8 + e);
+            jut_right[l] = std::max(jut_right[l], 8 + e);
+        }
+        for (size_t i = 0; i < n; ++i) {
+            if (i == 0 && jut_left[0] > 0) left_need[0] = std::max(left_need[0], widths_[0] / 2 + jut_left[0]);
+            if (i + 1 == n && jut_right[i] > 0) right_need[i] = std::max(right_need[i], widths_[i] / 2 + jut_right[i]);
+            if (i + 1 < n && (jut_right[i] > 0 || jut_left[i + 1] > 0)) {
+                spans.push_back({i, i + 1, widths_[i] / 2 + jut_right[i] + 10 + jut_left[i + 1] + widths_[i + 1] / 2});
+            }
         }
         // Adjacent spans first, then longer ones take what they still lack
         // from their last gap.
@@ -625,13 +635,14 @@ private:
                 // The new participant's box stands where the message arrives,
                 // and a destroyed one's last box where the next message about
                 // it is (as Mermaid draws them): the message meets the box.
-                bool boxed = false;
+                float below = 0;  // how far a box placed here reaches under the message
+                auto reach = [&](size_t d) { return kActorH / 2 + (p_.people[d].stick ? names_[d].h - 2 : 0.f); };
                 if (a != b) {
                     if (p_.people[b].created_at >= 0 && static_cast<size_t>(p_.people[b].created_at) <= k && appear_[b] == top_ &&
                         created_done_.insert(b).second) {
                         appear_[b] = m.y - kActorH / 2;
                         m.x1 = centers_[b] + (a < b ? -BoxHalf(b) : BoxHalf(b));
-                        boxed = true;
+                        below = std::max(below, reach(b));
                     }
                     for (const size_t d : {a, b}) {
                         const int at = p_.people[d].destroyed_at;
@@ -639,13 +650,13 @@ private:
                         end_[d] = m.y - kActorH / 2;
                         const float side = (d == a) == (a < b) ? BoxHalf(d) : -BoxHalf(d);  // facing the other end
                         (d == a ? m.x0 : m.x1) = centers_[d] + side;
-                        boxed = true;
+                        below = std::max(below, reach(d));
                     }
                 }
-                y = m.y + (a == b ? 20.f : 0.f) + (boxed ? kActorH / 2 : 0.f);
+                y = m.y + (a == b ? 20.f : 0.f) + below;
                 if (a == b) Extend(m.x0 - text.w / 2 - 10, m.x0 + std::max(text.w / 2, kSelfLoop + 10) + 10);
                 else Extend(std::min(centers_[a], centers_[b]) - 20, std::max(centers_[a], centers_[b]) + 20);
-                if (boxed) {  // the boxes are inside the blocks around too
+                if (below > 0) {  // the boxes are inside the blocks around too
                     for (const size_t d : {a, b}) Extend(centers_[d] - widths_[d] / 2, centers_[d] + widths_[d] / 2);
                 }
                 messages_.push_back(m);
@@ -850,6 +861,7 @@ private:
         for (size_t i = 0; i < n; ++i) {
             const float top = appear_[i] + kActorH + (p_.people[i].stick ? names_[i].h - 2 : 0.f);  // below a figure's name
             const float bottom = end_[i] >= 0 ? end_[i] : bottom_;
+            if (bottom <= top) continue;  // created and destroyed at once
             b_.Begin(D2D1::Point2F(centers_[i], top));
             b_.LineTo(D2D1::Point2F(centers_[i], bottom));
             b_.End(Role(kDgNone), Role(kDgMuted), 1.f);

@@ -1449,6 +1449,8 @@ int main(int argc, char** ansi_argv) {
             {L"sequenceDiagram\nparticipant John Doe\nparticipant Jane Roe as JR\nJohn Doe->>JR: hi\nparticipant Q@{ \"type\": \"queue\" } as Queue", true, nullptr},
             {L"sequenceDiagram\nA->>B: I #9829; you#59; and #quot;them#quot;", true, nullptr},
             {L"sequenceDiagram\naccDescr {\nlong\ndescription\n}\npar_over x\nA->>B: wrap:a long text\nend", true, nullptr},
+            {L"sequenceDiagram\nparticipant SaaS as Software as a Service\nA->>SaaS: x\nloop wrap: a title\nA->>SaaS: y\nend", true, nullptr},
+            {L"sequenceDiagram\nA->>B->>C: x", false, L"Line 2"},
             {L"sequenceDiagram\nloop x\nA->>B: y", false, L"end"},
             {L"sequenceDiagram\nA=>B: x", false, L"2"},
             {L"sequenceDiagram\nNote above A: x", false, L"2"},
