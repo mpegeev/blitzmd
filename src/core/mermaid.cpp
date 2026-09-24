@@ -521,7 +521,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart };
+enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -544,6 +544,11 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (EqualsNoCase(*name, L"mindmap")) return Kind::Mindmap;
     if (EqualsNoCase(*name, L"quadrantChart")) return Kind::Quadrant;
     if (EqualsNoCase(*name, L"xychart-beta") || EqualsNoCase(*name, L"xychart")) return Kind::XyChart;
+    if (EqualsNoCase(*name, L"gitGraph")) return Kind::GitGraph;
+    if (EqualsNoCase(*name, L"kanban")) return Kind::Kanban;
+    if (EqualsNoCase(*name, L"packet-beta") || EqualsNoCase(*name, L"packet")) return Kind::Packet;
+    if (EqualsNoCase(*name, L"radar-beta") || EqualsNoCase(*name, L"radar")) return Kind::Radar;
+    if (EqualsNoCase(*name, L"treemap-beta") || EqualsNoCase(*name, L"treemap")) return Kind::Treemap;
     return Kind::Unknown;
 }
 
@@ -587,6 +592,11 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         case Kind::Mindmap: Mindmap(src, nullptr); return true;
         case Kind::Quadrant: QuadrantChart(src, nullptr); return true;
         case Kind::XyChart: XyChart(src, nullptr); return true;
+        case Kind::GitGraph: GitGraph(src, nullptr); return true;
+        case Kind::Kanban: Kanban(src, nullptr); return true;
+        case Kind::Packet: Packet(src, nullptr); return true;
+        case Kind::Radar: RadarChart(src, nullptr); return true;
+        case Kind::Treemap: Treemap(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -613,6 +623,11 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         case Kind::Mindmap: return Mindmap(src, &builder);
         case Kind::Quadrant: return QuadrantChart(src, &builder);
         case Kind::XyChart: return XyChart(src, &builder);
+        case Kind::GitGraph: return GitGraph(src, &builder);
+        case Kind::Kanban: return Kanban(src, &builder);
+        case Kind::Packet: return Packet(src, &builder);
+        case Kind::Radar: return RadarChart(src, &builder);
+        case Kind::Treemap: return Treemap(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;

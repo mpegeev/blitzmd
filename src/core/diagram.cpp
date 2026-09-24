@@ -53,6 +53,10 @@ constexpr uint32_t kLight[kDgRoleCount] = {
     0xFFD1A36F, 0xFFC3CDE6, 0xFFFFB6C1, 0xFF496078, 0xFFF8F3E3,
     // quadrant chart fills (quadrant 1 to 4) and borders
     0xFFECECFF, 0xFFF1F1FF, 0xFFF6F6FF, 0xFFFBFBFF, 0xFFC7C7F1,
+    // cScale brightened (computed)
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // gitInv0..7
+    0xFF131300, 0xFF0000A1, 0xFF310093, 0xFF934900, 0xFF930000, 0xFF930049, 0xFF009300, 0xFF009393,
 };
 constexpr uint32_t kDark[kDgRoleCount] = {
     0x00000000,  // none
@@ -98,6 +102,10 @@ constexpr uint32_t kDark[kDgRoleCount] = {
     0xFFFFFFFF, 0xFF34495E, 0xFF9B59B6, 0xFF1ABC9C, 0xFFE67E22,
     // quadrant chart fills (quadrant 1 to 4) and borders
     0xFF1F2020, 0xFF242525, 0xFF292A2A, 0xFF2E2F2F, 0xFFCCCCCC,
+    // cScale brightened (computed)
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // gitInv0..7
+    0xFF868282, 0xFF5EDD8C, 0xFF95766C, 0xFF64A3CA, 0xFF34EDED, 0xFF9AFF84, 0xFF3387FE, 0xFFCE5AF1,
 };
 
 D2D1_COLOR_F ToColor(uint32_t argb) {
@@ -109,14 +117,23 @@ bool Painted(const DgColor& c) {
     return c.role != kDgNone && ((c.role != kDgArgb && c.role != kDgTint) || (c.argb >> 24) != 0);
 }
 
+uint32_t ResolveRole(const DgColor& c, bool dark);
+
+// A theme role at an opacity (RoleAt: its argb's alpha), or as it is.
 uint32_t Resolve(const DgColor& c, bool dark) {
+    const uint32_t v = ResolveRole(c, dark);
+    if (c.role == kDgArgb || c.role == kDgTint || (c.argb >> 24) == 0) return v;
+    return (v & 0xFFFFFF) | ((((v >> 24) * (c.argb >> 24) + 127) / 255) << 24);
+}
+
+uint32_t ResolveRole(const DgColor& c, bool dark) {
     if (c.role == kDgArgb) return c.argb;
     // Light backgrounds picked for a white page would glare on a dark one
     // (and hide light text): a quarter of the color there.
     if (c.role == kDgTint) return dark ? (c.argb & 0xFFFFFF) | (std::min(c.argb >> 24, 0x40u) << 24) : c.argb;
     if (c.role >= kDgRoleCount) return 0;
     const uint32_t* table = dark ? kDark : kLight;
-    if (c.role >= kDgScaleBright) {
+    if (c.role >= kDgScaleBright && c.role < kDgGitInv) {
         // (Mermaid's CSS filter: brightness(120%).)
         const uint32_t v = table[kDgScale + c.role - kDgScaleBright];
         uint32_t out = 0xFF000000;
@@ -297,6 +314,29 @@ std::shared_ptr<DiagramScene> SceneBuilder::Finish(float width, float height) {
     return std::move(scene_);
 }
 
+std::shared_ptr<DiagramScene> SceneBuilder::FinishFitted(float margin) {
+    DiagramScene& s = *scene_;
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    auto take = [&](const D2D1_RECT_F& r, float out) {
+        x0 = std::min(x0, r.left - out);
+        y0 = std::min(y0, r.top - out);
+        x1 = std::max(x1, r.right + out);
+        y1 = std::max(y1, r.bottom + out);
+    };
+    for (const DiagramScene::Shape& sh : s.shapes) take(sh.box, Painted(sh.stroke) ? sh.stroke_width / 2 : 0.f);
+    for (const DiagramScene::Text& t : s.texts) take(D2D1::RectF(t.origin.x, t.origin.y, t.origin.x + t.w, t.origin.y + t.h), 0);
+    if (x0 > x1) x0 = y0 = x1 = y1 = 0;
+    // Everything moved to start at the margin.
+    const float dx = margin - x0, dy = margin - y0;
+    for (DiagramScene::Shape& sh : s.shapes) sh.box = D2D1::RectF(sh.box.left + dx, sh.box.top + dy, sh.box.right + dx, sh.box.bottom + dy);
+    for (D2D1_POINT_2F& p : s.points) p = D2D1::Point2F(p.x + dx, p.y + dy);
+    for (DiagramScene::Text& t : s.texts) {
+        t.origin = D2D1::Point2F(t.origin.x + dx, t.origin.y + dy);
+        t.anchor = D2D1::Point2F(t.anchor.x + dx, t.anchor.y + dy);
+    }
+    return Finish(x1 - x0 + 2 * margin, y1 - y0 + 2 * margin);
+}
+
 void SceneBuilder::Rect(const D2D1_RECT_F& r, float radius, DgColor fill, DgColor stroke, float stroke_width,
                         uint8_t dash) {
     DiagramScene::Shape s;
@@ -439,10 +479,30 @@ void SceneBuilder::Text(Measured m, D2D1_POINT_2F origin, DgColor color, uint32_
 }
 
 void SceneBuilder::TextUp(Measured m, D2D1_POINT_2F origin, DgColor color, uint32_t src_start, uint32_t src_length) {
+    const float w = m.w;
+    TextTurned(std::move(m), D2D1::Point2F(origin.x, origin.y + w), -90.f, color, src_start, src_length);
+}
+
+void SceneBuilder::TextTurned(Measured m, D2D1_POINT_2F anchor, float angle, DgColor color, uint32_t src_start,
+                              uint32_t src_length) {
     if (!m.layout) return;
-    std::swap(m.w, m.h);
-    Text(std::move(m), origin, color, src_start, src_length);
-    scene_->texts.back().up = true;
+    // Its bounds: the corners turned.
+    const float a = angle * 3.14159265f / 180.f, c = std::cos(a), s = std::sin(a);
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (const float px : {0.f, m.w}) {
+        for (const float py : {0.f, m.h}) {
+            const float x = anchor.x + px * c - py * s, y = anchor.y + px * s + py * c;
+            x0 = std::min(x0, x);
+            x1 = std::max(x1, x);
+            y0 = std::min(y0, y);
+            y1 = std::max(y1, y);
+        }
+    }
+    m.w = x1 - x0;
+    m.h = y1 - y0;
+    Text(std::move(m), D2D1::Point2F(x0, y0), color, src_start, src_length);
+    scene_->texts.back().angle = angle;
+    scene_->texts.back().anchor = anchor;
 }
 
 // ---------------------------------------------------------------------------
@@ -537,9 +597,8 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
                     rt->FillRectangle(D2D1::RectF(box.left - 3, box.top, box.right + 3, box.bottom), highlight_brushes[kind]);
                 }
             }
-            if (t.up) {
-                // Its lines along the box's height, upwards from the bottom left.
-                rt->SetTransform(D2D1::Matrix3x2F::Rotation(-90.f) * D2D1::Matrix3x2F::Translation(box.left, box.bottom) * place * world);
+            if (t.angle != 0) {
+                rt->SetTransform(D2D1::Matrix3x2F::Rotation(t.angle) * D2D1::Matrix3x2F::Translation(t.anchor.x, t.anchor.y) * place * world);
                 rt->DrawTextLayout(D2D1::Point2F(0, 0), t.layout.Get(), paint(t.color), D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
                 rt->SetTransform(place * world);
             } else {

@@ -49,7 +49,8 @@ enum DiagramRole : uint8_t {
     kDgQuadrant = kDgPlot + 10,        // + n: quadrant chart fills (4)
     kDgQuadrantBorder = kDgQuadrant + 4,
     kDgScaleBright,                    // + n: cScale at 120% brightness (timeline events)
-    kDgRoleCount = kDgScaleBright + 12,
+    kDgGitInv = kDgScaleBright + 12,   // + n: gitInv0..7 (a highlighted commit)
+    kDgRoleCount = kDgGitInv + 8,
 };
 
 struct DgColor {
@@ -59,6 +60,8 @@ struct DgColor {
 inline DgColor Role(uint8_t role) { return DgColor{role, 0}; }
 inline DgColor Argb(uint32_t argb) { return DgColor{kDgArgb, argb}; }
 inline DgColor Tint(uint32_t argb) { return DgColor{kDgTint, argb}; }
+// A role at an opacity (0 to 255).
+inline DgColor RoleAt(uint8_t role, uint8_t alpha) { return DgColor{role, static_cast<uint32_t>(alpha) << 24}; }
 
 // Text of a label with its bold/italic spans (<b>, <i>, **markdown**...).
 struct RichText {
@@ -91,10 +94,11 @@ struct DiagramScene {
     };
     struct Text {
         ComPtr<IDWriteTextLayout> layout;
-        D2D1_POINT_2F origin{};         // top left of the layout (of its box, turned)
-        float w = 0, h = 0;             // (the box's, turned)
+        D2D1_POINT_2F origin{};         // top left of the layout (turned: of its bounds)
+        float w = 0, h = 0;             // (turned: its bounds')
         DgColor color;
-        bool up = false;                // turned to read upwards (a vertical axis's title)
+        float angle = 0;                // turned by this many degrees (clockwise) about
+        D2D1_POINT_2F anchor{};         // this point, where the layout's top left goes
         uint32_t src_start = 0, src_length = 0;  // its characters in the source
     };
     struct Item {
@@ -121,6 +125,8 @@ public:
     SceneBuilder(IDWriteFactory* dw, const std::wstring& family, float size);
     DiagramScene& scene() { return *scene_; }
     std::shared_ptr<DiagramScene> Finish(float width, float height);
+    // As big as what is in it, `margin` around: everything moved there.
+    std::shared_ptr<DiagramScene> FinishFitted(float margin);
     float size() const { return size_; }
 
     void Rect(const D2D1_RECT_F& r, float radius, DgColor fill, DgColor stroke, float stroke_width = 1,
@@ -148,6 +154,9 @@ public:
     // The same turned to read upwards, `origin` the top left of its box
     // (m.h wide, m.w high).
     void TextUp(Measured m, D2D1_POINT_2F origin, DgColor color, uint32_t src_start = 0, uint32_t src_length = 0);
+    // The same turned by `angle` degrees (clockwise; -45 rises to the
+    // right), the layout's top left at `anchor`.
+    void TextTurned(Measured m, D2D1_POINT_2F anchor, float angle, DgColor color, uint32_t src_start = 0, uint32_t src_length = 0);
     // Height of one line of text at `scale`.
     float LineHeight(float scale = 1.f) const { return size_ * 1.5f * scale; }
 

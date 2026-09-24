@@ -106,10 +106,11 @@ flowchart TD
 A diagram type mdview doesn't draw yet stays code, with a note:
 
 ```mermaid
-gitGraph
-    commit
-    branch develop
-    commit
+C4Context
+    title System Context diagram
+    Person(customer, "Customer")
+    System(shop, "Online shop")
+    Rel(customer, shop, "Buys from")
 ```
 
 So does a diagram with an error in it:
