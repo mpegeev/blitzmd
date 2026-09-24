@@ -1476,6 +1476,14 @@ int main(int argc, char** ansi_argv) {
             {L"stateDiagram-v2\n--", false, L"Line 2"},
             {L"stateDiagram-v2\nnote right of A\ntext", false, L"Line 2"},
             {L"stateDiagram-v2\nA -> B", false, L"Line 2"},
+            {L"erDiagram\nCUSTOMER ||--o{ ORDER : places\nORDER ||--|{ LINE-ITEM : contains\nCUSTOMER }|..|{ DELIVERY-ADDRESS : uses", true, nullptr},
+            {L"erDiagram\nCAR {\nstring registrationNumber PK\nstring(99) firstName \"Only 99\"\nstring[] parts\nint id PK, FK\n}", true, nullptr},
+            {L"erDiagram\nMANUFACTURER only one to zero or more CAR : makes\nPERSON many(0) optionally to 0+ NAMED-DRIVER : is", true, nullptr},
+            {L"erDiagram\np[Person] ||--o| a[\"Customer Account\"] : has\n\"A name\" |o--o| \"A name\" : \"self\"\ndirection LR", true, nullptr},
+            {L"erDiagram\nA ||--o{ B", false, L"Line 2"},
+            {L"erDiagram\nA ||-o{ B : x", false, L"Line 2"},
+            {L"erDiagram\nA {\nstring", false, L"Line 3"},
+            {L"erDiagram\nA {\nstring x", false, L"Line 2"},
             {L"classDiagram\nnote for A x", false, L"Line 2"},
             {L"gitGraph\ncommit", false, L"gitGraph"},
             {L"", false, nullptr},
@@ -1581,6 +1589,14 @@ int main(int argc, char** ansi_argv) {
             L"stateDiagram-v2\n" + repeat(L"A --> A : again\n", 400),
             L"stateDiagram-v2\n" + repeat(L"note right of A : " + std::wstring(200, L'n') + L"\n", 150),
             L"stateDiagram-v2\n" + repeat(L"[*] --> A\n--\n", 1000),
+            [&] {  // a chain of entities, and relationships from the first to all
+                std::wstring s = L"erDiagram\n";
+                for (int i = 0; i < 249; ++i) s += L"E" + std::to_wstring(i) + L" ||--o{ E" + std::to_wstring(i + 1) + L" : r\n";
+                for (int k = 2; k < 252; ++k) s += L"E0 ||--|{ E" + std::to_wstring(k) + L" : f\n";
+                return s;
+            }(),
+            L"erDiagram\nA {\n" + repeat(L"string(255) name PK, FK, UK \"comment\"\n", 1200) + L"}",
+            L"erDiagram\n" + repeat(L"A |o..o| A : \"again\"\n", 300),
         };
         for (const std::wstring& h : hostile) {
             const double t0 = NowMs();
@@ -1807,6 +1823,33 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated state diagrams in %.0f ms\n", iterations / 4, NowMs() - s0);
+        // Well-formed random ER diagrams.
+        static const wchar_t* kCards[][2] = {{L"|o", L"o|"}, {L"||", L"||"}, {L"}o", L"o{"}, {L"}|", L"|{"}};
+        const double e0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            std::wstring src = std::wstring(L"erDiagram\n") + ((rnd() & 3) == 0 ? L"direction LR\n" : L"");
+            const int count = 1 + static_cast<int>(rnd() % 10);
+            for (int k = 0; k < count * 2; ++k) {
+                const std::wstring a = L"E" + std::to_wstring(rnd() % count), b = L"E" + std::to_wstring(rnd() % count);
+                if (rnd() % 4 == 0) {
+                    src += a + L" {\n";
+                    for (int m = static_cast<int>(rnd() % 5); m > 0; --m) {
+                        src += std::wstring(rnd() & 1 ? L"string" : L"int(10)") + L" f" + std::to_wstring(m) +
+                               (rnd() & 1 ? L" PK" : L"") + (rnd() & 1 ? L" \"note\"" : L"") + L"\n";
+                    }
+                    src += L"}\n";
+                } else {
+                    src += a + L" " + kCards[rnd() % 4][0] + (rnd() & 1 ? L"--" : L"..") + kCards[rnd() % 4][1] + L" " + b + L" : rel\n";
+                }
+            }
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 200)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated ER diagrams in %.0f ms\n", iterations / 4, NowMs() - e0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();
