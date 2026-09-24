@@ -2116,10 +2116,26 @@ bool Viewer::Search(const std::wstring& text, int flags) {
                     o.view_x = std::clamp(fx - 0.5f / o.zoom, 0.f, 1.f - 1.f / o.zoom);
                     o.view_y = std::clamp(fy - 0.5f / o.zoom, 0.f, 1.f - 1.f / o.zoom);
                 }
-                // The diagram stands on its line's top (DiagramObject).
+                // Where DiagramObject::Draw puts it: standing on its line's baseline.
                 if (tl && SUCCEEDED(tl->HitTestTextPosition(o.pos, FALSE, &px, &py, &m))) {
-                    const D2D1_RECT_F box =
-                        D2D1::RectF(m.left, m.top, m.left + m.width, m.top + scene->height * m.width / scene->width);
+                    float base = m.top + m.height;
+                    UINT32 count = 0;
+                    tl->GetLineMetrics(nullptr, 0, &count);
+                    std::vector<DWRITE_LINE_METRICS> lines(count);
+                    if (count > 0 && SUCCEEDED(tl->GetLineMetrics(lines.data(), count, &count))) {
+                        float top = 0;
+                        uint32_t start = 0;
+                        for (const DWRITE_LINE_METRICS& l : lines) {
+                            if (o.pos < start + l.length) {
+                                base = top + l.baseline;
+                                break;
+                            }
+                            start += l.length;
+                            top += l.height;
+                        }
+                    }
+                    const float h = scene->height * m.width / scene->width;
+                    const D2D1_RECT_F box = D2D1::RectF(m.left, base - h, m.left + m.width, base);
                     const D2D1_RECT_F shown = IsZoomed(o) ? ZoomedRect(box, o) : box;
                     const float s = (shown.right - shown.left) / scene->width;
                     target = D2D1::RectF(std::clamp(shown.left + t.origin.x * s, box.left, box.right),
