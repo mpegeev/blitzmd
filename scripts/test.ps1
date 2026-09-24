@@ -44,6 +44,7 @@ Step 'flag emoji' { & $t flags samples/gfm/17-flags.md | Select-Object -Last 1 }
 Step 'math' { & $t math samples/gfm/18-math.md | Where-Object { $_ -match 'FAIL|math' } }
 Step 'mermaid' { & $t mermaid samples/gfm/20-mermaid-flowchart.md | Where-Object { $_ -match 'FAIL|mermaid' } }
 Step 'mermaid sequence' { & $t mermaid samples/gfm/21-mermaid-sequence.md | Where-Object { $_ -match 'FAIL|mermaid' } }
+Step 'mermaid class' { & $t mermaid samples/gfm/22-mermaid-class.md | Where-Object { $_ -match 'FAIL|mermaid' } }
 
 # Every sample renders (parse + layout + Direct2D) without failing.
 $widths = if ($Quick) { @(900) } else { @(320, 900) }
