@@ -1490,6 +1490,11 @@ int main(int argc, char** ansi_argv) {
             {L"erDiagram\nCAR {\nstring registrationNumber PK\nstring(99) firstName \"Only 99\"\nstring[] parts\nint id PK, FK\n}", true, nullptr},
             {L"erDiagram\nMANUFACTURER only one to zero or more CAR : makes\nPERSON many(0) optionally to 0+ NAMED-DRIVER : is", true, nullptr},
             {L"erDiagram\np[Person] ||--o| a[\"Customer Account\"] : has\n\"A name\" |o--o| \"A name\" : \"self\"\ndirection LR", true, nullptr},
+            {L"erDiagram\nsubgraph title1\nCUSTOMER {\nstring name\n}\nend\nsubgraph grp [\"Nice title\"]\ndirection LR\nCAR ||--o{ NAMED-DRIVER : allows\nsubgraph inner\nENGINE\nend\nend\nCUSTOMER ||--o{ CAR : owns\ngrp ||--|| CUSTOMER : links\nCUSTOMER }o--o{ title1 : in\ngrp |o--o| grp : self", true, nullptr},
+            {L"erDiagram\nA one to many B : x\nC o|--|o D : y\nE |o.-o| F : z\nE |o-.o| F : z2\npublic.users ||--o{ public.orders : places\nI |O--O{ J : v\nx*y ||--|| a-b- : t", true, nullptr},
+            {L"erDiagram\nclassDef c1 fill:#f00\nclassDef c2 stroke:#00f\nclass A,B c1,c2\nA:::c1,c2 ||--|| B : x\nA { string a int b PK,FK \"note\" }\nB {\n`some type` `some name` PK\n}", true, nullptr},
+            {L"erDiagram\nsubgraph S\nA ||--|| B : x", false, L"Line 2"},
+            {L"erDiagram\nA {\n`unclosed type\n}", false, L"Line 3"},
             {L"erDiagram\nA ||--o{ B", false, L"Line 2"},
             {L"erDiagram\nA ||-o{ B : x", false, L"Line 2"},
             {L"erDiagram\nA {\nstring", false, L"Line 3"},
@@ -1617,6 +1622,18 @@ int main(int argc, char** ansi_argv) {
             }(),
             L"erDiagram\nA {\n" + repeat(L"string(255) name PK, FK, UK \"comment\"\n", 1200) + L"}",
             L"erDiagram\n" + repeat(L"A |o..o| A : \"again\"\n", 300),
+            L"erDiagram\n" + repeat(L"A ||--|| B : x\n", 2100),
+            L"erDiagram\n" + repeat(L"subgraph S\n", 30) + L"A\n" + repeat(L"end\n", 30),
+            [&] {  // many subgraphs, related as boxes, to their members and to themselves
+                std::wstring s = L"erDiagram\n";
+                for (int i = 0; i < 60; ++i) {
+                    const std::wstring n = std::to_wstring(i);
+                    s += L"subgraph G" + n + L"\nE" + n + L" ||--o{ F" + n + L" : r\nend\n";
+                    s += L"G" + n + L" }o--|| G" + std::to_wstring((i * 7 + 3) % 60) + L" : g\nG" + n + L" |o--o| E" + n +
+                         L" : in\nG" + n + L" ||--|| G" + n + L" : self\n";
+                }
+                return s;
+            }(),
         };
         for (const std::wstring& h : hostile) {
             const double t0 = NowMs();
@@ -1858,6 +1875,10 @@ int main(int argc, char** ansi_argv) {
                                (rnd() & 1 ? L" PK" : L"") + (rnd() & 1 ? L" \"note\"" : L"") + L"\n";
                     }
                     src += L"}\n";
+                } else if (rnd() % 6 == 0) {
+                    src += L"subgraph G" + std::to_wstring(k % 3) + L"\n" + a + L" ||--|{ " + b + L" : in\nend\n";
+                } else if (rnd() % 8 == 0) {
+                    src += L"G" + std::to_wstring(rnd() % 3) + L" |o--o{ " + b + L" : box\n";
                 } else {
                     src += a + L" " + kCards[rnd() % 4][0] + (rnd() & 1 ? L"--" : L"..") + kCards[rnd() % 4][1] + L" " + b + L" : rel\n";
                 }
