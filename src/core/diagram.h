@@ -36,6 +36,7 @@ enum DiagramRole : uint8_t {
     kDgBoxFill,         // sequence loop/alt boxes: their title tab
     kDgPage,            // the page behind the diagram
     kDgMuted,           // secondary text
+    kDgTint,            // an explicit background color, toned down in the dark theme
     kDgCategory,        // + n: categorical colors (pie slices, sections...)
     kDgRoleCount = kDgCategory + 12,
 };
@@ -46,6 +47,7 @@ struct DgColor {
 };
 inline DgColor Role(uint8_t role) { return DgColor{role, 0}; }
 inline DgColor Argb(uint32_t argb) { return DgColor{kDgArgb, argb}; }
+inline DgColor Tint(uint32_t argb) { return DgColor{kDgTint, argb}; }
 
 // Text of a label with its bold/italic spans (<b>, <i>, **markdown**...).
 struct RichText {

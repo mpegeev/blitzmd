@@ -1445,6 +1445,12 @@ int main(int argc, char** ansi_argv) {
             {L"sequenceDiagram\nparticipant A as Alice\nactor B\nA->>+B: x\nB-->>-A: y\nNote over A,B: n\nloop L\nA-)B: z\nend", true, nullptr},
             {L"sequenceDiagram\nbox Aqua G\nparticipant A\nend\nautonumber\ncreate participant C\nA->>C: c\ndestroy C\nC-xA: d", true, nullptr},
             {L"sequenceDiagram\nalt a\nA->>B: x\nelse b\nA->>B: y\nend\ncritical c\nA->B: z\noption o\nA-->B: w\nend", true, nullptr},
+            {L"sequenceDiagram\nparticipant API-Gateway\nAPI-Gateway->>Auth-Service: validate\nAuth-Service-XAPI-Gateway: no", true, nullptr},
+            {L"sequenceDiagram\nparticipant John Doe\nparticipant Jane Roe as JR\nJohn Doe->>JR: hi\nparticipant Q@{ \"type\": \"queue\" } as Queue", true, nullptr},
+            {L"sequenceDiagram\nA->>B: I #9829; you#59; and #quot;them#quot;", true, nullptr},
+            {L"sequenceDiagram\naccDescr {\nlong\ndescription\n}\npar_over x\nA->>B: wrap:a long text\nend", true, nullptr},
+            {L"sequenceDiagram\nparticipant SaaS as Software as a Service\nA->>SaaS: x\nloop wrap: a title\nA->>SaaS: y\nend", true, nullptr},
+            {L"sequenceDiagram\nA->>B->>C: x", false, L"Line 2"},
             {L"sequenceDiagram\nloop x\nA->>B: y", false, L"end"},
             {L"sequenceDiagram\nA=>B: x", false, L"2"},
             {L"sequenceDiagram\nNote above A: x", false, L"2"},
@@ -1455,6 +1461,8 @@ int main(int argc, char** ansi_argv) {
             {L"classDiagram\nnamespace N {\nclass A\nclass B\n}\nnote for A \"x\"\nnote \"y\"\n<<interface>> A", true, nullptr},
             {L"classDiagram\ndirection LR\nclass Note\nClass --> Note\nclassDef c fill:#f9f\ncssClass \"Note\" c\nstyle Class fill:#fff", true, nullptr},
             {L"classDiagram\nclass `Odd name!`\nclass A[\"A label\"]", true, nullptr},
+            {L"classDiagram\nA..B\nclassK..>classL\nclass Shape <<interface>> {\n+draw()\n}\nnamespace N { class Z }", true, nullptr},
+            {L"classDiagram\nA : +foo ( int x )$ int\nnote for Ghost \"alone\"\nstyle Ghost fill:#f00", true, nullptr},
             {L"classDiagram\nclass A {\n+x", false, L"Line 2"},
             {L"classDiagram\nA <-> B", false, L"Line 2"},
             {L"classDiagram\n}", false, L"Line 2"},
@@ -1549,6 +1557,8 @@ int main(int argc, char** ansi_argv) {
             L"classDiagram\nclass A {\n" + repeat(L"+method(List~List~int~~ x) Map~K~$\n", 1500) + L"}",
             L"classDiagram\n" + repeat(L"namespace N {\n", 30) + L"class A\n" + repeat(L"}\n", 30),
             L"classDiagram\n" + repeat(L"A --> A : self\n", 400),
+            L"classDiagram\nA : " + std::wstring(3900, L'~'),  // (no recursion per ~)
+            L"classDiagram\nclass A\n" + repeat(L"note for A \"n\"\n", 600),
             L"classDiagram\n" + repeat(L"note \"" + std::wstring(300, L'n') + L"\"\n", 100),
             [&] {  // a chain of states, and transitions from the first to all: too many bends
                 std::wstring s = L"stateDiagram-v2\n";
@@ -1841,7 +1851,7 @@ int main(int argc, char** ansi_argv) {
                 }
                 return false;
             };
-            auto nested = [&](int a, int b) {  // b inside a
+            auto inside = [&](int a, int b) {  // box b inside box a
                 for (int k = b; k >= 0; k = g.clusters[static_cast<size_t>(k)].parent) {
                     if (k == a) return true;
                 }
@@ -1869,7 +1879,7 @@ int main(int argc, char** ansi_argv) {
                 }
                 for (int d = c + 1; d < nc && bad.empty(); ++d) {
                     const D2D1_RECT_F& other = l.clusters[static_cast<size_t>(d)];
-                    if (!empty(other) && !nested(c, d) && !nested(d, c) && meet(box, other)) bad = "boxes overlap";
+                    if (!empty(other) && !inside(c, d) && !inside(d, c) && meet(box, other)) bad = "boxes overlap";
                 }
             }
             if (!bad.empty()) {
