@@ -81,7 +81,8 @@ struct InlineObject {
     uint32_t length = 1;  // text units covered
     int32_t image = -1;   // index into Document::images
     int32_t math = -1;    // index into Document::maths
-    // View of a zoomable object (images), set by the viewer: magnification
+    int32_t diagram = -1; // index into Document::diagrams
+    // View of a zoomable object (images, diagrams), set by the viewer: magnification
     // inside its box, and the point of the content at the box's top-left
     // corner as a fraction of the content's size (0 .. 1 - 1/zoom).
     float zoom = 1.f;
@@ -92,6 +93,12 @@ struct InlineObject {
 struct MathRef {
     std::wstring tex;
     bool display = false;
+};
+
+// A diagram: a ```mermaid block (its object covers the source, so copying
+// and searching see it).
+struct DiagramRef {
+    std::wstring source;
 };
 
 struct Link {
@@ -133,6 +140,7 @@ struct Block {
     uint32_t base_flags = 0;    // style flags applied to the whole leaf
     float indent = 0;           // extra left indent, in em
     std::wstring lang;          // code block language
+    std::wstring note;          // code block: a line above it (why a diagram isn't drawn)
 
     Block* parent = nullptr;
     std::vector<Block*> children;
@@ -174,6 +182,7 @@ struct Document {
     std::vector<Link> links;
     std::vector<ImageRef> images;
     std::vector<MathRef> maths;
+    std::vector<DiagramRef> diagrams;
     std::unordered_map<std::wstring, Anchor> anchors;
     std::wstring path;                        // file the document was loaded from
     std::wstring base_dir;                    // for resolving relative links/images

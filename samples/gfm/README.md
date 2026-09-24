@@ -25,6 +25,7 @@ This folder is a corpus of Markdown documents for checking the native (Direct2D/
 | [17-flags.md](17-flags.md) | UTF-8, LF | 1.7 KB | Flag emoji (regional indicator pairs, shortcodes, England/Scotland/Wales tag sequences) in text, headings, tables, lists, links, inline code and code blocks; odd counts, non-countries and superscript stay letters. |
 | [18-math.md](18-math.md) | UTF-8, LF | 3 KB | Math typeset like MathJax: inline and display formulas, fractions, roots, limits, big operators, `\left…\right` and `\big` delimiters, matrices, `cases`, `aligned`, accents, braces, math alphabets, `\color`, `\boxed`, a ```` ```math ```` block and unknown commands. |
 | [19-zoom.md](19-zoom.md) | UTF-8, LF | 2.4 KB | mdview-only: zooming images inside their box (Ctrl+wheel, drag, double click, the corner buttons) and the full-window view, on a photo, an SVG, a wide image, an animated GIF, a linked image, images in a table, badges too small to zoom and a tall image. |
+| [20-mermaid-flowchart.md](20-mermaid-flowchart.md) | UTF-8, LF | 2.6 KB | Mermaid flowcharts drawn natively: a decision, every node shape, every kind of link (ends, strokes, lengths, labels), subgraphs with their own direction and subgraphs linked across, a titled pipeline with `classDef`/`style`/`linkStyle`, markdown and HTML in labels, and blocks that stay code with a note (an unsupported diagram type, a syntax error). |
 
 ## Images (`img/`)
 

@@ -260,7 +260,8 @@ private:
     // Scrolling
     void ScrollTo(float y, bool smooth);
     void ScrollBy(float dy, bool smooth) { ScrollTo((anim_ ? anim_to_ : scroll_y_) + dy, smooth); }
-    void ScrollIntoView(Block* leaf, uint32_t local_pos, bool center);
+    // `target`: where to look instead, in the leaf's text layout.
+    void ScrollIntoView(Block* leaf, uint32_t local_pos, bool center, const D2D1_RECT_F* target = nullptr);
     void UpdatePercent();
     float LineStep() const { return layout_.metrics().em * 2.5f; }
 
@@ -294,7 +295,7 @@ private:
     void UpdateObjectHover(float x, float y);
     void ZoomObjectBy(const DrawnObject& d, float factor, float x, float y);
     void ObjectButton(const DrawnObject& d, ZoomButton button);
-    void ShowZoomStatus(float zoom);
+    void ShowZoomStatus(float zoom, const InlineObject* object);
     bool OpenFullView(Block* leaf, const InlineObject* object);
     void CloseFullView();
     D2D1_RECT_F ViewRect() const { return D2D1::RectF(0, 0, ViewWidth(), ViewHeight()); }
@@ -508,7 +509,7 @@ void Viewer::SettingsChanged(const Settings& old) {
     if (s.hardware != old.hardware) DiscardDeviceResources();
     if (s.auto_reload != old.auto_reload) StartWatch();
     const bool reparse = s.remote_images != old.remote_images || s.emoji_shortcodes != old.emoji_shortcodes ||
-                         s.math != old.math || s.syntax_highlight != old.syntax_highlight;
+                         s.math != old.math || s.mermaid != old.mermaid || s.syntax_highlight != old.syntax_highlight;
     if (reparse && !path_.empty() && !printing_) {
         Reload();
     } else {
@@ -575,6 +576,7 @@ bool Viewer::Load(const std::wstring& path, int flags, bool keep_history) {
     ParseOptions opt;
     opt.emoji_shortcodes = s.emoji_shortcodes;
     opt.math = s.math;
+    opt.mermaid = s.mermaid;
     opt.highlight_code = s.syntax_highlight;
     auto doc = ParseMarkdown(utf8, path, opt);
     utf8.clear();
@@ -957,7 +959,22 @@ void Viewer::DrawOverlays() {
             for (size_t i = 0; i < hits_.size(); ++i) {
                 const Block* leaf = doc_->LeafAt(hits_[i].start);
                 if (!leaf || !leaf->visible) continue;
-                const float y = track.top + th * leaf->y / doc_h;
+                float at = leaf->y;
+                // In a diagram: where its label is, down the diagram.
+                const uint32_t h0 = hits_[i].start - leaf->text_start, h1 = hits_[i].end - leaf->text_start;
+                for (const InlineObject& o : leaf->objects) {
+                    if (o.diagram < 0 || h1 <= o.pos || h0 >= o.pos + o.length) continue;
+                    const auto scene = layout_.Diagram(o.diagram);
+                    if (!scene || scene->height <= 0) break;
+                    for (const DiagramScene::Text& t : scene->texts) {
+                        if (t.src_length > 0 && h0 < o.pos + t.src_start + t.src_length && h1 > o.pos + t.src_start) {
+                            at += leaf->h * std::clamp(t.origin.y / scene->height, 0.f, 1.f);
+                            break;
+                        }
+                    }
+                    break;
+                }
+                const float y = track.top + th * at / doc_h;
                 if (y - last_y < 2.f && static_cast<int>(i) != current_hit_) continue;
                 last_y = y;
                 rt_->FillRectangle(D2D1::RectF(track.left - 2.f, y, track.right, y + 2.f),
@@ -1015,13 +1032,16 @@ void Viewer::ScrollTo(float y, bool smooth) {
     Invalidate();
 }
 
-void Viewer::ScrollIntoView(Block* leaf, uint32_t local_pos, bool center) {
+void Viewer::ScrollIntoView(Block* leaf, uint32_t local_pos, bool center, const D2D1_RECT_F* target) {
     if (!leaf) return;
     // Make sure the target is laid out exactly before computing positions.
     Relayout(true);
     IDWriteTextLayout* tl = layout_.TextLayout(leaf);
     float y = leaf->y, h = leaf->h;
-    if (tl) {
+    if (target) {
+        y = layout_.TextOrigin(leaf).y + target->top;
+        h = target->bottom - target->top;
+    } else if (tl) {
         DWRITE_HIT_TEST_METRICS m{};
         FLOAT px = 0, py = 0;
         if (SUCCEEDED(tl->HitTestTextPosition(local_pos, FALSE, &px, &py, &m))) {
@@ -1059,7 +1079,7 @@ void Viewer::OnMouseWheel(int delta, bool horizontal, WORD keys, POINT screen) {
         // Full-window view: the wheel zooms (no Ctrl needed).
         if (!horizontal) {
             full_.ZoomAt(factor, mx, my, ViewRect());
-            ShowZoomStatus(full_.scale);
+            ShowZoomStatus(full_.scale, full_.object);
             Invalidate();
         }
         return;
@@ -1735,14 +1755,15 @@ void Viewer::CopySelection() {
 }
 
 // `r` grown to cover the formulas and flags it touches (they are drawn,
-// and so selected, as one piece).
+// and so selected, as one piece). Diagrams show a search hit on its label,
+// so that is what gets copied.
 TextRange Viewer::WholeObjects(TextRange r) const {
     for (const uint32_t p : {r.start, r.end > r.start ? r.end - 1 : r.start}) {
         const Block* leaf = doc_ ? doc_->LeafAt(p) : nullptr;
         if (!leaf || p < leaf->text_start) continue;
         const uint32_t local = p - leaf->text_start;
         for (const InlineObject& o : leaf->objects) {
-            if (o.length > 1 && local >= o.pos && local < o.pos + o.length) {
+            if (o.length > 1 && o.diagram < 0 && local >= o.pos && local < o.pos + o.length) {
                 r.start = std::min(r.start, leaf->text_start + o.pos);
                 r.end = std::max(r.end, leaf->text_start + o.pos + o.length);
             }
@@ -1819,8 +1840,10 @@ void Viewer::UpdateObjectHover(float x, float y) {
     }
 }
 
-void Viewer::ShowZoomStatus(float zoom) {
-    FlashStatus(std::wstring(Tr(L"Image: ", L"Изображение: ")) + std::to_wstring(std::lround(zoom * 100.f)) + L"%");
+void Viewer::ShowZoomStatus(float zoom, const InlineObject* object) {
+    const bool diagram = object && object->diagram >= 0;
+    FlashStatus(std::wstring(diagram ? Tr(L"Diagram: ", L"Диаграмма: ") : Tr(L"Image: ", L"Изображение: ")) +
+                std::to_wstring(std::lround(zoom * 100.f)) + L"%");
 }
 
 void Viewer::ZoomObjectBy(const DrawnObject& d, float factor, float x, float y) {
@@ -1831,7 +1854,7 @@ void Viewer::ZoomObjectBy(const DrawnObject& d, float factor, float x, float y) 
         pan_view_x_ = d.object->view_x;
         pan_view_y_ = d.object->view_y;
     }
-    ShowZoomStatus(d.object->zoom);
+    ShowZoomStatus(d.object->zoom, d.object);
     Invalidate();
 }
 
@@ -1847,7 +1870,7 @@ void Viewer::ObjectButton(const DrawnObject& d, ZoomButton button) {
     case ZoomButton::ZoomOut: ZoomObjectBy(d, 1.f / kButtonZoomStep, cx, cy); break;
     case ZoomButton::Reset:
         ResetObjectView(*d.object);
-        ShowZoomStatus(1.f);
+        ShowZoomStatus(1.f, d.object);
         Invalidate();
         break;
     case ZoomButton::Expand: OpenFullView(d.leaf, d.object); break;
@@ -1856,16 +1879,26 @@ void Viewer::ObjectButton(const DrawnObject& d, ZoomButton button) {
 }
 
 bool Viewer::OpenFullView(Block* leaf, const InlineObject* object) {
-    if (!object || object->image < 0) return false;
-    const ImageEntry* e = images_.Entry(object->image);
-    if (!e || e->state != ImageState::Ready || e->px_w == 0 || e->px_h == 0) return false;
+    if (!object) return false;
+    float w = 0, h = 0;  // natural size: an image's pixels, a diagram at the text's size
+    if (object->diagram >= 0) {
+        const auto scene = layout_.Diagram(object->diagram);
+        if (!scene) return false;
+        w = scene->width * layout_.DiagramScale();
+        h = scene->height * layout_.DiagramScale();
+    } else {
+        const ImageEntry* e = object->image >= 0 ? images_.Entry(object->image) : nullptr;
+        if (!e || e->state != ImageState::Ready || e->px_w == 0 || e->px_h == 0) return false;
+        w = static_cast<float>(e->px_w);
+        h = static_cast<float>(e->px_h);
+    }
     pan_object_ = nullptr;
     hover_object_ = nullptr;
     hover_button_ = -1;
     hover_block_ = nullptr;
     copy_hover_ = false;
     SetHoverLink(nullptr, -1);
-    full_.Open(leaf, object, static_cast<float>(e->px_w), static_cast<float>(e->px_h), ViewRect());
+    full_.Open(leaf, object, w, h, ViewRect());
     HookKeys(true);
     SetStatus(L"");
     Invalidate();
@@ -1886,7 +1919,11 @@ void Viewer::CloseFullView() {
 
 void Viewer::DrawFullView() {
     const D2D1_RECT_F view = ViewRect();
-    if (full_.object && full_.object->image >= 0) {
+    if (full_.object && full_.object->diagram >= 0) {
+        if (const auto scene = layout_.Diagram(full_.object->diagram)) {
+            DrawDiagram(rt_.Get(), *scene, full_.ContentRect(view), dark_, nullptr, nullptr);
+        }
+    } else if (full_.object && full_.object->image >= 0) {
         images_.Draw(rt_.Get(), full_.object->image, full_.ContentRect(view), &palette_, G().dw.Get(), kFullViewUiEm);
     }
     DrawZoomToolbar(rt_.Get(), renderer_.icons(), palette_, FullViewToolbar(), hover_button_, FullViewButtonsOff(full_));
@@ -1907,7 +1944,7 @@ void Viewer::FullViewButton(ZoomButton button) {
     case ZoomButton::Expand:
     case ZoomButton::Close: CloseFullView(); return;
     }
-    ShowZoomStatus(full_.scale);
+    ShowZoomStatus(full_.scale, full_.object);
     Invalidate();
 }
 
@@ -1979,6 +2016,23 @@ bool Viewer::Search(const std::wstring& text, int flags) {
         const bool right_ok = end >= global.size() || !IsWordChar(global[end]);
         return left_ok && right_ok;
     };
+    // Of a diagram only the labels show: a match elsewhere in its source
+    // (the type, node ids, arrows, styles) would be found but never seen.
+    auto shown = [&](size_t pos) {
+        Block* leaf = doc_->LeafAt(static_cast<uint32_t>(pos));
+        if (!leaf || leaf->objects.empty()) return true;
+        const uint32_t h0 = static_cast<uint32_t>(pos) - leaf->text_start, h1 = h0 + static_cast<uint32_t>(needle.size());
+        for (const InlineObject& o : leaf->objects) {
+            if (o.diagram < 0 || h1 <= o.pos || h0 >= o.pos + o.length) continue;
+            const auto scene = layout_.Diagram(o.diagram);
+            if (!scene) return true;  // its source shows
+            for (const DiagramScene::Text& t : scene->texts) {
+                if (t.src_length > 0 && h0 < o.pos + t.src_start + t.src_length && h1 > o.pos + t.src_start) return true;
+            }
+            return false;
+        }
+        return true;
+    };
 
     // All matches (for highlighting), capped.
     // hits_ is also dropped by a new document or a mouse selection.
@@ -1987,7 +2041,7 @@ bool Viewer::Search(const std::wstring& text, int flags) {
         hits_.clear();
         for (size_t pos = hay.find(needle); pos != std::wstring::npos && hits_.size() < 20000;
              pos = hay.find(needle, pos + 1)) {
-            if (is_match(pos)) hits_.push_back(TextRange{static_cast<uint32_t>(pos), static_cast<uint32_t>(pos + needle.size())});
+            if (is_match(pos) && shown(pos)) hits_.push_back(TextRange{static_cast<uint32_t>(pos), static_cast<uint32_t>(pos + needle.size())});
         }
         search_text_ = text;
     }
@@ -2038,22 +2092,72 @@ bool Viewer::Search(const std::wstring& text, int flags) {
             LayoutEngine::UpdateVisibility(doc_->root, true);
             Relayout(true);
         }
-        // Horizontal scroll inside wide code blocks / tables.
-        for (Block* p = leaf; p; p = p->parent) {
-            if (p->content_w > 0) {
-                if (IDWriteTextLayout* tl = layout_.TextLayout(leaf)) {
-                    DWRITE_HIT_TEST_METRICS m{};
-                    FLOAT px, py;
-                    if (SUCCEEDED(tl->HitTestTextPosition(hit.start - leaf->text_start, FALSE, &px, &py, &m))) {
-                        const float x = layout_.TextOrigin(leaf).x + px - p->x;
-                        if (x < p->scroll_x || x > p->scroll_x + p->w - 40.f) {
-                            p->scroll_x = std::clamp(x - p->w * 0.3f, 0.f, std::max(0.f, p->content_w - p->w));
+        Relayout(true);  // exact positions for what follows
+        // Where the hit shows, in the leaf's text layout: its text, or the
+        // diagram label it falls in (a zoomed diagram moves to show it).
+        const uint32_t h0 = hit.start - leaf->text_start, h1 = hit.end - leaf->text_start;
+        IDWriteTextLayout* tl = layout_.TextLayout(leaf);
+        D2D1_RECT_F target{};
+        bool have_target = false;
+        DWRITE_HIT_TEST_METRICS m{};
+        FLOAT px = 0, py = 0;
+        if (tl && SUCCEEDED(tl->HitTestTextPosition(h0, FALSE, &px, &py, &m))) {
+            target = D2D1::RectF(px, m.top, px, m.top + m.height);
+            have_target = true;
+        }
+        for (InlineObject& o : leaf->objects) {
+            if (o.diagram < 0 || h1 <= o.pos || h0 >= o.pos + o.length) continue;
+            const auto scene = layout_.Diagram(o.diagram);
+            if (!scene || scene->width <= 0) continue;
+            for (const DiagramScene::Text& t : scene->texts) {
+                if (t.src_length == 0 || h0 >= o.pos + t.src_start + t.src_length || h1 <= o.pos + t.src_start) continue;
+                if (IsZoomed(o)) {
+                    const float fx = (t.origin.x + t.w / 2) / scene->width, fy = (t.origin.y + t.h / 2) / scene->height;
+                    o.view_x = std::clamp(fx - 0.5f / o.zoom, 0.f, 1.f - 1.f / o.zoom);
+                    o.view_y = std::clamp(fy - 0.5f / o.zoom, 0.f, 1.f - 1.f / o.zoom);
+                }
+                // Where DiagramObject::Draw puts it: standing on its line's baseline.
+                if (tl && SUCCEEDED(tl->HitTestTextPosition(o.pos, FALSE, &px, &py, &m))) {
+                    float base = m.top + m.height;
+                    UINT32 count = 0;
+                    tl->GetLineMetrics(nullptr, 0, &count);
+                    std::vector<DWRITE_LINE_METRICS> lines(count);
+                    if (count > 0 && SUCCEEDED(tl->GetLineMetrics(lines.data(), count, &count))) {
+                        float top = 0;
+                        uint32_t start = 0;
+                        for (const DWRITE_LINE_METRICS& l : lines) {
+                            if (o.pos < start + l.length) {
+                                base = top + l.baseline;
+                                break;
+                            }
+                            start += l.length;
+                            top += l.height;
                         }
                     }
+                    const float h = scene->height * m.width / scene->width;
+                    const D2D1_RECT_F box = D2D1::RectF(m.left, base - h, m.left + m.width, base);
+                    const D2D1_RECT_F shown = IsZoomed(o) ? ZoomedRect(box, o) : box;
+                    const float s = (shown.right - shown.left) / scene->width;
+                    target = D2D1::RectF(std::clamp(shown.left + t.origin.x * s, box.left, box.right),
+                                         std::clamp(shown.top + t.origin.y * s, box.top, box.bottom),
+                                         std::clamp(shown.left + (t.origin.x + t.w) * s, box.left, box.right),
+                                         std::clamp(shown.top + (t.origin.y + t.h) * s, box.top, box.bottom));
+                    have_target = true;
+                }
+                break;
+            }
+        }
+        // Horizontal scroll inside wide code blocks, tables and paragraphs.
+        for (Block* p = leaf; p && have_target; p = p->parent) {
+            if (p->content_w > 0) {
+                const float x = layout_.TextOrigin(leaf).x + target.left - p->x;
+                const float x1 = layout_.TextOrigin(leaf).x + target.right - p->x;
+                if (x < p->scroll_x || x1 > p->scroll_x + p->w - 40.f) {
+                    p->scroll_x = std::clamp(x - p->w * 0.3f, 0.f, std::max(0.f, p->content_w - p->w));
                 }
             }
         }
-        ScrollIntoView(leaf, hit.start - leaf->text_start, true);
+        ScrollIntoView(leaf, h0, true, have_target ? &target : nullptr);
     }
     Invalidate();
     return true;
@@ -2127,12 +2231,16 @@ void Viewer::OnContextMenu(int sx, int sy) {
         }
     }
     if (menu_object) {
-        const ImageEntry* e = images_.Entry(menu_object->image);
-        const bool ready = e && e->state == ImageState::Ready && e->px_w && e->px_h;
+        const bool diagram = menu_object->diagram >= 0;
+        const ImageEntry* e = diagram ? nullptr : images_.Entry(menu_object->image);
+        const bool ready = diagram || (e && e->state == ImageState::Ready && e->px_w && e->px_h);
         AppendMenuW(menu, MF_STRING | (ready ? 0 : MF_GRAYED), kMenuViewFull,
-                    Tr(L"View image in the &whole window", L"Показать изображение на всё &окно"));
+                    diagram ? Tr(L"View diagram in the &whole window", L"Показать диаграмму на всё &окно")
+                            : Tr(L"View image in the &whole window", L"Показать изображение на всё &окно"));
         if (IsZoomed(*menu_object)) {
-            AppendMenuW(menu, MF_STRING, kMenuResetView, Tr(L"Reset image &zoom", L"Сбросить &масштаб изображения"));
+            AppendMenuW(menu, MF_STRING, kMenuResetView,
+                        diagram ? Tr(L"Reset diagram &zoom", L"Сбросить &масштаб диаграммы")
+                                : Tr(L"Reset image &zoom", L"Сбросить &масштаб изображения"));
         }
     }
     if (hit.code) AppendMenuW(menu, MF_STRING, kMenuCopyCode, Tr(L"Copy co&de block", L"Копировать &блок кода"));
@@ -2570,6 +2678,7 @@ LRESULT Viewer::Proc(UINT msg, WPARAM wp, LPARAM lp) {
                     if (!((ObjectButtonsOff(*d->object) >> hover_button_) & 1u)) cursor = IDC_HAND;
                 }
                 else if (d && IsZoomed(*d->object)) cursor = IDC_SIZEALL;
+                else if (d && d->object->diagram >= 0) cursor = IDC_ARROW;  // a picture, not text
                 else if (hit.link >= 0 || hit.summary || copy_hover_ || (hit.image >= 0 && hit.on_text)) cursor = IDC_HAND;
                 else if (hit.on_text) cursor = IDC_IBEAM;
             }

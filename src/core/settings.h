@@ -20,6 +20,7 @@ struct Settings {
     bool smooth_scroll = true;
     bool emoji_shortcodes = true;
     bool math = true;
+    bool mermaid = true;                 // ```mermaid blocks drawn as diagrams
     bool syntax_highlight = true;
     // GPU rendering. Off by default: for a document viewer software Direct2D
     // starts faster (no Direct3D device), uses less memory and still draws a

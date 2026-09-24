@@ -365,35 +365,55 @@ void Renderer::DrawLeaf(Block* b) {
     // A formula or flag is drawn in one piece: a range touching it covers all of it.
     auto whole = [b](uint32_t& s0, uint32_t& s1) {
         for (const InlineObject& o : b->objects) {
-            if (o.length > 1 && s0 < o.pos + o.length && s1 > o.pos) {
+            if (o.length > 1 && o.diagram < 0 && s0 < o.pos + o.length && s1 > o.pos) {
                 s0 = std::min(s0, o.pos);
                 s1 = std::max(s1, o.pos + o.length);
             }
         }
+    };
+    // A diagram shows hits and the selection on its labels; the rest of its
+    // leaf (a footnote's back link) shows them as text does.
+    DrawContext& dc = layout_->draw_context();
+    dc.diagram_highlights.clear();
+    const bool diagram = std::any_of(b->objects.begin(), b->objects.end(), [](const InlineObject& x) { return x.diagram >= 0; });
+    auto fill = [&](uint32_t s0, uint32_t s1, ID2D1Brush* brush, uint8_t kind) {
+        whole(s0, s1);
+        if (!diagram) {
+            FillRanges(tl, o, s0, s1 - s0, brush);
+            return;
+        }
+        dc.diagram_highlights.push_back(DiagramHighlight{s0, s1, kind});  // each diagram takes its part
+        uint32_t from = s0;
+        for (const InlineObject& x : b->objects) {  // in text order
+            if (x.diagram < 0 || x.pos + x.length <= from || x.pos >= s1) continue;
+            if (x.pos > from) FillRanges(tl, o, from, x.pos - from, brush);
+            from = x.pos + x.length;
+        }
+        if (from < s1) FillRanges(tl, o, from, s1 - from, brush);
     };
     if (st_->hits && !st_->hits->empty()) {
         const auto& hits = *st_->hits;
         auto it = std::lower_bound(hits.begin(), hits.end(), a,
                                    [](const TextRange& r, uint32_t pos) { return r.end <= pos; });
         for (; it != hits.end() && it->start < e; ++it) {
-            uint32_t s0 = std::max(it->start, a) - a;
-            uint32_t s1 = std::min(it->end, e) - a;
-            whole(s0, s1);
             const bool current = st_->current_hit >= 0 && &*it == &hits[static_cast<size_t>(st_->current_hit)];
-            FillRanges(tl, o, s0, s1 - s0, Brush(current ? kColorSearchCurrent : kColorSearch));
+            fill(std::max(it->start, a) - a, std::min(it->end, e) - a,
+                 Brush(current ? kColorSearchCurrent : kColorSearch), static_cast<uint8_t>(current ? 1 : 0));
         }
     }
     const TextRange& sel = st_->selection;
     if (sel.end > sel.start && sel.start < e && sel.end > a) {
-        uint32_t s0 = std::max(sel.start, a) - a;
-        uint32_t s1 = std::min(sel.end, e) - a;
-        whole(s0, s1);
-        FillRanges(tl, o, s0, s1 - s0, Brush(kColorSelection));
+        fill(std::max(sel.start, a) - a, std::min(sel.end, e) - a, Brush(kColorSelection), 2);
     }
 
-    DrawContext& dc = layout_->draw_context();
     dc.default_brush = Brush(s->style.color);
     dc.leaf = b;
+    if (diagram) {
+        dc.dark = palette_->theme().dark;
+        dc.highlight_brushes[0] = Brush(kColorSearch);
+        dc.highlight_brushes[1] = Brush(kColorSearchCurrent);
+        dc.highlight_brushes[2] = Brush(kColorSelection);
+    }
     rt_->DrawTextLayout(o, tl, dc.default_brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
 
     // Selected images get a tinted overlay (the selection is behind them).
@@ -413,6 +433,19 @@ void Renderer::DrawCodeBlock(Block* b) {
     // With line numbers the code scrolls (horizontally) right of their column.
     const LeafState* s = layout_->State(b);
     const float gutter = s ? s->gutter : 0.f;
+    if (!b->note.empty() && s) {
+        // Why a diagram isn't drawn: a muted line with a warning sign above the code.
+        const float size = s->style.size;
+        const float top = b->y + m.code_pad * 0.6f;
+        const float left = b->x + m.code_pad;
+        PushClip(box);
+        DrawIcon(rt_, icons_, Icon::Alert, D2D1::RectF(left, top + size * 0.15f, left + size * 0.9f, top + size * 1.05f),
+                 Brush(kColorAlertWarning));
+        if (IDWriteTextLayout* tl = layout_->NoteLayout(b->note, size, b->w)) {
+            rt_->DrawTextLayout(D2D1::Point2F(left + size * 1.3f, top), tl, Brush(kColorMuted), D2D1_DRAW_TEXT_OPTIONS_NONE);
+        }
+        PopClip();
+    }
     D2D1_RECT_F code_clip = box;
     if (gutter > 0) code_clip.left = s->tx - layout_->GutterGap(s->style.size) * 0.5f;
     PushClip(code_clip);

@@ -25,9 +25,11 @@
 
 #include "core/texmath.h"
 #include "core/flags.h"
+#include "core/graphlayout.h"
 #include "core/images.h"
 #include "core/layout.h"
 #include "core/mathlayout.h"
+#include "core/mermaid.h"
 #include "core/theme.h"
 #include "core/offscreen.h"
 #include "core/parser.h"
@@ -1370,6 +1372,345 @@ int main(int argc, char** ansi_argv) {
         }
         return 0;
     }
+    if (cmd == "mermaid") {
+        // mermaid <file.md> [fuzz iterations]: every diagram of the file lays
+        // out, parse checks, hostile input stays bounded, random sources
+        // never crash.
+        int failures = 0;
+        ComPtr<IDWriteFactory> dwf;
+        DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(dwf.GetAddressOf()));
+        auto sane = [](const DiagramScene& s) {
+            auto finite = [](float v) { return std::isfinite(v) && std::fabs(v) < 1e7f; };
+            if (!finite(s.width) || !finite(s.height) || s.width <= 0 || s.height <= 0) return false;
+            for (const D2D1_POINT_2F& p : s.points) {
+                if (!finite(p.x) || !finite(p.y)) return false;
+            }
+            for (const auto& sh : s.shapes) {
+                if (!finite(sh.box.left) || !finite(sh.box.top) || !finite(sh.box.right) || !finite(sh.box.bottom)) return false;
+            }
+            for (const auto& t : s.texts) {
+                if (!finite(t.origin.x) || !finite(t.origin.y)) return false;
+            }
+            return true;
+        };
+        auto layout = [&](const std::wstring& src, std::wstring* error) {
+            return CheckMermaid(src, error) ? LayoutMermaid(src, dwf.Get(), L"Segoe UI", 16.f, error) : nullptr;
+        };
+        // Every diagram of the file.
+        std::string md;
+        if (!LoadMarkdown(argv[2], md)) return 1;
+        auto doc = ParseMarkdown(md, FullPath(argv[2]));
+        for (const DiagramRef& d : doc->diagrams) {
+            std::wstring error;
+            const auto scene = layout(d.source, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: diagram %s: %s\n", WideToUtf8(d.source.substr(0, 40)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%zu diagrams of %s laid out\n", doc->diagrams.size(), argv[2]);
+        // Parsing: what is accepted, and errors with their line.
+        struct Case {
+            const wchar_t* src;
+            bool ok;
+            const wchar_t* error;  // part of the message
+        };
+        const Case cases[] = {
+            {L"flowchart TD\n  A-->B", true, nullptr},
+            {L"graph LR;A-->B;B-->C", true, nullptr},
+            {L"flowchart\nA --> B", true, nullptr},
+            {L"---\ntitle: T\n---\nflowchart TD\nA-->B", true, nullptr},
+            {L"%%{init: {'theme':'dark'}}%%\nflowchart TD\nA-->B", true, nullptr},
+            {L"flowchart TD\n%% a comment\nA-->B", true, nullptr},
+            {L"flowchart TD\nnode-1 --> node-2", true, nullptr},
+            {L"flowchart TD\nA@{ shape: cyl, label: \"DB\" } --> B", true, nullptr},
+            {L"flowchart TD\nA -- text --> B -. dotted .-> C == thick ==> D", true, nullptr},
+            {L"flowchart TD\nA[\"a ] b\"] --> B", true, nullptr},
+            {L"flowchart TD\nsubgraph S [Title]\nA\nend\nS --> B", true, nullptr},
+            {L"flowchart TD\nEnd((End)) --> Start", true, nullptr},  // keywords are lowercase
+            {L"flowchart TD\nClass --> Object\nStyle --> Click", true, nullptr},
+            {L"flowchart TD\nA e1@--> B\ne1@{ animate: true }", true, nullptr},
+            {L"flowchart TD\nA e-1@ --> B\ne-1@{ label: \"a } b\" }\nB -->|x| B\nB -->|y| B", true, nullptr},
+            {L"flowchart TD\nA e1@--> B\ne1@{ animate: true\nB --> C", false, L"Line 3"},
+            {L"flowchart TD\nA--oB\nC---xD", true, nullptr},
+            {L"flowchart TD\nx@{ shape: fork } --> y@{ shape: flag } --> z@{ shape: sm-circ }", true, nullptr},
+            {L"flowchart TD\nstyle A,B fill:#f00\nclass Nothing c", true, nullptr},
+            {L"flowchart XY\nA --> B", false, L"Line 1"},
+            {L"flowchart TD\nA[\"open\nB --> C\nC --> D", false, L"Line 2"},
+            {L"flowchart TD\nA@{ shape: rect\nB --> C", false, L"Line 2"},
+            {L"flowchart TD\nA[unclosed --> B", false, L"2"},
+            {L"flowchart TD\nA --> B\nend", false, L"3"},
+            {L"flowchart TD\nA -> B", false, L"2"},
+            {L"gitGraph\ncommit", false, L"gitGraph"},
+            {L"", false, nullptr},
+            {L"not a diagram", false, nullptr},
+        };
+        for (const Case& c : cases) {
+            std::wstring error;
+            const bool ok = CheckMermaid(c.src, &error);
+            if (ok != c.ok || (!ok && c.error && error.find(c.error) == std::wstring::npos)) {
+                std::printf("FAIL: \"%s\" -> %s \"%s\"\n", WideToUtf8(c.src).c_str(), ok ? "ok" : "error",
+                            WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        // Hostile input: bounded time, no crash.
+        auto repeat = [](const std::wstring& s, int n) {
+            std::wstring r;
+            for (int i = 0; i < n; ++i) r += s;
+            return r;
+        };
+        // Up to the limits (500 links, 24 levels of subgraphs) and past them.
+        std::wstring chain = L"flowchart TD\n", dense = L"flowchart LR\n", nested = L"flowchart TD\n", fan = L"flowchart TD\n";
+        std::wstring bomb = L"flowchart TD\n", deep = L"flowchart TD\n", boxes = L"flowchart LR\n";
+        for (int i = 0; i < 500; ++i) chain += L"n" + std::to_wstring(i) + L" --> n" + std::to_wstring(i + 1) + L"\n";
+        for (int i = 0; i < 60; ++i) {
+            for (int j = 0; j < 60; ++j) {
+                if ((i * 7 + j * 3) % 8 == 0) dense += L"a" + std::to_wstring(i) + L" --> b" + std::to_wstring(j) + L"\n";
+            }
+        }
+        for (int i = 0; i < 40; ++i) nested += L"subgraph s" + std::to_wstring(i) + L"\nx" + std::to_wstring(i) + L" --> y" + std::to_wstring(i) + L"\n";
+        nested += repeat(L"end\n", 40);
+        for (int i = 0; i < 500; ++i) fan += L"root --> leaf" + std::to_wstring(i) + L"\n";
+        // Long links down a chain plus links from its start to every node:
+        // bends grow with the square of the size.
+        for (int i = 0; i < 249; ++i) bomb += L"a" + std::to_wstring(i) + L" ----------> a" + std::to_wstring(i + 1) + L"\n";
+        for (int k = 2; k < 252; ++k) bomb += L"a0 --> a" + std::to_wstring(k) + L"\n";
+        // Every level of nesting linked out to the top.
+        for (int i = 0; i < 24; ++i) deep += L"subgraph d" + std::to_wstring(i) + L"\nn" + std::to_wstring(i) + L" --> top\n";
+        deep += repeat(L"end\n", 24);
+        // Many boxes linked across each other.
+        for (int i = 0; i < 60; ++i) {
+            boxes += L"subgraph b" + std::to_wstring(i) + L"\np" + std::to_wstring(i) + L" --> q" + std::to_wstring(i) + L"\nend\n";
+            boxes += L"q" + std::to_wstring(i) + L" --> p" + std::to_wstring((i * 7 + 3) % 60) + L"\n";
+        }
+        const std::wstring hostile[] = {
+            chain, dense, nested, fan, bomb, deep, boxes,
+            L"flowchart TD\nA[" + std::wstring(3900, L'x') + L"] --> B",
+            L"flowchart TD\n" + repeat(L"A --> A\n", 500),
+            L"flowchart TD\n" + repeat(L"A & B & C & D & E --> F & G & H & I & J\n", 20),
+            L"flowchart TD\n" + repeat(L"subgraph X\n", 30) + L"A --> B\n" + repeat(L"end\n", 30),
+            L"flowchart TD\n" + repeat(L"classDef c fill:#f00\n", 2000),
+            L"flowchart TD\nA" + repeat(L" --> A", 500),
+            L"flowchart TD\n" + repeat(L"A[\"a\"]:::x:::y:::z --- B\n", 500),
+            std::wstring(L"flowchart TD\n") + std::wstring(70000, L'A'),
+        };
+        for (const std::wstring& h : hostile) {
+            const double t0 = NowMs();
+            std::wstring error;
+            const auto scene = layout(h, &error);
+            const double ms = NowMs() - t0;
+            if ((scene && !sane(*scene)) || ms > 5000) {
+                std::printf("FAIL: hostile input %s... (%.0f ms)\n", WideToUtf8(h.substr(0, 40)).c_str(), ms);
+                ++failures;
+            } else {
+                std::printf("  hostile %.0f ms %s\n", ms, scene ? "drawn" : WideToUtf8(error).c_str());
+            }
+        }
+        // Fuzz: random flowcharts from fragments.
+        static const wchar_t* kPieces[] = {
+            L"A", L"B", L"C", L"node-1", L" ", L"\n", L";", L"-->", L"---", L"-.->", L"==>", L"~~~", L"--o", L"--x",
+            L"<-->", L"-- label -->", L"-->|txt|", L"[", L"]", L"(", L")", L"((", L"))", L"{", L"}", L"{{", L"}}",
+            L"[(", L")]", L"([", L"])", L"[[", L"]]", L">", L"[/", L"/]", L"[\\", L"\\]", L"\"", L"`", L"&",
+            L":::cls", L"subgraph S", L"subgraph T [Title]", L"end", L"direction LR", L"classDef cls fill:#f9f",
+            L"class A cls", L"style A fill:#0f0", L"linkStyle 0 stroke:red", L"%% c", L"<br>", L"**b**", L"#quot;",
+            L"@{ shape: diam }", L"привет", L"日本", L"😀", L"click A href", L"---\ntitle: x\n---\n",
+        };
+        uint32_t seed = 77;
+        auto rnd = [&seed] {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            return seed;
+        };
+        const int iterations = argc >= 4 ? std::atoi(argv[3]) : 2000;
+        const double f0 = NowMs();
+        int drawn = 0;
+        for (int it = 0; it < iterations; ++it) {
+            std::wstring src = (rnd() & 1) ? L"flowchart TD\n" : L"graph LR\n";
+            const int n = 1 + static_cast<int>(rnd() % 50);
+            for (int k = 0; k < n; ++k) src += kPieces[rnd() % std::size(kPieces)];
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (scene) ++drawn;
+            if (scene && !sane(*scene)) {
+                std::printf("FAIL: fuzz %s\n", WideToUtf8(src).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d random flowcharts in %.0f ms (%d drawn)\n", iterations, NowMs() - f0, drawn);
+        // Well-formed random flowcharts: every part of the layout runs.
+        static const wchar_t* kShapes[][2] = {{L"[", L"]"}, {L"(", L")"}, {L"([", L"])"}, {L"[[", L"]]"}, {L"[(", L")]"},
+                                              {L"((", L"))"}, {L"{", L"}"}, {L"{{", L"}}"}, {L"[/", L"/]"}, {L">", L"]"}};
+        static const wchar_t* kLinks[] = {L"-->", L"---", L"-.->", L"==>", L"--o", L"--x", L"<-->", L"~~~", L"--->"};
+        static const wchar_t* kDirs[] = {L"TD", L"LR", L"BT", L"RL"};
+        const double g0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            std::wstring src = std::wstring(L"flowchart ") + kDirs[rnd() % 4] + L"\n";
+            const int nodes = 1 + static_cast<int>(rnd() % 30);
+            int open = 0;
+            for (int k = 0; k < nodes * 2; ++k) {
+                const int r = static_cast<int>(rnd() % 10);
+                if (r == 0 && open < 5) {
+                    src += L"subgraph G" + std::to_wstring(rnd() % 8) + L"\n";
+                    ++open;
+                    if (rnd() % 3 == 0) src += std::wstring(L"direction ") + kDirs[rnd() % 4] + L"\n";
+                } else if (r == 1 && open > 0) {
+                    src += L"end\n";
+                    --open;
+                } else {
+                    const auto& s = kShapes[rnd() % std::size(kShapes)];
+                    src += L"n" + std::to_wstring(rnd() % nodes) + s[0] + L"lbl " + std::to_wstring(k) + s[1] + L" " +
+                           kLinks[rnd() % std::size(kLinks)] + ((rnd() & 3) == 0 ? L"|edge|" : L"") + L" n" +
+                           std::to_wstring(rnd() % nodes) + ((rnd() & 7) == 0 ? L":::c" : L"") + L"\n";
+                }
+            }
+            while (open-- > 0) src += L"end\n";
+            if (rnd() & 1) src += L"classDef c fill:#fde,stroke:#a33\nlinkStyle 0 stroke:#08f\n";
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 200)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated flowcharts in %.0f ms\n", iterations / 4, NowMs() - g0);
+        // The layered layout on random clustered graphs: members inside their
+        // box, nothing else in it, boxes apart unless nested.
+        const double c0 = NowMs();
+        for (int it = 0; it < iterations; ++it) {
+            LayeredGraph g;
+            g.dir = static_cast<RankDir>(rnd() % 4);
+            const int nc = static_cast<int>(rnd() % 5);
+            for (int c = 0; c < nc; ++c) {
+                LayeredGraph::Cluster cl;
+                cl.parent = c > 0 && rnd() % 3 == 0 ? static_cast<int>(rnd() % static_cast<uint32_t>(c)) : -1;
+                cl.title_w = rnd() % 2 ? static_cast<float>(40 + rnd() % 200) : 0.f;
+                cl.title_h = cl.title_w > 0 ? 20.f : 0.f;
+                g.clusters.push_back(cl);
+            }
+            const int n = 2 + static_cast<int>(rnd() % 12);
+            for (int i = 0; i < n; ++i) {
+                LayeredGraph::Node nd;
+                nd.w = static_cast<float>(30 + rnd() % 80);
+                nd.h = static_cast<float>(20 + rnd() % 40);
+                nd.cluster = nc > 0 && rnd() % 2 ? static_cast<int>(rnd() % static_cast<uint32_t>(nc)) : -1;
+                if (rnd() % 8 == 0) nd.after = 40;
+                g.nodes.push_back(nd);
+            }
+            for (int i = static_cast<int>(rnd() % static_cast<uint32_t>(2 * n)); i > 0; --i) {
+                LayeredGraph::Edge e;
+                e.from = static_cast<int>(rnd() % static_cast<uint32_t>(n));
+                e.to = static_cast<int>(rnd() % static_cast<uint32_t>(n));
+                if (e.from == e.to) continue;
+                if (rnd() % 4 == 0) {
+                    e.label_w = 40;
+                    e.label_h = 18;
+                }
+                g.edges.push_back(e);
+            }
+            const LayeredLayout l = LayoutLayered(g);
+            auto in = [&](int v, int c) {
+                for (int k = g.nodes[static_cast<size_t>(v)].cluster; k >= 0; k = g.clusters[static_cast<size_t>(k)].parent) {
+                    if (k == c) return true;
+                }
+                return false;
+            };
+            auto nested = [&](int a, int b) {  // b inside a
+                for (int k = b; k >= 0; k = g.clusters[static_cast<size_t>(k)].parent) {
+                    if (k == a) return true;
+                }
+                return false;
+            };
+            auto meet = [](const D2D1_RECT_F& a, const D2D1_RECT_F& b) {
+                return a.left < b.right - 0.5f && b.left < a.right - 0.5f && a.top < b.bottom - 0.5f && b.top < a.bottom - 0.5f;
+            };
+            auto empty = [](const D2D1_RECT_F& r) { return r.right <= r.left || r.bottom <= r.top; };
+            std::string bad;
+            for (int c = 0; c < nc && bad.empty(); ++c) {
+                const D2D1_RECT_F& box = l.clusters[static_cast<size_t>(c)];
+                if (empty(box)) continue;
+                for (int v = 0; v < n && bad.empty(); ++v) {
+                    const D2D1_POINT_2F p = l.centers[static_cast<size_t>(v)];
+                    const float hw = g.nodes[static_cast<size_t>(v)].w / 2, hh = g.nodes[static_cast<size_t>(v)].h / 2;
+                    const D2D1_RECT_F r = D2D1::RectF(p.x - hw, p.y - hh, p.x + hw, p.y + hh);
+                    if (in(v, c)) {
+                        if (r.left < box.left - 0.5f || r.right > box.right + 0.5f || r.top < box.top - 0.5f || r.bottom > box.bottom + 0.5f) {
+                            bad = "a member outside its box";
+                        }
+                    } else if (meet(r, box)) {
+                        bad = "a node inside another box";
+                    }
+                }
+                for (int d = c + 1; d < nc && bad.empty(); ++d) {
+                    const D2D1_RECT_F& other = l.clusters[static_cast<size_t>(d)];
+                    if (!empty(other) && !nested(c, d) && !nested(d, c) && meet(box, other)) bad = "boxes overlap";
+                }
+            }
+            if (!bad.empty()) {
+                std::printf("FAIL: layout of random graph %d (dir %d, %d nodes, %d clusters): %s\n", it, static_cast<int>(g.dir), n, nc,
+                            bad.c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d random clustered layouts checked in %.0f ms\n", iterations, NowMs() - c0);
+        std::printf(failures ? "mermaid FAILED\n" : "mermaid OK\n");
+        return failures ? 1 : 0;
+    }
+    if (cmd == "mmd" && argc >= 4) {
+        // mmd <diagram.mmd> <out.png> [--dark] [--scale S]: lays out a Mermaid
+        // diagram and renders it alone.
+        bool dark = false;
+        float scale = 1.5f;
+        for (int i = 4; i < argc; ++i) {
+            if (!std::strcmp(argv[i], "--dark")) dark = true;
+            else if (!std::strcmp(argv[i], "--scale") && i + 1 < argc) scale = static_cast<float>(std::atof(argv[++i]));
+        }
+        std::string bytes;
+        if (!ReadFileBytes(Utf8ToWide(argv[2]).c_str(), bytes, 1 << 20)) {
+            std::fprintf(stderr, "cannot read %s\n", argv[2]);
+            return 1;
+        }
+        const std::wstring source = Utf8ToWide(DecodeTextToUtf8(bytes));
+        ComPtr<IDWriteFactory> dwf;
+        DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(dwf.GetAddressOf()));
+        std::wstring error;
+        const double t0 = NowMs();
+        const bool ok = CheckMermaid(source, &error);
+        const double t1 = NowMs();
+        auto scene = ok ? LayoutMermaid(source, dwf.Get(), L"Segoe UI", 16.f, &error) : nullptr;
+        const double t2 = NowMs();
+        if (!scene) {
+            std::printf("error: %s\n", WideToUtf8(error).c_str());
+            return 1;
+        }
+        std::printf("check %.1f ms, layout %.1f ms, %.0fx%.0f, %zu shapes, %zu texts\n", t1 - t0, t2 - t1, scene->width,
+                    scene->height, scene->shapes.size(), scene->texts.size());
+        ComPtr<IWICImagingFactory> wic;
+        CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
+        ComPtr<ID2D1Factory> d2d;
+        D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2d.GetAddressOf());
+        const UINT w = static_cast<UINT>(std::ceil(scene->width * scale)), h = static_cast<UINT>(std::ceil(scene->height * scale));
+        ComPtr<IWICBitmap> bmp;
+        ComPtr<ID2D1RenderTarget> rt;
+        if (!wic || !d2d || FAILED(wic->CreateBitmap(w, h, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &bmp)) ||
+            FAILED(d2d->CreateWicBitmapRenderTarget(
+                bmp.Get(),
+                D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                                             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+                                             96.f * scale, 96.f * scale),
+                &rt))) {
+            std::fprintf(stderr, "cannot create the bitmap\n");
+            return 1;
+        }
+        const uint32_t page = DiagramRoleArgb(kDgPage, dark);
+        rt->BeginDraw();
+        rt->Clear(D2D1::ColorF(page & 0xFFFFFF));
+        DrawDiagram(rt.Get(), *scene, D2D1::RectF(0, 0, scene->width, scene->height), dark, nullptr, nullptr);
+        rt->EndDraw();
+        std::printf("draw %.1f ms\n", NowMs() - t2);
+        return SaveBitmapPng(bmp.Get(), Utf8ToWide(argv[3])) ? 0 : 1;
+    }
     if (cmd == "tex") {
         // tex "<TeX source>": the parsed formula tree.
         std::printf("%s\n", WideToUtf8(DumpMath(ParseTex(Utf8ToWide(argv[2])))).c_str());
@@ -1408,6 +1749,9 @@ int main(int argc, char** ansi_argv) {
             // Regional indicators (flags pair them up) and tag characters.
             "\xF0\x9F\x87\xBA", "\xF0\x9F\x87\xB8", "\xF0\x9F\x87\xA6", "\xF0\x9F\x8F\xB4",
             "\xF3\xA0\x81\xA7\xF3\xA0\x81\xA2", "\xF3\xA0\x81\xBF", ":us:",
+            // Mermaid diagrams (and their pieces).
+            "```mermaid\nflowchart TD\nA-->B\n```\n", "```mermaid\ngraph LR\nA[x] -- y --> B((z))\n```\n",
+            "```mermaid\n", "flowchart TD\n", "A --> B\n", "subgraph S\n", "end\n", "classDef c fill:#f00\n",
         };
         const size_t n_pieces = sizeof(kPieces) / sizeof(kPieces[0]);
         // YAML front matter fragments (a third of the documents start with one).

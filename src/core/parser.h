@@ -11,6 +11,7 @@ namespace mdv {
 struct ParseOptions {
     bool emoji_shortcodes = true;   // :rocket: -> 🚀
     bool math = true;               // $...$ and $$...$$
+    bool mermaid = true;            // ```mermaid blocks as diagrams
     bool highlight_code = true;     // syntax highlighting in code blocks
     int footnote_nesting = 0;       // internal: footnote bodies parse recursively
 };
