@@ -572,13 +572,15 @@ private:
     }
 
     // What a member shows: +name(params) : type, with generics as <T>.
-    static std::wstring Display(const std::wstring& raw) {
+    static std::wstring Display(std::wstring_view raw) {
+        // A leading ~ is the package visibility, not a generic.
+        if (!raw.empty() && raw.front() == L'~') return L"~" + Display(raw.substr(1));
         const size_t open = raw.find(L'(');
-        if (open == std::wstring::npos) return Generics(raw);
+        if (open == std::wstring_view::npos) return Generics(raw);
         const size_t close = raw.rfind(L')');
-        if (close == std::wstring::npos || close < open) return Generics(raw);
-        std::wstring out = Generics(std::wstring_view(raw).substr(0, close + 1));
-        const std::wstring_view ret = Trim(std::wstring_view(raw).substr(close + 1));
+        if (close == std::wstring_view::npos || close < open) return Generics(raw);
+        std::wstring out = Generics(raw.substr(0, close + 1));
+        const std::wstring_view ret = Trim(raw.substr(close + 1));
         if (!ret.empty()) out += L" : " + Generics(ret);
         return out;
     }
