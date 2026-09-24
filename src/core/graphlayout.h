@@ -20,16 +20,24 @@ struct LayeredGraph {
         int cluster = -1;             // innermost cluster (index into clusters)
         float after = 0;              // room kept beside it in its rank (right; below
                                       // in LR/RL), as dagre does for self loops
+        float before = 0;             // and on the other side (left; above)
     };
     struct Edge {
         int from = 0, to = 0;
         int minlen = 1;               // ranks between the ends, at least
         float weight = 1;             // keeps the ends close
         float label_w = 0, label_h = 0;  // a label sits on the edge's middle rank
+        // A cluster's box as an end (from / to then name a node inside it):
+        // the edge leaves it through its bottom, or enters through its top.
+        int from_cluster = -1, to_cluster = -1;
     };
     struct Cluster {
         int parent = -1;
         float title_w = 0, title_h = 0;  // a title band at the box's top
+        // Starts and ends on its parent's ranks, no empty rank rows inside
+        // (a state's concurrent region: no box of its own is drawn).
+        bool share_ranks = false;
+        float after = 0;              // room kept beside its box (right; below sideways)
     };
     std::vector<Node> nodes;
     std::vector<Edge> edges;          // no self loops (the caller draws those)

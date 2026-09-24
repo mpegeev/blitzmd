@@ -1466,6 +1466,26 @@ int main(int argc, char** ansi_argv) {
             {L"classDiagram\nclass A {\n+x", false, L"Line 2"},
             {L"classDiagram\nA <-> B", false, L"Line 2"},
             {L"classDiagram\n}", false, L"Line 2"},
+            {L"stateDiagram-v2\n[*] --> Still\nStill --> [*]\nStill --> Moving : go\nMoving --> Still", true, nullptr},
+            {L"stateDiagram-v2\nstate Active {\n[*] --> A\nA --> B\n--\n[*] --> C\n}\n[*] --> Active\nActive --> [*]", true, nullptr},
+            {L"stateDiagram\nstate c <<choice>>\nstate f <<fork>>\nstate j <<join>>\n[*] --> c\nc --> f : x\nf --> A\nf --> B\nA --> j\nB --> j\nj --> [*]", true, nullptr},
+            {L"stateDiagram-v2\nstate \"A long name\" as s2\ns2 : more\ns2 : and more\nnote right of s2 : a note\nnote left of s2\nline one\nline two\nend note", true, nullptr},
+            {L"stateDiagram-v2\ndirection LR\nclassDef bad fill:#f00\nA --> B:::bad\nclass A bad\nstyle B stroke:#00f\nA --> A : again", true, nullptr},
+            {L"stateDiagram-v2\nstate \"Waiting\" as Wait\n[*] --> Main\nstate Main {\n[*] --> Wait\nWait --> [*]\n}\nMain --> [*]", true, nullptr},
+            {L"stateDiagram-v2\n[*] --> Show\nShow --> Hide : toggle\nHide --> Show : toggle\nhide empty description\nscale 350 width", true, nullptr},
+            {L"stateDiagram-v2\nclassDef c fill:#f00\nA --> [*]:::c\n[*]:::c --> A\nclass B c\nstyle B fill:#0f0\nB --> A\naccTitle: t", true, nullptr},
+            {L"stateDiagram-v2\nstate C {\nX --> Y\n}\nC --> C : again\nC --> X : in\nY --> C : out", true, nullptr},
+            {L"stateDiagram-v2\nstate A\n{\nB --> C\n-- %% next\nD --> E\n} A --> F\nstate G { H --> I }\nnote \"floating\" as N1\nstate f [[fork]]\n# a comment", true, nullptr},
+            {L"stateDiagram-v2\nstate A {\nB --> C\n}\nstate A {\nD --> E\n}\nnote left of B extra\nmore\nend note", true, nullptr},
+            {L"stateDiagram-v2\nstate A {\nB\n}\nstate B {\nA\n}", true, nullptr},
+            {L"stateDiagram-v2\nstate A {\nB --> C\n-- D --> E\n}\nA --> F # a comment\nnote left of F\ntext\nend note here", true, nullptr},
+            {L"stateDiagram-v2\nstate f [[fork\nA", false, L"Line 2"},
+            {L"stateDiagram-v2\naccDescr {\nnever closed", false, L"Line 2"},
+            {L"stateDiagram-v2\nstate A {\nB --> C", false, L"Line 2"},
+            {L"stateDiagram-v2\n}", false, L"Line 2"},
+            {L"stateDiagram-v2\n--", false, L"Line 2"},
+            {L"stateDiagram-v2\nnote right of A\ntext", false, L"Line 2"},
+            {L"stateDiagram-v2\nA -> B", false, L"Line 2"},
             {L"classDiagram\nnote for A x", false, L"Line 2"},
             {L"gitGraph\ncommit", false, L"gitGraph"},
             {L"", false, nullptr},
@@ -1550,6 +1570,37 @@ int main(int argc, char** ansi_argv) {
             L"classDiagram\nA : " + std::wstring(3900, L'~'),  // (no recursion per ~)
             L"classDiagram\nclass A\n" + repeat(L"note for A \"n\"\n", 600),
             L"classDiagram\n" + repeat(L"note \"" + std::wstring(300, L'n') + L"\"\n", 100),
+            [&] {  // a chain of states, and transitions from the first to all: too many bends
+                std::wstring s = L"stateDiagram-v2\n";
+                for (int i = 0; i < 249; ++i) s += L"S" + std::to_wstring(i) + L" --> S" + std::to_wstring(i + 1) + L"\n";
+                for (int k = 2; k < 252; ++k) s += L"S0 --> S" + std::to_wstring(k) + L"\n";
+                return s;
+            }(),
+            [&] {  // composites inside composites, each with regions, linked across
+                std::wstring s = L"stateDiagram-v2\n";
+                for (int i = 0; i < 20; ++i) s += L"state C" + std::to_wstring(i) + L" {\n[*] --> X" + std::to_wstring(i) + L"\n--\n[*] --> Y" + std::to_wstring(i) + L"\n";
+                s += repeat(L"}\n", 20);
+                for (int i = 0; i < 19; ++i) s += L"X" + std::to_wstring(i) + L" --> C" + std::to_wstring(i + 1) + L"\n";
+                return s;
+            }(),
+            [&] {  // nested too deep
+                std::wstring s = L"stateDiagram-v2\n";
+                for (int i = 0; i < 30; ++i) s += L"state N" + std::to_wstring(i) + L" {\n";
+                return s + L"B\n" + repeat(L"}\n", 30);
+            }(),
+            L"stateDiagram-v2\n" + repeat(L"A --> A : again\n", 400),
+            L"stateDiagram-v2\n" + repeat(L"note right of A : " + std::wstring(200, L'n') + L"\n", 150),
+            L"stateDiagram-v2\nstate X {\n" + repeat(L"[*] --> A\n--\n", 450) + L"}",
+            [&] {  // composites named inside one another: nested deeper than written
+                std::wstring s = L"stateDiagram-v2\n";
+                for (int i = 0; i < 60; ++i) s += L"state C" + std::to_wstring(i) + L" {\nC" + std::to_wstring(i + 1) + L" --> X" + std::to_wstring(i) + L"\n}\n";
+                return s;
+            }(),
+            [&] {  // states moved from composite to composite
+                std::wstring s = L"stateDiagram-v2\n";
+                for (int i = 0; i < 200; ++i) s += L"state C" + std::to_wstring(i) + L" {\nA --> B\nB --> C" + std::to_wstring((i + 1) % 200) + L"\n}\n";
+                return s;
+            }(),
         };
         for (const std::wstring& h : hostile) {
             const double t0 = NowMs();
@@ -1734,6 +1785,48 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated class diagrams in %.0f ms\n", iterations / 4, NowMs() - k0);
+        // Well-formed random state diagrams.
+        const double s0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            std::wstring src = std::wstring(L"stateDiagram-v2\n") + ((rnd() & 3) == 0 ? L"direction LR\n" : L"");
+            const int count = 1 + static_cast<int>(rnd() % 10);
+            int open = 0;
+            std::vector<bool> regions;  // per open composite: may split
+            for (int k = 0; k < count * 3; ++k) {
+                const std::wstring a = L"S" + std::to_wstring(rnd() % count), b = L"S" + std::to_wstring(rnd() % count);
+                switch (rnd() % 10) {
+                case 0:
+                    if (open < 4) {
+                        src += L"state C" + std::to_wstring(k) + L" {\n";
+                        ++open;
+                    }
+                    break;
+                case 1:
+                    if (open > 0) {
+                        src += L"}\n";
+                        --open;
+                    }
+                    break;
+                case 2:
+                    if (open > 0) src += L"--\n";
+                    break;
+                case 3: src += L"[*] --> " + a + L"\n"; break;
+                case 4: src += a + L" --> [*]\n"; break;
+                case 5: src += L"note " + std::wstring(rnd() & 1 ? L"left" : L"right") + L" of " + a + L" : note\n"; break;
+                case 6: src += L"state x" + std::to_wstring(k) + (rnd() & 1 ? L" <<choice>>\n" : L" <<fork>>\n") + a + L" --> x" + std::to_wstring(k) + L"\nx" + std::to_wstring(k) + L" --> " + b + L"\n"; break;
+                case 7: src += a + L" : a description\n"; break;
+                default: src += a + L" --> " + b + ((rnd() & 1) ? L" : event" : L"") + L"\n"; break;
+                }
+            }
+            while (open-- > 0) src += L"}\n";
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 200)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated state diagrams in %.0f ms\n", iterations / 4, NowMs() - s0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();
@@ -1746,6 +1839,8 @@ int main(int argc, char** ansi_argv) {
                 cl.parent = c > 0 && rnd() % 3 == 0 ? static_cast<int>(rnd() % static_cast<uint32_t>(c)) : -1;
                 cl.title_w = rnd() % 2 ? static_cast<float>(40 + rnd() % 200) : 0.f;
                 cl.title_h = cl.title_w > 0 ? 20.f : 0.f;
+                cl.share_ranks = cl.title_w <= 0 && cl.parent >= 0 && rnd() % 2;  // a concurrent region
+                if (rnd() % 6 == 0) cl.after = 50;  // a composite state's loops
                 g.clusters.push_back(cl);
             }
             const int n = 2 + static_cast<int>(rnd() % 12);
@@ -1766,6 +1861,9 @@ int main(int argc, char** ansi_argv) {
                     e.label_w = 40;
                     e.label_h = 18;
                 }
+                // Now and then a box as an end (a subgraph or composite state).
+                if (rnd() % 4 == 0) e.from_cluster = g.nodes[static_cast<size_t>(e.from)].cluster;
+                if (rnd() % 4 == 0) e.to_cluster = g.nodes[static_cast<size_t>(e.to)].cluster;
                 g.edges.push_back(e);
             }
             const LayeredLayout l = LayoutLayered(g);
@@ -1804,6 +1902,22 @@ int main(int argc, char** ansi_argv) {
                 for (int d = c + 1; d < nc && bad.empty(); ++d) {
                     const D2D1_RECT_F& other = l.clusters[static_cast<size_t>(d)];
                     if (!empty(other) && !inside(c, d) && !inside(d, c) && meet(box, other)) bad = "boxes overlap";
+                }
+                // The room beside a box: nothing else in it.
+                const float room = g.clusters[static_cast<size_t>(c)].after;
+                if (room > 0 && bad.empty()) {
+                    const bool side = g.dir == RankDir::LR || g.dir == RankDir::RL;
+                    const D2D1_RECT_F r = side ? D2D1::RectF(box.left, box.bottom, box.right, box.bottom + room)
+                                               : D2D1::RectF(box.right, box.top, box.right + room, box.bottom);
+                    for (int v = 0; v < n && bad.empty(); ++v) {
+                        const D2D1_POINT_2F p = l.centers[static_cast<size_t>(v)];
+                        const float hw = g.nodes[static_cast<size_t>(v)].w / 2, hh = g.nodes[static_cast<size_t>(v)].h / 2;
+                        if (meet(r, D2D1::RectF(p.x - hw, p.y - hh, p.x + hw, p.y + hh))) bad = "a node beside a box, in its room";
+                    }
+                    for (int d = 0; d < nc && bad.empty(); ++d) {
+                        const D2D1_RECT_F& other = l.clusters[static_cast<size_t>(d)];
+                        if (d != c && !empty(other) && !inside(d, c) && meet(r, other)) bad = "a box beside a box, in its room";
+                    }
                 }
             }
             if (!bad.empty()) {

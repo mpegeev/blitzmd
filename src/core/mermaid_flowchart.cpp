@@ -1207,6 +1207,15 @@ private:
             ge.from = sa;
             ge.to = sb;
             ge.minlen = e.length;
+            // A subgraph end of this level: the edge meets its box, leaving
+            // from its bottom or entering at its top (as in Mermaid).
+            auto box_end = [&](const Ref& r) {
+                if (!r.cluster) return -1;
+                const ClusterBox& box = boxes_[static_cast<size_t>(r.index)];
+                return !box.isolated && box.level == static_cast<int>(li) ? box.graph_index : -1;
+            };
+            ge.from_cluster = box_end(e.from);
+            ge.to_cluster = box_end(e.to);
             const SceneBuilder::Measured& m = edge_labels_[static_cast<size_t>(ei)];
             if (m.layout) {
                 ge.label_w = m.w + 8;
@@ -1377,6 +1386,7 @@ private:
                 }
                 pts.front() = Clip(e.from, pts[1]);
                 pts.back() = Clip(e.to, pts[pts.size() - 2]);
+                DropDoubledEnds(&pts);
                 const D2D1_POINT_2F tip_end = pts.back(), tip_start = pts.front();
                 const D2D1_POINT_2F before_end = pts[pts.size() - 2], after_start = pts[1];
                 if (e.end != Marker::None) pts.back() = Retreat(pts.back(), before_end, MarkerLength(e.end));

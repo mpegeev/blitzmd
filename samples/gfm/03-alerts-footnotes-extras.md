@@ -263,7 +263,7 @@ Dollar signs that are **not** math: this costs $5 and that costs $10. An escaped
 
 ## Diagrams and other rich code blocks
 
-GitHub renders these fenced blocks as diagrams, maps or 3D models. mdview draws Mermaid diagrams itself (see [20-mermaid-flowchart.md](20-mermaid-flowchart.md), [21-mermaid-sequence.md](21-mermaid-sequence.md) and [22-mermaid-class.md](22-mermaid-class.md)); diagram types it can't draw yet stay code with a note saying so, and maps and 3D models stay ordinary code blocks.
+GitHub renders these fenced blocks as diagrams, maps or 3D models. mdview draws Mermaid diagrams itself (see [20-mermaid-flowchart.md](20-mermaid-flowchart.md), [21-mermaid-sequence.md](21-mermaid-sequence.md), [22-mermaid-class.md](22-mermaid-class.md) and [23-mermaid-state.md](23-mermaid-state.md)); diagram types it can't draw yet stay code with a note saying so, and maps and 3D models stay ordinary code blocks.
 
 A Mermaid flowchart:
 
