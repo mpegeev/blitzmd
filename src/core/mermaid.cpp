@@ -54,7 +54,11 @@ Source Preprocess(std::wstring_view text) {
                 src.title_pos = static_cast<uint32_t>(t.data() - text.data());
                 src.title_len = static_cast<uint32_t>(t.size());
             }
-            if (line.starts_with(L"displayMode:")) src.display_mode = Trim(line.substr(12));
+            if (line.starts_with(L"displayMode:")) {
+                std::wstring_view v = Trim(line.substr(12));
+                if (v.size() >= 2 && (v.front() == L'"' || v.front() == L'\'') && v.back() == v.front()) v = v.substr(1, v.size() - 2);
+                src.display_mode = v;
+            }
             if (after == p) break;
             p = after;
         }

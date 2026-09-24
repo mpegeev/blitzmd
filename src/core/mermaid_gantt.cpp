@@ -838,6 +838,7 @@ std::vector<double> Ticks(double t0, double t1, Interval iv, int week_start) {
         break;
     }
     }
+    if (out.size() >= kMaxTicks) out.clear();  // too many: none
     return out;
 }
 
@@ -941,7 +942,7 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
     const auto set = ParseInterval(p.tick_interval);
     Interval iv = set ? *set : AutoInterval(t0, t1);
     std::vector<double> ticks = Ticks(t0, t1, iv, p.week_start);
-    if (set && ticks.empty()) ticks = Ticks(t0, t1, iv = AutoInterval(t0, t1), p.week_start);
+    if (set && ticks.empty()) ticks = Ticks(t0, t1, iv = AutoInterval(t0, t1), p.week_start);  // (too many)
     std::vector<M> labels;
     auto axis_label = [&](double t) {
         // Mermaid's %Y-%m-%d, but times between days when ticks are hours apart.
@@ -959,7 +960,12 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
             if (i > 0 && X(ticks[i]) - X(ticks[i - 1]) < (labels[i].w + labels[i - 1].w) / 2 + 6) fits = false;
         }
         if (fits || set) break;
-        ticks = Ticks(t0, t1, iv = Coarser(iv), p.week_start);
+        // (Not so coarse that no two ticks are left.)
+        const Interval coarser = Coarser(iv);
+        std::vector<double> fewer = Ticks(t0, t1, coarser, p.week_start);
+        if (fewer.size() < 2) break;
+        iv = coarser;
+        ticks = std::move(fewer);
     }
     const float axis_y = p.top_axis ? chart_top - axis_h + 6 : chart_bottom + 6;
     for (size_t i = 0; i < ticks.size(); ++i) {
