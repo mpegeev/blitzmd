@@ -84,7 +84,14 @@ void Cursor::SkipStatementGap() {
 
 bool Cursor::AtStatementEnd() const {
     const wchar_t c = Peek();
-    return AtEnd() || c == L'\n' || c == L'\r' || c == L';' || (c == L'%' && Peek(1) == L'%');
+    if (c == L';') {
+        // Not the ; of an entity code (#9829; #59; &amp;): Mermaid encodes
+        // those before it reads statements.
+        size_t k = pos_;
+        while (k > 0 && std::iswalnum(s_[k - 1]) && s_[k - 1] < 0x80) --k;
+        return !(k < pos_ && k > 0 && (s_[k - 1] == L'#' || s_[k - 1] == L'&'));
+    }
+    return AtEnd() || c == L'\n' || c == L'\r' || (c == L'%' && Peek(1) == L'%');
 }
 
 void Cursor::SkipToLineEnd() {
@@ -490,7 +497,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart };
+enum class Kind { Unknown, Flowchart, Sequence };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -502,6 +509,7 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (EqualsNoCase(*name, L"flowchart") || EqualsNoCase(*name, L"graph") || EqualsNoCase(*name, L"flowchart-elk")) {
         return Kind::Flowchart;
     }
+    if (EqualsNoCase(*name, L"sequenceDiagram")) return Kind::Sequence;
     return Kind::Unknown;
 }
 
@@ -534,6 +542,7 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         std::wstring name;
         switch (DetectKind(src, &name)) {
         case Kind::Flowchart: Flowchart(src, nullptr); return true;
+        case Kind::Sequence: Sequence(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -549,6 +558,7 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         SceneBuilder builder(dw, family, size);
         switch (DetectKind(src, &name)) {
         case Kind::Flowchart: return Flowchart(src, &builder);
+        case Kind::Sequence: return Sequence(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;

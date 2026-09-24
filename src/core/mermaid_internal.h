@@ -120,5 +120,6 @@ D2D1_POINT_2F Retreat(D2D1_POINT_2F p, D2D1_POINT_2F from, float d);
 
 // Diagram types.
 std::shared_ptr<DiagramScene> Flowchart(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> Sequence(const Source& src, SceneBuilder* builder);
 
 }  // namespace mdv::mermaid
