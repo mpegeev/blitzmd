@@ -1527,6 +1527,22 @@ int main(int argc, char** ansi_argv) {
             {L"gantt\nA :2024-01-01, 99999999y", false, L"Line 2"},
             {L"gantt\nA :a, b, c, d, e", false, L"Line 2"},
             {L"gantt\nA task", false, L"Line 2"},
+            {L"timeline\ntitle T\n2002 : A : B\n     : C\nsection S : x\n2003 # a comment\n2004 : event: with colon", true, nullptr},
+            {L"timeline TD\nsection A\n2002 : x\nsection B\n2003", true, nullptr},
+            {L"timeline\n2002 :no space", false, L"Line 2"},
+            {L"mindmap\n  root((Root))\n    A[Square]\n    ::icon(fa fa-book)\n    B\n      C{{Hex}}\n      D)Cloud(\n      E))Bang((\n      F(Round)\n    :::urgent\n    G[\"`**md**`\"]", true, nullptr},
+            {L"mindmap\nRoot\n  A\n B", true, nullptr},
+            {L"mindmap\n  Root\n  Second", false, L"Line 3"},
+            {L"mindmap", false, nullptr},
+            {L"quadrantChart\ntitle T\nx-axis L --> R\ny-axis \"B\" --> \"`**T**`\"\nquadrant-1 Q1\nA: [0.3, 0.6]\nB:::c: [1, 0] radius: 12, color: #f00\nclassDef c stroke-color: #00f, stroke-width: 3px", true, nullptr},
+            {L"quadrantChart\nx-axis Only left\nquadrant-2 Q2", true, nullptr},
+            {L"quadrantChart\nA: [1.5, 0.5]", false, L"Line 2"},
+            {L"quadrantChart\nA [0.5, 0.5]", false, L"Line 2"},
+            {L"xychart-beta\ntitle \"S\"\nx-axis [a, \"b c\", d]\ny-axis \"V\" 0 --> 10\nbar [2, 5, 7]\nline [1, 2, 3]", true, nullptr},
+            {L"xychart-beta horizontal\nx-axis \"Q\" [Q1, Q2]\ny-axis Units\nbar \"Sold\" [30, -5]\nline Target [25, 40]", true, nullptr},
+            {L"xychart\nx-axis 0 --> 100\nline [3, 8, 2, 12]", true, nullptr},
+            {L"xychart-beta\nbar [1, x]", false, L"Line 2"},
+            {L"xychart-beta\npie [1]", false, L"Line 2"},
             {L"gitGraph\ncommit", false, L"gitGraph"},
             {L"", false, nullptr},
             {L"not a diagram", false, nullptr},
@@ -1683,6 +1699,18 @@ int main(int argc, char** ansi_argv) {
             L"gantt\ntickInterval 1millisecond\nA :-9999-01-01, 2024-01-01\nB :9999-01-01, 1d",
             L"gantt\ndateFormat x\nA :0, 1ms\nB :1, 1ms\ntickInterval 1year",
             L"gantt\n" + repeat(L"section " + std::wstring(300, L's') + L"\nT :2024-01-01, 1d\n", 450),
+            L"timeline\n" + repeat(L"period : " + std::wstring(100, L'e') + L" : two\n", 480),
+            L"timeline TD\n" + repeat(L"section S\np : e : f : g\n", 480),
+            [&] {  // a mindmap as deep as the source allows
+                std::wstring s = L"mindmap\n";
+                for (int i = 0; i < 300; ++i) s += std::wstring(static_cast<size_t>(i), L' ') + L"n" + std::to_wstring(i) + L"\n";
+                return s;
+            }(),
+            L"mindmap\nroot\n" + repeat(L" child))Bang((\n  grand)Cloud(\n", 900),
+            L"quadrantChart\n" + repeat(L"P: [0.5, 0.5] radius: 200, stroke-width: 100px\n", 1990),
+            L"xychart-beta\nx-axis [" + repeat(L"cat,", 1500) + L"last]\n" + repeat(L"bar [1, 2, 3]\n", 150),
+            L"xychart-beta horizontal\nline [" + repeat(L"123456789012345,", 1990) + L"1]",
+            L"xychart-beta\ny-axis 5 --> 5\nx-axis 3 --> 3\nbar [5]\nline []",
         };
         for (const std::wstring& h : hostile) {
             const double t0 = NowMs();
@@ -1979,6 +2007,61 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated charts in %.0f ms\n", iterations / 4, NowMs() - h0);
+        // Well-formed random timelines, mindmaps, quadrant and XY charts.
+        const double m0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            std::wstring src;
+            const int count = 1 + static_cast<int>(rnd() % 12);
+            switch (it % 4) {
+            case 0:
+                src = std::wstring(L"timeline") + (rnd() % 3 == 0 ? L" TD" : L"") + L"\ntitle T\n";
+                for (int k = 0; k < count; ++k) {
+                    if (rnd() % 4 == 0) src += L"section S" + std::to_wstring(k) + L"\n";
+                    src += L"P" + std::to_wstring(k);
+                    for (int e = static_cast<int>(rnd() % 4); e > 0; --e) src += L" : event " + std::to_wstring(e);
+                    src += L"\n";
+                }
+                break;
+            case 1: {
+                static const wchar_t* kMindShapes[][2] = {{L"", L""}, {L"[", L"]"}, {L"(", L")"}, {L"((", L"))"}, {L")", L"("}, {L"))", L"(("}, {L"{{", L"}}"}};
+                src = L"mindmap\nroot\n";
+                int depth = 1;
+                for (int k = 0; k < count * 2; ++k) {
+                    depth = std::clamp(depth + static_cast<int>(rnd() % 3) - 1, 1, 6);
+                    const auto& s = kMindShapes[rnd() % std::size(kMindShapes)];
+                    src += std::wstring(static_cast<size_t>(depth) * 2, L' ') + L"n" + std::to_wstring(k) + s[0] + L"node " + std::to_wstring(k) + s[1] + L"\n";
+                }
+                break;
+            }
+            case 2:
+                src = L"quadrantChart\ntitle Q\nx-axis L --> R\ny-axis B --> T\nquadrant-1 One\nquadrant-3 Three\n";
+                for (int k = 0; k < count; ++k) {
+                    src += L"P" + std::to_wstring(k) + L": [0." + std::to_wstring(rnd() % 10) + L", 0." + std::to_wstring(rnd() % 10) + L"]" +
+                           (rnd() & 1 ? L" radius: 8" : L"") + L"\n";
+                }
+                break;
+            default:
+                src = std::wstring(L"xychart-beta") + (rnd() & 1 ? L" horizontal" : L"") + L"\ntitle \"XY\"\n";
+                if (rnd() & 1) {
+                    src += L"x-axis [";
+                    for (int k = 0; k < count; ++k) src += (k ? L", c" : L"c") + std::to_wstring(k);
+                    src += L"]\n";
+                }
+                for (int pl = static_cast<int>(rnd() % 3); pl >= 0; --pl) {
+                    src += std::wstring(rnd() & 1 ? L"bar" : L"line") + (rnd() & 1 ? L" \"named\"" : L"") + L" [";
+                    for (int k = 0; k < count; ++k) src += (k ? L", " : L"") + std::to_wstring(static_cast<int>(rnd() % 200) - 50);
+                    src += L"]\n";
+                }
+                break;
+            }
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 200)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated timelines, mindmaps, quadrant and XY charts in %.0f ms\n", iterations / 4, NowMs() - m0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();

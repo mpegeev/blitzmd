@@ -57,7 +57,13 @@ autolink `www.` / `https://` / e-mail), изображения, HTML-сущно�
     даты в `dateFormat`, длительности, `after` / `until`, `excludes` / `includes` (выходные
     удлиняют задачи), `axisFormat`, `tickInterval`, компактный режим (`displayMode: compact`),
     линия сегодняшнего дня. Даты считаются как у Mermaid (dayjs): строгий `dateFormat`, запасной
-    разбор начала как у `Date` в JavaScript, календарные месяцы и годы в длительностях.
+    разбор начала как у `Date` в JavaScript, календарные месяцы и годы в длительностях;
+  - timeline: периоды с событиями по разделам, слева направо или сверху вниз (`timeline TD`);
+  - mindmap: дерево по отступам, все формы узлов, ветви в цветах темы (раскладка — аккуратное
+    дерево в обе стороны от корня, а не «силовая», как у Mermaid);
+  - quadrantChart: квадранты, точки со стилями и `classDef`, подписи осей;
+  - xychart-beta: столбцы и линии по категориям или числовой оси, вертикально и горизонтально,
+    легенда для именованных рядов.
   Диаграммы масштабируются и открываются на всё окно, как картинки; копирование даёт исходный
   текст, поиск подсвечивает подписи. Неподдержанный тип или ошибка — блок кода с пометкой о причине.
   Темы Mermaid (`%%{init: {theme: ...}}%%`, `themeVariables`) не применяются: цвета всегда
@@ -231,6 +237,7 @@ out\build\x64-release\emoji_test.exe          # таблица эмодзи-ко
 & $t mermaid samples\gfm\23-mermaid-state.md      # и для диаграмм состояний
 & $t mermaid samples\gfm\24-mermaid-er.md         # и для ER-диаграмм
 & $t mermaid samples\gfm\25-mermaid-charts.md     # и для pie, journey, gantt
+& $t mermaid samples\gfm\26-mermaid-more.md       # и для timeline, mindmap, quadrantChart, xychart
 & $t mmd diagram.mmd out.png [--dark]          # одна диаграмма Mermaid в PNG
 & $t tex "\frac{a}{b}"                        # дерево разобранной формулы
 ```
