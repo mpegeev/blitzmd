@@ -1203,6 +1203,15 @@ private:
             ge.from = sa;
             ge.to = sb;
             ge.minlen = e.length;
+            // A subgraph end of this level: the edge meets its box, leaving
+            // from its bottom or entering at its top (as in Mermaid).
+            auto box_end = [&](const Ref& r) {
+                if (!r.cluster) return -1;
+                const ClusterBox& box = boxes_[static_cast<size_t>(r.index)];
+                return !box.isolated && box.level == static_cast<int>(li) ? box.graph_index : -1;
+            };
+            ge.from_cluster = box_end(e.from);
+            ge.to_cluster = box_end(e.to);
             const SceneBuilder::Measured& m = edge_labels_[static_cast<size_t>(ei)];
             if (m.layout) {
                 ge.label_w = m.w + 8;

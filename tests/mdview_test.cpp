@@ -1458,6 +1458,16 @@ int main(int argc, char** ansi_argv) {
             {L"classDiagram\nclass A {\n+x", false, L"Line 2"},
             {L"classDiagram\nA <-> B", false, L"Line 2"},
             {L"classDiagram\n}", false, L"Line 2"},
+            {L"stateDiagram-v2\n[*] --> Still\nStill --> [*]\nStill --> Moving : go\nMoving --> Still", true, nullptr},
+            {L"stateDiagram-v2\nstate Active {\n[*] --> A\nA --> B\n--\n[*] --> C\n}\n[*] --> Active\nActive --> [*]", true, nullptr},
+            {L"stateDiagram\nstate c <<choice>>\nstate f <<fork>>\nstate j <<join>>\n[*] --> c\nc --> f : x\nf --> A\nf --> B\nA --> j\nB --> j\nj --> [*]", true, nullptr},
+            {L"stateDiagram-v2\nstate \"A long name\" as s2\ns2 : more\ns2 : and more\nnote right of s2 : a note\nnote left of s2\nline one\nline two\nend note", true, nullptr},
+            {L"stateDiagram-v2\ndirection LR\nclassDef bad fill:#f00\nA --> B:::bad\nclass A bad\nstyle B stroke:#00f\nA --> A : again", true, nullptr},
+            {L"stateDiagram-v2\nstate A {\nB --> C", false, L"Line 2"},
+            {L"stateDiagram-v2\n}", false, L"Line 2"},
+            {L"stateDiagram-v2\n--", false, L"Line 2"},
+            {L"stateDiagram-v2\nnote right of A\ntext", false, L"Line 2"},
+            {L"stateDiagram-v2\nA -> B", false, L"Line 2"},
             {L"classDiagram\nnote for A x", false, L"Line 2"},
             {L"gitGraph\ncommit", false, L"gitGraph"},
             {L"", false, nullptr},
@@ -1540,6 +1550,27 @@ int main(int argc, char** ansi_argv) {
             L"classDiagram\n" + repeat(L"namespace N {\n", 30) + L"class A\n" + repeat(L"}\n", 30),
             L"classDiagram\n" + repeat(L"A --> A : self\n", 400),
             L"classDiagram\n" + repeat(L"note \"" + std::wstring(300, L'n') + L"\"\n", 100),
+            [&] {  // a chain of states, and transitions from the first to all: too many bends
+                std::wstring s = L"stateDiagram-v2\n";
+                for (int i = 0; i < 249; ++i) s += L"S" + std::to_wstring(i) + L" --> S" + std::to_wstring(i + 1) + L"\n";
+                for (int k = 2; k < 252; ++k) s += L"S0 --> S" + std::to_wstring(k) + L"\n";
+                return s;
+            }(),
+            [&] {  // composites inside composites, each with regions, linked across
+                std::wstring s = L"stateDiagram-v2\n";
+                for (int i = 0; i < 20; ++i) s += L"state C" + std::to_wstring(i) + L" {\n[*] --> X" + std::to_wstring(i) + L"\n--\n[*] --> Y" + std::to_wstring(i) + L"\n";
+                s += repeat(L"}\n", 20);
+                for (int i = 0; i < 19; ++i) s += L"X" + std::to_wstring(i) + L" --> C" + std::to_wstring(i + 1) + L"\n";
+                return s;
+            }(),
+            [&] {  // nested too deep
+                std::wstring s = L"stateDiagram-v2\n";
+                for (int i = 0; i < 30; ++i) s += L"state N" + std::to_wstring(i) + L" {\n";
+                return s + L"B\n" + repeat(L"}\n", 30);
+            }(),
+            L"stateDiagram-v2\n" + repeat(L"A --> A : again\n", 400),
+            L"stateDiagram-v2\n" + repeat(L"note right of A : " + std::wstring(200, L'n') + L"\n", 150),
+            L"stateDiagram-v2\n" + repeat(L"[*] --> A\n--\n", 1000),
         };
         for (const std::wstring& h : hostile) {
             const double t0 = NowMs();
@@ -1724,6 +1755,48 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated class diagrams in %.0f ms\n", iterations / 4, NowMs() - k0);
+        // Well-formed random state diagrams.
+        const double s0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            std::wstring src = std::wstring(L"stateDiagram-v2\n") + ((rnd() & 3) == 0 ? L"direction LR\n" : L"");
+            const int count = 1 + static_cast<int>(rnd() % 10);
+            int open = 0;
+            std::vector<bool> regions;  // per open composite: may split
+            for (int k = 0; k < count * 3; ++k) {
+                const std::wstring a = L"S" + std::to_wstring(rnd() % count), b = L"S" + std::to_wstring(rnd() % count);
+                switch (rnd() % 10) {
+                case 0:
+                    if (open < 4) {
+                        src += L"state C" + std::to_wstring(k) + L" {\n";
+                        ++open;
+                    }
+                    break;
+                case 1:
+                    if (open > 0) {
+                        src += L"}\n";
+                        --open;
+                    }
+                    break;
+                case 2:
+                    if (open > 0) src += L"--\n";
+                    break;
+                case 3: src += L"[*] --> " + a + L"\n"; break;
+                case 4: src += a + L" --> [*]\n"; break;
+                case 5: src += L"note " + std::wstring(rnd() & 1 ? L"left" : L"right") + L" of " + a + L" : note\n"; break;
+                case 6: src += L"state x" + std::to_wstring(k) + (rnd() & 1 ? L" <<choice>>\n" : L" <<fork>>\n") + a + L" --> x" + std::to_wstring(k) + L"\nx" + std::to_wstring(k) + L" --> " + b + L"\n"; break;
+                case 7: src += a + L" : a description\n"; break;
+                default: src += a + L" --> " + b + ((rnd() & 1) ? L" : event" : L"") + L"\n"; break;
+                }
+            }
+            while (open-- > 0) src += L"}\n";
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 200)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated state diagrams in %.0f ms\n", iterations / 4, NowMs() - s0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();
@@ -1756,6 +1829,9 @@ int main(int argc, char** ansi_argv) {
                     e.label_w = 40;
                     e.label_h = 18;
                 }
+                // Now and then a box as an end (a subgraph or composite state).
+                if (rnd() % 4 == 0) e.from_cluster = g.nodes[static_cast<size_t>(e.from)].cluster;
+                if (rnd() % 4 == 0) e.to_cluster = g.nodes[static_cast<size_t>(e.to)].cluster;
                 g.edges.push_back(e);
             }
             const LayeredLayout l = LayoutLayered(g);

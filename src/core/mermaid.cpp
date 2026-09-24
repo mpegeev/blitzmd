@@ -496,7 +496,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence, Class };
+enum class Kind { Unknown, Flowchart, Sequence, Class, State };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -510,6 +510,7 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     }
     if (EqualsNoCase(*name, L"sequenceDiagram")) return Kind::Sequence;
     if (EqualsNoCase(*name, L"classDiagram") || EqualsNoCase(*name, L"classDiagram-v2")) return Kind::Class;
+    if (EqualsNoCase(*name, L"stateDiagram") || EqualsNoCase(*name, L"stateDiagram-v2")) return Kind::State;
     return Kind::Unknown;
 }
 
@@ -544,6 +545,7 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         case Kind::Flowchart: Flowchart(src, nullptr); return true;
         case Kind::Sequence: Sequence(src, nullptr); return true;
         case Kind::Class: ClassDiagram(src, nullptr); return true;
+        case Kind::State: StateDiagram(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -561,6 +563,7 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         case Kind::Flowchart: return Flowchart(src, &builder);
         case Kind::Sequence: return Sequence(src, &builder);
         case Kind::Class: return ClassDiagram(src, &builder);
+        case Kind::State: return StateDiagram(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;
