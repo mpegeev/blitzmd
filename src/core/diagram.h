@@ -52,6 +52,7 @@ struct RichText {
     struct Span {
         uint32_t start = 0, length = 0;
         bool bold = false, italic = false;
+        bool underline = false;  // class diagrams: static members
     };
     std::wstring text;  // '\n' between lines
     std::vector<Span> spans;

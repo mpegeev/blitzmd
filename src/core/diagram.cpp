@@ -347,6 +347,7 @@ SceneBuilder::Measured SceneBuilder::Measure(const RichText& t, float wrap, bool
         const DWRITE_TEXT_RANGE r{s.start, s.length};
         if (s.bold) m.layout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, r);
         if (s.italic) m.layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, r);
+        if (s.underline) m.layout->SetUnderline(TRUE, r);
     }
     DWRITE_TEXT_METRICS tm{};
     m.layout->GetMetrics(&tm);
