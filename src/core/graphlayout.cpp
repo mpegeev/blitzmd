@@ -719,19 +719,19 @@ LayeredLayout LayoutLayered(const LayeredGraph& g, bool ranks_only) {
         // (a box linked to something it holds): else between its nodes,
         // turned around if even that would.
         std::vector<char> seen(static_cast<size_t>(ranked));
-        std::vector<int> stack;
+        std::vector<int> todo;
         auto reaches = [&](int from, int to) {
-            std::fill(seen.begin(), seen.end(), 0);
-            stack.assign(1, from);
+            std::fill(seen.begin(), seen.end(), static_cast<char>(0));
+            todo.assign(1, from);
             seen[static_cast<size_t>(from)] = 1;
-            while (!stack.empty()) {
-                const int v = stack.back();
-                stack.pop_back();
+            while (!todo.empty()) {
+                const int v = todo.back();
+                todo.pop_back();
                 if (v == to) return true;
                 for (int w : succ[static_cast<size_t>(v)]) {
                     if (!seen[static_cast<size_t>(w)]) {
                         seen[static_cast<size_t>(w)] = 1;
-                        stack.push_back(w);
+                        todo.push_back(w);
                     }
                 }
             }
