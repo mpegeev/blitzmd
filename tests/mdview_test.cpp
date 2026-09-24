@@ -1455,6 +1455,8 @@ int main(int argc, char** ansi_argv) {
             {L"classDiagram\nnamespace N {\nclass A\nclass B\n}\nnote for A \"x\"\nnote \"y\"\n<<interface>> A", true, nullptr},
             {L"classDiagram\ndirection LR\nclass Note\nClass --> Note\nclassDef c fill:#f9f\ncssClass \"Note\" c\nstyle Class fill:#fff", true, nullptr},
             {L"classDiagram\nclass `Odd name!`\nclass A[\"A label\"]", true, nullptr},
+            {L"classDiagram\nA..B\nclassK..>classL\nclass Shape <<interface>> {\n+draw()\n}\nnamespace N { class Z }", true, nullptr},
+            {L"classDiagram\nA : +foo ( int x )$ int\nnote for Ghost \"alone\"\nstyle Ghost fill:#f00", true, nullptr},
             {L"classDiagram\nclass A {\n+x", false, L"Line 2"},
             {L"classDiagram\nA <-> B", false, L"Line 2"},
             {L"classDiagram\n}", false, L"Line 2"},
@@ -1539,6 +1541,8 @@ int main(int argc, char** ansi_argv) {
             L"classDiagram\nclass A {\n" + repeat(L"+method(List~List~int~~ x) Map~K~$\n", 1500) + L"}",
             L"classDiagram\n" + repeat(L"namespace N {\n", 30) + L"class A\n" + repeat(L"}\n", 30),
             L"classDiagram\n" + repeat(L"A --> A : self\n", 400),
+            L"classDiagram\nA : " + std::wstring(3900, L'~'),  // (no recursion per ~)
+            L"classDiagram\nclass A\n" + repeat(L"note for A \"n\"\n", 600),
             L"classDiagram\n" + repeat(L"note \"" + std::wstring(300, L'n') + L"\"\n", 100),
         };
         for (const std::wstring& h : hostile) {

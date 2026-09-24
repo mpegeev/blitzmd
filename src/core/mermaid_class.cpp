@@ -90,13 +90,19 @@ public:
         for (;;) {
             c_.SkipStatementGap();
             if (c_.AtEnd()) break;
+            opened_ = false;
             Statement();
             c_.SkipBlanks();
-            if (!c_.AtStatementEnd() && c_.Peek() != L'}') c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
+            // (namespace N { class A }: its contents may follow on the line)
+            if (!opened_ && !c_.AtStatementEnd() && c_.Peek() != L'}') c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
         }
         if (!open_.empty()) {
             c_.set_pos(open_at_.back());
             c_.Fail(Tr(L"'{' without '}'", L"«{» без «}»"));
+        }
+        // Notes for classes named anywhere; for no class, a note alone.
+        for (size_t k = 0; k < notes.size(); ++k) {
+            if (auto it = ids_.find(note_targets_[k]); it != ids_.end()) notes[k].target = it->second;
         }
     }
 
@@ -171,11 +177,12 @@ private:
         }
         if (c_.EatKeyword(L"style", true)) {
             c_.SkipBlanks();
-            const int ci = ClassIndex(Name());
+            const Text id = Name();
             c_.SkipBlanks();
             Style st;
             st.Apply(c_.LineRest());
-            classes[static_cast<size_t>(ci)].style.Merge(st);
+            // Only for a class there is by now, as in Mermaid.
+            if (auto it = ids_.find(id.raw); it != ids_.end()) classes[static_cast<size_t>(it->second)].style.Merge(st);
             return;
         }
         for (const wchar_t* kw : {L"callback", L"link", L"click", L"accTitle"}) {
@@ -214,7 +221,8 @@ private:
         const size_t start = c_.pos();
         while (!c_.AtEnd()) {
             const wchar_t ch = c_.Peek();
-            if (IsWordChar(ch) || ch == L'.' || (ch == L'-' && c_.pos() > start && IsWordChar(c_.Peek(1)))) {
+            // (. and - only between word characters: A..B and A--B are relations)
+            if (IsWordChar(ch) || ((ch == L'.' || ch == L'-') && c_.pos() > start && IsWordChar(c_.Peek(1)))) {
                 c_.Advance();
             } else {
                 break;
@@ -237,7 +245,11 @@ private:
             while (!c_.AtEnd() && c_.Peek() != L'~' && c_.Peek() != L'\n') c_.Advance();
             if (c_.Peek() != L'~') c_.Fail(Tr(L"Expected '~'", L"Ожидалась «~»"));
             Class& cl = classes[static_cast<size_t>(ci)];
-            if (cl.generic.empty()) cl.generic = std::wstring(src_.text.substr(start, c_.pos() - start));
+            if (cl.generic.empty()) {
+                cl.generic = std::wstring(src_.text.substr(start, c_.pos() - start));
+                // Search finds the whole shown name: Square<Shape>.
+                if (cl.name.pos == n.pos) cl.name.len = static_cast<uint32_t>(c_.pos() + 1 - n.pos);
+            }
             c_.Advance();
         }
         while (c_.EatStr(L":::")) {
@@ -280,6 +292,10 @@ private:
             classes[static_cast<size_t>(ci)].classes.emplace_back(src_.text.substr(s, c_.pos() - s));
         }
         c_.SkipBlanks();
+        if (c_.Rest().starts_with(L"<<")) {  // class Shape <<interface>>
+            classes[static_cast<size_t>(ci)].annotations.push_back(Annotation());
+            c_.SkipBlanks();
+        }
         if (!c_.Eat(L'{')) return;
         // One member per line, up to the closing brace.
         const size_t open = c_.pos() - 1;
@@ -307,6 +323,7 @@ private:
         open_.push_back(static_cast<int>(namespaces.size()));
         open_at_.push_back(c_.pos() - 1);
         namespaces.push_back(std::move(ns));
+        opened_ = true;
     }
 
     Text Annotation() {
@@ -329,14 +346,20 @@ private:
         c_.SkipBlanks();
         Note n;
         n.ns = open_.empty() ? -1 : open_.back();
+        std::wstring target;
         if (c_.EatKeyword(L"for", true)) {
             c_.SkipBlanks();
-            n.target = ClassIndex(Name());
+            target = Name().raw;  // resolved at the end: no class is made for it
             c_.SkipBlanks();
         }
         if (c_.Peek() != L'"') c_.Fail(Tr(L"Expected a note in quotes", L"Ожидалась заметка в кавычках"));
         n.text = Quoted();
         if (notes.size() >= kMaxNodes) c_.Fail(Tr(L"Too many notes", L"Слишком много заметок"));
+        // A note's link is a line to draw like a relation: they count together.
+        if (!target.empty() && ++links_ + relations.size() > kMaxEdges) {
+            c_.Fail(Tr(L"Too many relations: Mermaid draws at most 500", L"Слишком много связей: Mermaid рисует не больше 500"));
+        }
+        note_targets_.push_back(std::move(target));
         notes.push_back(std::move(n));
     }
 
@@ -374,7 +397,7 @@ private:
             r.label.len = static_cast<uint32_t>(l.size());
             if (l.size() > kMaxLabel) c_.Fail(Tr(L"Label too long", L"Слишком длинная подпись"));
         }
-        if (relations.size() >= kMaxEdges) {
+        if (relations.size() + links_ >= kMaxEdges) {
             c_.Fail(Tr(L"Too many relations: Mermaid draws at most 500", L"Слишком много связей: Mermaid рисует не больше 500"));
         }
         relations.push_back(std::move(r));
@@ -436,6 +459,12 @@ private:
             raw = Trim(raw);
         }
         t.raw = std::wstring(raw);
+        // Or right after the parentheses: +foo()$ int.
+        if (const size_t close = t.raw.rfind(L')'); close != std::wstring::npos && close + 1 < t.raw.size() &&
+                                                     (t.raw[close + 1] == L'$' || t.raw[close + 1] == L'*')) {
+            (t.raw[close + 1] == L'$' ? m.is_static : m.is_abstract) = true;
+            t.raw.erase(close + 1, 1);
+        }
         m.text = std::move(t);
         const bool method = raw.find(L'(') != std::wstring_view::npos;
         if (cl.attributes.size() + cl.methods.size() >= kMaxNodes) c_.Fail(Tr(L"Too many members", L"Слишком много членов класса"));
@@ -490,6 +519,9 @@ private:
     std::unordered_map<std::wstring, int> ids_;
     std::vector<int> open_;         // namespaces being read
     std::vector<size_t> open_at_;   // where their '{' is
+    bool opened_ = false;           // the statement just read opened one
+    size_t links_ = 0;              // notes for a class
+    std::vector<std::wstring> note_targets_;  // per note: the class named
 };
 
 // ---------------------------------------------------------------------------
@@ -571,15 +603,19 @@ private:
         return t;
     }
 
-    // What a member shows: +name(params) : type, with generics as <T>.
+    // What a member shows: +name(params) : type, with generics as <T> and
+    // the spaces Mermaid trims (+foo ( int x ) int).
     static std::wstring Display(std::wstring_view raw) {
-        // A leading ~ is the package visibility, not a generic.
-        if (!raw.empty() && raw.front() == L'~') return L"~" + Display(raw.substr(1));
+        // Only a first ~ is the package visibility; any others are generics.
+        std::wstring out;
+        if (!raw.empty() && raw.front() == L'~') {
+            out = L"~";
+            raw.remove_prefix(1);
+        }
         const size_t open = raw.find(L'(');
-        if (open == std::wstring_view::npos) return Generics(raw);
         const size_t close = raw.rfind(L')');
-        if (close == std::wstring_view::npos || close < open) return Generics(raw);
-        std::wstring out = Generics(raw.substr(0, close + 1));
+        if (open == std::wstring_view::npos || close == std::wstring_view::npos || close < open) return out + Generics(raw);
+        out += Generics(Trim(raw.substr(0, open))) + L"(" + Generics(Trim(raw.substr(open + 1, close - open - 1))) + L")";
         const std::wstring_view ret = Trim(raw.substr(close + 1));
         if (!ret.empty()) out += L" : " + Generics(ret);
         return out;
@@ -594,14 +630,18 @@ private:
             b.style = ClassStyle(c);
             const bool bold = b.style.bold != 0, italic = b.style.italic == 1;
             float w = 0, h = kPadY;
-            for (const Text& a : c.annotations) {
-                b.annotations.push_back(b_.Measure(ParseLabel(L"«" + a.raw + L"»", false), 0, false, 1.f));
+            if (!c.annotations.empty()) {  // the first only, as Mermaid shows
+                b.annotations.push_back(b_.Measure(ParseLabel(L"«" + c.annotations[0].raw + L"»", false), 0, false, 1.f));
                 w = std::max(w, b.annotations.back().w);
                 h += b.annotations.back().h;
             }
             // (Generics appended as text: <T> is no HTML tag here.)
             RichText name = c.label.raw.empty() ? RichText{c.id, {}} : ParseLabel(c.label.raw, false);
-            if (!c.generic.empty()) name.text += L"<" + Generics(c.generic) + L">";
+            if (!c.generic.empty()) {
+                const uint32_t at = static_cast<uint32_t>(name.text.size());
+                name.text += L"<" + Generics(c.generic) + L">";
+                if (!name.spans.empty()) name.spans.push_back({at, static_cast<uint32_t>(name.text.size()) - at, false, false});
+            }
             b.name = b_.Measure(Styled(std::move(name), bold, italic, false), 0, false, 1.f);
             w = std::max(w, b.name.w);
             h += b.name.h + kPadY;
@@ -676,10 +716,15 @@ private:
         for (size_t k = 0; k < p_.relations.size(); ++k) {
             const Relation& r = p_.relations[k];
             if (r.a == r.b) {
+                // Counted, with its label's length: loops go around each
+                // other, their labels past the outermost one (DrawLoop).
                 Box& b = boxes_[static_cast<size_t>(r.a)];
-                const float label = labels_[k].layout ? (sideways ? labels_[k].h : labels_[k].w) : 0.f;
-                loop_room[static_cast<size_t>(r.a)] =
-                    std::max(loop_room[static_cast<size_t>(r.a)], kLoopReach * (1 + 0.6f * static_cast<float>(b.loops++)) * 0.75f + label + 6);
+                ++b.loops;
+                float len = 0;
+                for (const M* t : {&labels_[k], &cards_[k].first, &cards_[k].second}) {
+                    if (t->layout) len = std::max(len, sideways ? t->h : t->w);
+                }
+                if (len > 0) loop_room[static_cast<size_t>(r.a)] += len + 6;
                 continue;
             }
             LayeredGraph::Edge e;
@@ -689,10 +734,16 @@ private:
                 e.label_w = labels_[k].w + 8;
                 e.label_h = labels_[k].h + 4;
             }
+            // Room at the ends for the cardinalities, clear of the label.
+            if (!r.card_a.raw.empty() || !r.card_b.raw.empty()) e.minlen = 2;
             edge_slot_[k] = static_cast<int>(g.edges.size());
             g.edges.push_back(e);
         }
-        for (size_t i = 0; i < boxes_.size(); ++i) g.nodes[i].after = loop_room[i];
+        for (size_t i = 0; i < boxes_.size(); ++i) {
+            if (boxes_[i].loops > 0) {
+                g.nodes[i].after = kLoopReach * (1 + 0.6f * static_cast<float>(boxes_[i].loops - 1)) * 0.75f + 6 + loop_room[i];
+            }
+        }
         // A note hangs off its class.
         note_slot_.assign(p_.notes.size(), -1);
         for (size_t k = 0; k < p_.notes.size(); ++k) {
@@ -738,6 +789,7 @@ private:
 
     void DrawRelations() {
         std::vector<int> loops(boxes_.size(), 0);
+        std::vector<float> loop_labels(boxes_.size(), 0.f);
         const DgColor line = Role(kDgLine);
         for (size_t k = 0; k < p_.notes.size(); ++k) {
             if (note_slot_[k] < 0) continue;
@@ -750,7 +802,7 @@ private:
             const Relation& r = p_.relations[k];
             const uint8_t dash = r.dashed ? 1 : 0;
             if (edge_slot_[k] < 0) {
-                DrawLoop(r, k, loops[static_cast<size_t>(r.a)]++, dash);
+                DrawLoop(r, k, loops[static_cast<size_t>(r.a)]++, &loop_labels[static_cast<size_t>(r.a)], dash);
                 continue;
             }
             std::vector<D2D1_POINT_2F> pts = Path(r.a, r.b, edge_slot_[k]);
@@ -790,7 +842,7 @@ private:
     }
 
     // A class related to itself: a loop beside it (below it in LR/RL).
-    void DrawLoop(const Relation& r, size_t k, int n, uint8_t dash) {
+    void DrawLoop(const Relation& r, size_t k, int n, float* labels, uint8_t dash) {
         const Box& b = boxes_[static_cast<size_t>(r.a)];
         const bool below = p_.dir == RankDir::LR || p_.dir == RankDir::RL;
         auto at = [&](float out, float side) {
@@ -808,11 +860,27 @@ private:
         b_.End(Role(kDgNone), line, 1.f, dash);
         AddMarker(b_, r.end, a1, c2, line, 1.f);
         AddMarker(b_, r.start, a0, c1, line, 1.f);
+        // Its label past the outermost loop and the labels before (Layout
+        // keeps room), the cardinalities on either side of it.
         const M& m = labels_[k];
+        const M& ca = cards_[k].first;
+        const M& cb = cards_[k].second;
+        auto out_len = [&](const M& t) { return t.layout ? (below ? t.h : t.w) : 0.f; };
+        auto side_len = [&](const M& t) { return t.layout ? (below ? t.w : t.h) : 0.f; };
+        const float len = std::max({out_len(m), out_len(ca), out_len(cb)});
+        if (len <= 0) return;
+        const float start = std::max(kLoopReach * (1 + 0.6f * static_cast<float>(b.loops - 1)) * 0.75f + 6, *labels > 0 ? *labels + 6 : 0.f);
+        *labels = start + len;
+        const D2D1_POINT_2F c = at(edge + start + len / 2, 0);
         if (m.layout) {
-            const D2D1_POINT_2F c = at(edge + reach * 0.75f + (below ? m.h : m.w) / 2 - 4, 0);
             b_.Rect(D2D1::RectF(c.x - m.w / 2 - 2, c.y - m.h / 2, c.x + m.w / 2 + 2, c.y + m.h / 2), 0, Role(kDgLabelBg), Role(kDgNone));
             b_.Text(m, D2D1::Point2F(c.x - m.w / 2, c.y - m.h / 2), Role(kDgText), r.label.pos, r.label.len);
+        }
+        const float half = side_len(m) / 2 + 2;
+        for (const auto& [t, sign, src] : {std::tuple{&ca, -1.f, &r.card_a}, std::tuple{&cb, 1.f, &r.card_b}}) {
+            if (!t->layout) continue;
+            const D2D1_POINT_2F p = at(edge + start + len / 2, sign * (half + side_len(*t) / 2));
+            b_.Text(*t, D2D1::Point2F(p.x - t->w / 2, p.y - t->h / 2), Role(kDgText), src->pos, src->len);
         }
     }
 
