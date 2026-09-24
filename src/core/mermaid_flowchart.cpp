@@ -1386,6 +1386,7 @@ private:
                 }
                 pts.front() = Clip(e.from, pts[1]);
                 pts.back() = Clip(e.to, pts[pts.size() - 2]);
+                DropDoubledEnds(&pts);
                 const D2D1_POINT_2F tip_end = pts.back(), tip_start = pts.front();
                 const D2D1_POINT_2F before_end = pts[pts.size() - 2], after_start = pts[1];
                 if (e.end != Marker::None) pts.back() = Retreat(pts.back(), before_end, MarkerLength(e.end));

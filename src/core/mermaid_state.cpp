@@ -85,6 +85,7 @@ public:
             // '{' and '}' end their statements: more may follow on the line.
             if (Statement()) continue;
             c_.SkipBlanks();
+            if (c_.Peek() == L'#') c_.SkipToLineEnd();  // a comment
             if (!c_.AtStatementEnd() && c_.Peek() != L'}') c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
         }
         if (!scopes_.empty()) {
@@ -123,20 +124,13 @@ private:
             return false;
         }
         if (c_.Rest().starts_with(L"--") && !c_.Rest().starts_with(L"-->")) {
-            // Concurrency: the composite's next region.
-            const size_t at = c_.pos();
+            // Concurrency: the composite's next region (a statement may
+            // follow on the line, as in Mermaid).
+            if (scopes_.empty()) c_.Fail(Tr(L"'--' outside a composite state", L"«--» вне составного состояния"));
             c_.Advance(2);
-            c_.SkipBlanks();
-            if (c_.AtStatementEnd()) {
-                if (scopes_.empty()) {
-                    c_.set_pos(at);
-                    c_.Fail(Tr(L"'--' outside a composite state", L"«--» вне составного состояния"));
-                }
-                const int composite = clusters[static_cast<size_t>(Current())].parent;
-                scopes_.back().cluster = NewRegion(composite);
-                return false;
-            }
-            c_.set_pos(at);
+            const int composite = clusters[static_cast<size_t>(Current())].parent;
+            scopes_.back().cluster = NewRegion(composite);
+            return true;
         }
         if (c_.EatKeyword(L"state")) return StateDecl();
         if (c_.EatKeyword(L"note")) {
@@ -436,7 +430,8 @@ private:
             while (!c_.AtEnd()) {
                 const size_t line = c_.pos();
                 c_.SkipToLineEnd();
-                if (EqualsNoCase(Trim(src_.text.substr(line, c_.pos() - line)), L"end note")) {
+                const std::wstring_view l = Trim(src_.text.substr(line, c_.pos() - line));
+                if (StartsWithNoCase(l, L"end note") && (l.size() == 8 || !IsWordChar(l[8]))) {
                     end = line;
                     break;
                 }
@@ -963,6 +958,7 @@ private:
                 while (pts.size() > 2 && Inside(t.to, pts[pts.size() - 2])) pts.erase(pts.end() - 2);
                 pts.front() = Clip(t.from, pts[1]);
                 pts.back() = Clip(t.to, pts[pts.size() - 2]);
+                DropDoubledEnds(&pts);
             } else if (!Inner(t, &pts)) {
                 continue;
             }

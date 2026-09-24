@@ -1478,6 +1478,7 @@ int main(int argc, char** ansi_argv) {
             {L"stateDiagram-v2\nstate A\n{\nB --> C\n-- %% next\nD --> E\n} A --> F\nstate G { H --> I }\nnote \"floating\" as N1\nstate f [[fork]]\n# a comment", true, nullptr},
             {L"stateDiagram-v2\nstate A {\nB --> C\n}\nstate A {\nD --> E\n}\nnote left of B extra\nmore\nend note", true, nullptr},
             {L"stateDiagram-v2\nstate A {\nB\n}\nstate B {\nA\n}", true, nullptr},
+            {L"stateDiagram-v2\nstate A {\nB --> C\n-- D --> E\n}\nA --> F # a comment\nnote left of F\ntext\nend note here", true, nullptr},
             {L"stateDiagram-v2\nstate f [[fork\nA", false, L"Line 2"},
             {L"stateDiagram-v2\naccDescr {\nnever closed", false, L"Line 2"},
             {L"stateDiagram-v2\nstate A {\nB --> C", false, L"Line 2"},
