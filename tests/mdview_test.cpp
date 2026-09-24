@@ -1445,6 +1445,10 @@ int main(int argc, char** ansi_argv) {
             {L"sequenceDiagram\nparticipant A as Alice\nactor B\nA->>+B: x\nB-->>-A: y\nNote over A,B: n\nloop L\nA-)B: z\nend", true, nullptr},
             {L"sequenceDiagram\nbox Aqua G\nparticipant A\nend\nautonumber\ncreate participant C\nA->>C: c\ndestroy C\nC-xA: d", true, nullptr},
             {L"sequenceDiagram\nalt a\nA->>B: x\nelse b\nA->>B: y\nend\ncritical c\nA->B: z\noption o\nA-->B: w\nend", true, nullptr},
+            {L"sequenceDiagram\nparticipant API-Gateway\nAPI-Gateway->>Auth-Service: validate\nAuth-Service-XAPI-Gateway: no", true, nullptr},
+            {L"sequenceDiagram\nparticipant John Doe\nparticipant Jane Roe as JR\nJohn Doe->>JR: hi\nparticipant Q@{ \"type\": \"queue\" } as Queue", true, nullptr},
+            {L"sequenceDiagram\nA->>B: I #9829; you#59; and #quot;them#quot;", true, nullptr},
+            {L"sequenceDiagram\naccDescr {\nlong\ndescription\n}\npar_over x\nA->>B: wrap:a long text\nend", true, nullptr},
             {L"sequenceDiagram\nloop x\nA->>B: y", false, L"end"},
             {L"sequenceDiagram\nA=>B: x", false, L"2"},
             {L"sequenceDiagram\nNote above A: x", false, L"2"},
@@ -1690,7 +1694,7 @@ int main(int argc, char** ansi_argv) {
                 }
                 return false;
             };
-            auto nested = [&](int a, int b) {  // b inside a
+            auto inside = [&](int a, int b) {  // box b inside box a
                 for (int k = b; k >= 0; k = g.clusters[static_cast<size_t>(k)].parent) {
                     if (k == a) return true;
                 }
@@ -1718,7 +1722,7 @@ int main(int argc, char** ansi_argv) {
                 }
                 for (int d = c + 1; d < nc && bad.empty(); ++d) {
                     const D2D1_RECT_F& other = l.clusters[static_cast<size_t>(d)];
-                    if (!empty(other) && !nested(c, d) && !nested(d, c) && meet(box, other)) bad = "boxes overlap";
+                    if (!empty(other) && !inside(c, d) && !inside(d, c) && meet(box, other)) bad = "boxes overlap";
                 }
             }
             if (!bad.empty()) {
