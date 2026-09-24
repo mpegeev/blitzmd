@@ -419,11 +419,13 @@ private:
             const float tw = texts_[k].layout ? texts_[k].w : 0.f;
             if (it.kind == ItemKind::Message) {
                 if (it.a == it.b) {
-                    // To itself: text right of the loop.
+                    // To itself: text centered over the loop, as in Mermaid.
                     const size_t i = static_cast<size_t>(it.a);
-                    const float need = kSelfLoop + tw + 20;
-                    if (i + 1 < n) spans.push_back({i, i + 1, need + widths_[i + 1] / 2});
-                    else right_need[i] = std::max(right_need[i], need);
+                    const float right = std::max(tw / 2, kSelfLoop + 10) + 20;
+                    if (i + 1 < n) spans.push_back({i, i + 1, right});
+                    else right_need[i] = std::max(right_need[i], right);
+                    if (i > 0) spans.push_back({i - 1, i, tw / 2 + 20});
+                    else left_need[i] = std::max(left_need[i], tw / 2);
                 } else {
                     const size_t a = static_cast<size_t>(std::min(it.a, it.b)), b = static_cast<size_t>(std::max(it.a, it.b));
                     spans.push_back({a, b, tw + 40});
@@ -516,7 +518,8 @@ private:
                 m.x1 = Edge(b, active[b], a > b ? 1 : -1);
                 if (m.to_box) m.x1 = centers_[b] + (a < b ? -widths_[b] / 2 : widths_[b] / 2);
                 y = m.y + (a == b ? 20.f : 0.f) + (m.to_box ? kActorH / 2 : 0.f);
-                Extend(std::min(centers_[a], centers_[b]) - 20, std::max(centers_[a], centers_[b]) + 20 + (a == b ? kSelfLoop + text.w : 0.f));
+                if (a == b) Extend(m.x0 - text.w / 2 - 10, m.x0 + std::max(text.w / 2, kSelfLoop + 10) + 10);
+                else Extend(std::min(centers_[a], centers_[b]) - 20, std::max(centers_[a], centers_[b]) + 20);
                 messages_.push_back(m);
                 if (it.activate) active[b].push_back({m.y, static_cast<int>(active[b].size())});
                 if (it.deactivate && !active[a].empty()) {
@@ -763,7 +766,7 @@ private:
                            D2D1::Point2F(end.x + (head != Marker::None ? 8.f : 0.f), end.y));
                 b_.End(Role(kDgNone), Role(kDgLine), 1.5f, dash);
                 if (head != Marker::None) AddMarker(b_, head, end, D2D1::Point2F(end.x + 10, end.y), Role(kDgLine), 1.5f);
-                if (text.layout) b_.Text(text, D2D1::Point2F(x + kSelfLoop + 14, m.text_y), Role(kDgText), it.text.pos, it.text.len);
+                if (text.layout) b_.Text(text, D2D1::Point2F(x - text.w / 2, m.text_y), Role(kDgText), it.text.pos, it.text.len);
             } else {
                 const float dir = m.x1 > m.x0 ? 1.f : -1.f;
                 const float back = head == Marker::None ? 0.f : MarkerLength(head);
