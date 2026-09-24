@@ -125,5 +125,8 @@ std::shared_ptr<DiagramScene> Sequence(const Source& src, SceneBuilder* builder)
 std::shared_ptr<DiagramScene> ClassDiagram(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> StateDiagram(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> ErDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> PieChart(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> Journey(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> Gantt(const Source& src, SceneBuilder* builder);
 
 }  // namespace mdv::mermaid

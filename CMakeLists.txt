@@ -75,6 +75,9 @@ add_library(mdview_core STATIC
     src/core/mermaid_class.cpp
     src/core/mermaid_state.cpp
     src/core/mermaid_er.cpp
+    src/core/mermaid_pie.cpp
+    src/core/mermaid_journey.cpp
+    src/core/mermaid_gantt.cpp
     src/core/render.cpp
     src/core/icons.cpp
     src/core/zoom.cpp
