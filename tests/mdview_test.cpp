@@ -1430,6 +1430,8 @@ int main(int argc, char** ansi_argv) {
             {L"flowchart TD\nEnd((End)) --> Start", true, nullptr},  // keywords are lowercase
             {L"flowchart TD\nClass --> Object\nStyle --> Click", true, nullptr},
             {L"flowchart TD\nA e1@--> B\ne1@{ animate: true }", true, nullptr},
+            {L"flowchart TD\nA e-1@ --> B\ne-1@{ label: \"a } b\" }\nB -->|x| B\nB -->|y| B", true, nullptr},
+            {L"flowchart TD\nA e1@--> B\ne1@{ animate: true\nB --> C", false, L"Line 3"},
             {L"flowchart TD\nA--oB\nC---xD", true, nullptr},
             {L"flowchart TD\nx@{ shape: fork } --> y@{ shape: flag } --> z@{ shape: sm-circ }", true, nullptr},
             {L"flowchart TD\nstyle A,B fill:#f00\nclass Nothing c", true, nullptr},
