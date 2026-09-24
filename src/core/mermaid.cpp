@@ -481,7 +481,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart };
+enum class Kind { Unknown, Flowchart, Sequence };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -493,6 +493,7 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (EqualsNoCase(*name, L"flowchart") || EqualsNoCase(*name, L"graph") || EqualsNoCase(*name, L"flowchart-elk")) {
         return Kind::Flowchart;
     }
+    if (EqualsNoCase(*name, L"sequenceDiagram")) return Kind::Sequence;
     return Kind::Unknown;
 }
 
@@ -525,6 +526,7 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         std::wstring name;
         switch (DetectKind(src, &name)) {
         case Kind::Flowchart: Flowchart(src, nullptr); return true;
+        case Kind::Sequence: Sequence(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -540,6 +542,7 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         SceneBuilder builder(dw, family, size);
         switch (DetectKind(src, &name)) {
         case Kind::Flowchart: return Flowchart(src, &builder);
+        case Kind::Sequence: return Sequence(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;

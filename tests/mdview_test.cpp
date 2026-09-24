@@ -1429,6 +1429,14 @@ int main(int argc, char** ansi_argv) {
             {L"flowchart TD\nA[unclosed --> B", false, L"2"},
             {L"flowchart TD\nA --> B\nend", false, L"3"},
             {L"flowchart TD\nA -> B", false, L"2"},
+            {L"sequenceDiagram\nA->>B: hi\nB-->>A: ok", true, nullptr},
+            {L"sequenceDiagram\nparticipant A as Alice\nactor B\nA->>+B: x\nB-->>-A: y\nNote over A,B: n\nloop L\nA-)B: z\nend", true, nullptr},
+            {L"sequenceDiagram\nbox Aqua G\nparticipant A\nend\nautonumber\ncreate participant C\nA->>C: c\ndestroy C\nC-xA: d", true, nullptr},
+            {L"sequenceDiagram\nalt a\nA->>B: x\nelse b\nA->>B: y\nend\ncritical c\nA->B: z\noption o\nA-->B: w\nend", true, nullptr},
+            {L"sequenceDiagram\nloop x\nA->>B: y", false, L"end"},
+            {L"sequenceDiagram\nA=>B: x", false, L"2"},
+            {L"sequenceDiagram\nNote above A: x", false, L"2"},
+            {L"sequenceDiagram\nelse x", false, L"2"},
             {L"gitGraph\ncommit", false, L"gitGraph"},
             {L"", false, nullptr},
             {L"not a diagram", false, nullptr},
@@ -1468,6 +1476,16 @@ int main(int argc, char** ansi_argv) {
             L"flowchart TD\nA" + repeat(L" --> A", 3000),
             L"flowchart TD\n" + repeat(L"A[\"a\"]:::x:::y:::z --- B\n", 500),
             std::wstring(L"flowchart TD\n") + std::wstring(70000, L'A'),
+            L"sequenceDiagram\n" + repeat(L"A->>B: message\nB-->>A: reply\n", 1500),
+            [&] {
+                std::wstring s = L"sequenceDiagram\n";
+                for (int i = 0; i < 1500; ++i) s += L"P" + std::to_wstring(i) + L"->>P" + std::to_wstring(i + 1) + L": m\n";
+                return s;
+            }(),
+            L"sequenceDiagram\n" + repeat(L"loop x\n", 24) + L"A->>B: y\n" + repeat(L"end\n", 24),
+            L"sequenceDiagram\n" + repeat(L"A->>+B: x\n", 1000) + repeat(L"B-->>-A: y\n", 1000),
+            L"sequenceDiagram\nA->>B: " + std::wstring(3900, L'x'),
+            L"sequenceDiagram\n" + repeat(L"Note over A,B: " + std::wstring(200, L'n') + L"\n", 500),
         };
         for (const std::wstring& h : hostile) {
             const double t0 = NowMs();
@@ -1549,6 +1567,62 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated flowcharts in %.0f ms\n", iterations / 4, NowMs() - g0);
+        // Well-formed random sequence diagrams.
+        static const wchar_t* kArrows[] = {L"->>", L"-->>", L"->", L"-->", L"-x", L"--x", L"-)", L"--)", L"<<->>"};
+        static const wchar_t* kBlocks[] = {L"loop", L"alt", L"opt", L"par", L"critical", L"break", L"rect rgb(200,220,255)"};
+        const double q0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            std::wstring src = L"sequenceDiagram\n";
+            if (rnd() & 1) src += L"autonumber\n";
+            const int people = 1 + static_cast<int>(rnd() % 6);
+            std::vector<int> open;
+            int active = 0;
+            for (int k = 0; k < 40; ++k) {
+                const std::wstring a = L"P" + std::to_wstring(rnd() % people), b = L"P" + std::to_wstring(rnd() % people);
+                switch (rnd() % 12) {
+                case 0:
+                    if (open.size() < 6) {
+                        const int kind = static_cast<int>(rnd() % std::size(kBlocks));
+                        src += std::wstring(kBlocks[kind]) + L" cond\n";
+                        open.push_back(kind);
+                    }
+                    break;
+                case 1:
+                    if (!open.empty()) {
+                        src += L"end\n";
+                        open.pop_back();
+                    }
+                    break;
+                case 2:
+                    if (!open.empty() && open.back() == 1) src += L"else other\n";
+                    break;
+                case 3: src += L"Note " + std::wstring(rnd() & 1 ? L"left of " : L"over ") + a + L": note\n"; break;
+                case 4: src += L"Note over " + a + L"," + b + L": wide note\n"; break;
+                case 5:
+                    src += a + L"->>+" + b + L": start\n";
+                    ++active;
+                    break;
+                case 6:
+                    if (active > 0) {
+                        src += a + L"-->>-" + b + L": done\n";
+                        --active;
+                    }
+                    break;
+                default: src += a + kArrows[rnd() % std::size(kArrows)] + b + L": message " + std::to_wstring(k) + L"\n"; break;
+                }
+            }
+            while (!open.empty()) {
+                src += L"end\n";
+                open.pop_back();
+            }
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 200)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated sequence diagrams in %.0f ms\n", iterations / 4, NowMs() - q0);
         std::printf(failures ? "mermaid FAILED\n" : "mermaid OK\n");
         return failures ? 1 : 0;
     }
@@ -1647,6 +1721,8 @@ int main(int argc, char** ansi_argv) {
             // Mermaid diagrams (and their pieces).
             "```mermaid\nflowchart TD\nA-->B\n```\n", "```mermaid\ngraph LR\nA[x] -- y --> B((z))\n```\n",
             "```mermaid\n", "flowchart TD\n", "A --> B\n", "subgraph S\n", "end\n", "classDef c fill:#f00\n",
+            "```mermaid\nsequenceDiagram\nA->>+B: hi\nB-->>-A: ok\n```\n", "sequenceDiagram\n", "A->>B: m\n",
+            "loop x\n", "Note over A,B: n\n", "autonumber\n",
         };
         const size_t n_pieces = sizeof(kPieces) / sizeof(kPieces[0]);
         // YAML front matter fragments (a third of the documents start with one).
