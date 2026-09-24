@@ -213,13 +213,19 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
         b.Ellipse(D2D1::RectF(kMargin, y - 7, kMargin + 14, y + 7), c, Argb(0xFF000000), 1.f);
         b.Text(names[i], D2D1::Point2F(kMargin + 22, y - names[i].h / 2), Role(kDgText), p.actors[i].pos, p.actors[i].len);
     }
-    // Sections over their tasks, in Mermaid's fillType colors in turn.
+    // Sections over their tasks, in Mermaid's fillType colors in turn (seven
+    // of them, counting the sections with tasks).
+    std::vector<int> color(p.sections.size(), 0);
+    for (int s = -1, n = 0; const Task& t : p.tasks) {
+        if (t.section >= 0 && t.section != s) color[static_cast<size_t>(t.section)] = n++ % 7;
+        s = t.section;
+    }
     for (size_t k = 0; k < p.tasks.size();) {
         const int s = p.tasks[k].section;
         size_t e = k;
         while (e < p.tasks.size() && p.tasks[e].section == s) ++e;
         if (s >= 0) {
-            const DgColor fill = Role(static_cast<uint8_t>(kDgFillType + s % 8));
+            const DgColor fill = Role(static_cast<uint8_t>(kDgFillType + color[static_cast<size_t>(s)]));
             const D2D1_RECT_F r = D2D1::RectF(xs[k], section_y, xs[e - 1] + kTaskW, section_y + kTaskH);
             b.Rect(r, 3, fill, Role(kDgNodeStroke), 1.f);
             const Text& st = p.sections[static_cast<size_t>(s)];
@@ -236,7 +242,7 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
         b.Begin(D2D1::Point2F(cx, task_y + kTaskH));
         b.LineTo(D2D1::Point2F(cx, face_y - kFaceR));
         b.End(Role(kDgNone), Role(kDgMuted), 1.f, 1);
-        const DgColor fill = t.section >= 0 ? Role(static_cast<uint8_t>(kDgFillType + t.section % 8)) : Role(kDgNodeFill);
+        const DgColor fill = t.section >= 0 ? Role(static_cast<uint8_t>(kDgFillType + color[static_cast<size_t>(t.section)])) : Role(kDgNodeFill);
         b.Rect(D2D1::RectF(xs[k], task_y, xs[k] + kTaskW, task_y + kTaskH), 3, fill, Role(kDgNodeStroke), 1.f);
         const M& m = texts[k];
         b.Text(m, D2D1::Point2F(cx - m.w / 2, task_y + (kTaskH - m.h) / 2), Role(kDgText), t.text.pos, t.text.len);

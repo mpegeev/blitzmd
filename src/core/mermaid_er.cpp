@@ -42,6 +42,8 @@ struct Subgraph {
     std::wstring id;
     Text title;
     int parent = -1;
+    std::vector<std::wstring> classes;
+    Style style;
 };
 
 struct Relationship {
@@ -65,7 +67,7 @@ public:
         for (;;) {
             c_.SkipStatementGap();
             if (c_.AtEnd()) break;
-            Statement();
+            if (Statement()) continue;  // (after '}' more may follow on the line)
             c_.SkipBlanks();
             if (!c_.AtStatementEnd()) c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
         }
@@ -85,7 +87,8 @@ public:
 private:
     int Current() const { return open_.empty() ? -1 : open_.back().first; }
 
-    void Statement() {
+    // True after an attribute block's '}'.
+    bool Statement() {
         if (c_.EatKeyword(L"direction")) {
             c_.SkipBlanks();
             const std::wstring_view d = c_.LineRest();
@@ -96,12 +99,15 @@ private:
             else if (EqualsNoCase(d, L"RL")) r = RankDir::RL;
             else c_.Fail(Tr(L"Unknown direction", L"Неизвестное направление"));
             if (open_.empty()) dir = r;  // (in subgraphs: the whole diagram's applies)
-            return;
+            return false;
         }
-        if (c_.EatKeyword(L"subgraph")) return SubgraphStart();
+        if (c_.EatKeyword(L"subgraph")) {
+            SubgraphStart();
+            return false;
+        }
         if (!open_.empty() && c_.EatKeyword(L"end")) {
-            open_.pop_back();
-            return;
+            SubgraphEnd();
+            return false;
         }
         if (c_.EatKeyword(L"classDef")) {
             c_.SkipBlanks();
@@ -110,18 +116,20 @@ private:
             Style st;
             st.Apply(c_.LineRest());
             for (const std::wstring& n : names) class_defs[n].Merge(st);
-            return;
+            return false;
         }
-        // class and style: for entities named before or after them.
+        // class and style: for the entities (and subgraphs) there are so far,
+        // as in Mermaid.
         if (c_.EatKeyword(L"class")) {
             c_.SkipBlanks();
             const std::vector<std::wstring> ids = Names();
             c_.SkipBlanks();
             const std::vector<std::wstring> names = Names();
             for (const std::wstring& id : ids) {
-                for (const std::wstring& n : names) pending_classes_.push_back({id, n});
+                std::vector<std::wstring>* classes = ClassesOf(id);
+                if (classes) classes->insert(classes->end(), names.begin(), names.end());
             }
-            return;
+            return false;
         }
         if (c_.EatKeyword(L"style")) {
             c_.SkipBlanks();
@@ -129,8 +137,11 @@ private:
             c_.SkipBlanks();
             Style st;
             st.Apply(c_.LineRest());
-            for (const std::wstring& id : ids) pending_styles_.push_back({id, st});
-            return;
+            for (const std::wstring& id : ids) {
+                if (auto it = ids_.find(id); it != ids_.end()) entities[static_cast<size_t>(it->second)].style.Merge(st);
+                else if (const int g = SubgraphIndex(id); g >= 0) subgraphs[static_cast<size_t>(g)].style.Merge(st);
+            }
+            return false;
         }
         if (c_.EatKeyword(L"accDescr")) {
             c_.SkipBlanks();
@@ -140,16 +151,19 @@ private:
             } else {
                 c_.LineRest();
             }
-            return;
+            return false;
         }
         if (c_.EatKeyword(L"accTitle")) {
             c_.LineRest();
-            return;
+            return false;
         }
         const int a = EntityRef();
         c_.SkipBlanks();
-        if (c_.Eat(L'{')) return Attributes(a);
-        if (c_.AtStatementEnd()) return;  // an entity on its own
+        if (c_.Eat(L'{')) {
+            Attributes(a);
+            return true;
+        }
+        if (c_.AtStatementEnd()) return false;  // an entity on its own
         Relationship r;
         r.a = a;
         if (!CardAt(&r.ca)) c_.Fail(Tr(L"Expected a relationship", L"Ожидалась связь"));
@@ -183,6 +197,20 @@ private:
         if (r.label.raw.size() > kMaxLabel) c_.Fail(Tr(L"Label too long", L"Слишком длинная подпись"));
         if (relationships.size() >= kMaxNodes) c_.Fail(Tr(L"Too many relationships", L"Слишком много связей"));
         relationships.push_back(std::move(r));
+        return false;
+    }
+
+    int SubgraphIndex(std::wstring_view id) const {
+        for (size_t k = 0; k < subgraphs.size(); ++k) {
+            if (subgraphs[k].id == id) return static_cast<int>(k);
+        }
+        return -1;
+    }
+
+    std::vector<std::wstring>* ClassesOf(const std::wstring& id) {
+        if (auto it = ids_.find(id); it != ids_.end()) return &entities[static_cast<size_t>(it->second)].classes;
+        const int g = SubgraphIndex(id);
+        return g >= 0 ? &subgraphs[static_cast<size_t>(g)].classes : nullptr;
     }
 
     // subgraph id | subgraph id [title] | subgraph title words; defined
@@ -190,12 +218,19 @@ private:
     void SubgraphStart() {
         const size_t at = c_.pos();
         c_.SkipBlanks();
-        const size_t start = c_.pos();
-        while (!c_.AtStatementEnd() && c_.Peek() != L'[') c_.Advance();
-        const std::wstring_view id = Trim(src_.text.substr(start, c_.pos() - start));
+        Text title;
+        if (c_.Peek() == L'"') {
+            title = Quoted();  // subgraph "Two words"
+            c_.SkipBlanks();
+        } else {
+            const size_t start = c_.pos();
+            while (!c_.AtStatementEnd() && c_.Peek() != L'[') c_.Advance();
+            const std::wstring_view t = Trim(src_.text.substr(start, c_.pos() - start));
+            if (t.size() > kMaxLabel) c_.Fail(Tr(L"Text too long", L"Слишком длинный текст"));
+            title = Text{std::wstring(t), static_cast<uint32_t>(t.data() - src_.text.data()), static_cast<uint32_t>(t.size())};
+        }
+        const std::wstring id = title.raw;
         if (id.empty()) c_.Fail(Tr(L"Expected a subgraph name", L"Ожидалось имя подграфа"));
-        if (id.size() > kMaxLabel) c_.Fail(Tr(L"Text too long", L"Слишком длинный текст"));
-        Text title{std::wstring(id), static_cast<uint32_t>(id.data() - src_.text.data()), static_cast<uint32_t>(id.size())};
         if (c_.Eat(L'[')) {
             c_.SkipBlanks();
             if (c_.Peek() == L'"') {
@@ -210,20 +245,33 @@ private:
             if (!c_.Eat(L']')) c_.Fail(Tr(L"Expected ']'", L"Ожидалась «]»"));
         }
         if (static_cast<int>(open_.size()) >= kMaxNesting) c_.Fail(Tr(L"Subgraphs nested too deep", L"Слишком глубокая вложенность подграфов"));
-        int index = -1;
-        for (size_t k = 0; k < subgraphs.size(); ++k) {
-            if (subgraphs[k].id == id) index = static_cast<int>(k);
-        }
+        int index = SubgraphIndex(id);
         if (index < 0) {
             if (subgraphs.size() >= kMaxNodes) c_.Fail(Tr(L"Too many subgraphs", L"Слишком много подграфов"));
             Subgraph sg;
-            sg.id = std::wstring(id);
+            sg.id = id;
             sg.title = std::move(title);
             sg.parent = Current();
             index = static_cast<int>(subgraphs.size());
             subgraphs.push_back(std::move(sg));
         }
         open_.push_back({index, at});
+        named_.emplace_back();
+    }
+
+    // A subgraph's end: it takes the entities named in it that no subgraph
+    // ended before has taken (Mermaid's rule: the first to end holds them).
+    void SubgraphEnd() {
+        const int g = open_.back().first;
+        for (int e : named_.back()) {
+            Entity& en = entities[static_cast<size_t>(e)];
+            if (en.parent < 0 && !taken_[static_cast<size_t>(e)]) {
+                en.parent = g;
+                taken_[static_cast<size_t>(e)] = 1;
+            }
+        }
+        open_.pop_back();
+        named_.pop_back();
     }
 
     // A cardinality: a symbol (|o || }o }| or the other way round, on
@@ -317,21 +365,25 @@ private:
         return e;
     }
 
-    // An entity named here: new, or moved to the subgraph being read (as
-    // in Mermaid, the last one naming it holds it).
+    // An entity named here (noted for the subgraph being read).
     int EntityIndex(const Text& name) {
+        int e;
         if (auto it = ids_.find(name.raw); it != ids_.end()) {
-            if (Current() >= 0) entities[static_cast<size_t>(it->second)].parent = Current();
-            return it->second;
+            e = it->second;
+        } else {
+            if (entities.size() >= kMaxNodes) c_.Fail(Tr(L"Too many entities", L"Слишком много сущностей"));
+            Entity en;
+            en.id = name.raw;
+            en.name = name;
+            e = static_cast<int>(entities.size());
+            ids_.emplace(name.raw, e);
+            entities.push_back(std::move(en));
+            taken_.push_back(0);
         }
-        if (entities.size() >= kMaxNodes) c_.Fail(Tr(L"Too many entities", L"Слишком много сущностей"));
-        Entity en;
-        en.id = name.raw;
-        en.name = name;
-        en.parent = Current();
-        ids_.emplace(name.raw, static_cast<int>(entities.size()));
-        entities.push_back(std::move(en));
-        return static_cast<int>(entities.size()) - 1;
+        if (!named_.empty() && (named_.back().empty() || named_.back().back() != e)) {
+            if (named_.back().size() < 4 * kMaxNodes) named_.back().push_back(e);
+        }
+        return e;
     }
 
     // { type name [PK, FK, UK] ["comment"] ... }, one or more a line.
@@ -436,19 +488,24 @@ private:
         return out;
     }
 
-    // Classes and styles of the entities there are; names that are
-    // subgraphs stand for their boxes.
+    // Names that are subgraphs holding entities stand for their boxes; an
+    // empty one is drawn as an entity with its title.
     void Finish() {
-        for (const auto& [id, name] : pending_classes_) {
-            if (auto it = ids_.find(id); it != ids_.end()) entities[static_cast<size_t>(it->second)].classes.push_back(name);
-        }
-        for (const auto& [id, st] : pending_styles_) {
-            if (auto it = ids_.find(id); it != ids_.end()) entities[static_cast<size_t>(it->second)].style.Merge(st);
-        }
         std::unordered_map<std::wstring, int> groups;
         for (size_t k = 0; k < subgraphs.size(); ++k) groups.emplace(subgraphs[k].id, static_cast<int>(k));
+        std::vector<char> held(subgraphs.size(), 0);
+        for (const Entity& e : entities) {
+            if (groups.count(e.id)) continue;
+            for (int g = e.parent; g >= 0 && !held[static_cast<size_t>(g)]; g = subgraphs[static_cast<size_t>(g)].parent) held[static_cast<size_t>(g)] = 1;
+        }
         for (Entity& e : entities) {
-            if (auto it = groups.find(e.id); it != groups.end()) e.group = it->second;
+            auto it = groups.find(e.id);
+            if (it == groups.end()) continue;
+            if (held[static_cast<size_t>(it->second)]) {
+                e.group = it->second;
+            } else if (e.label.raw.empty()) {
+                e.label = subgraphs[static_cast<size_t>(it->second)].title;
+            }
         }
     }
 
@@ -456,8 +513,8 @@ private:
     Cursor c_;
     std::unordered_map<std::wstring, int> ids_;
     std::vector<std::pair<int, size_t>> open_;  // subgraphs being read, where each opened
-    std::vector<std::pair<std::wstring, std::wstring>> pending_classes_;
-    std::vector<std::pair<std::wstring, Style>> pending_styles_;
+    std::vector<std::vector<int>> named_;       // per subgraph being read: the entities named in it
+    std::vector<char> taken_;                   // per entity: in a subgraph already
 };
 
 // ---------------------------------------------------------------------------
@@ -516,6 +573,7 @@ constexpr float kCellX = 8, kCellY = 3;  // attribute cells
 constexpr float kMinW = 100;
 constexpr float kMargin = 8;
 constexpr float kLoopReach = 36;
+constexpr float kLoopStep = 20;          // between the ends of an entity's loops
 constexpr float kSmall = 0.875f;
 constexpr float kClusterPad = 12;
 
@@ -757,8 +815,11 @@ private:
             if (node_[i] >= 0) {
                 LayeredGraph::Node& n = g.nodes[static_cast<size_t>(node_[i])];
                 n.after = room;
-                float& across = sideways() ? n.w : n.h;  // as wide as the labels
-                across = std::max(across, b.loop_side + 8);
+                float& across = sideways() ? n.w : n.h;  // as wide as the labels, room for the loops' ends
+                across = std::max({across, b.loop_side + 8, 2 * (12 + kLoopStep * static_cast<float>(b.loops - 1)) + 20});
+                Box& grown = boxes_[i];
+                (sideways() ? grown.w : grown.h) = across;
+                if (p_.entities[i].attrs.empty()) grown.header = grown.h;
             } else if (const int gr = s_.Box(static_cast<int>(i)); gr >= 0) {
                 g.clusters[static_cast<size_t>(group_graph_[static_cast<size_t>(gr)])].after = room;
             }
@@ -780,10 +841,17 @@ private:
             if (group_graph_[k] < 0) continue;
             const D2D1_RECT_F r = GroupRect(static_cast<int>(k));
             if (r.right <= r.left) continue;
-            b_.Rect(r, 0, Role(kDgClusterFill), Role(kDgClusterStroke), 1.f);
+            const Subgraph& sg = p_.subgraphs[k];
+            Style st;
+            for (const std::wstring& n : sg.classes) {
+                if (auto it = p_.class_defs.find(n); it != p_.class_defs.end()) st.Merge(it->second);
+            }
+            st.Merge(sg.style);
+            b_.Rect(r, 0, st.fill.role != kDgNone ? st.fill : Role(kDgClusterFill), st.stroke.role != kDgNone ? st.stroke : Role(kDgClusterStroke),
+                    st.stroke_width >= 0 ? st.stroke_width : 1.f, st.dash == 1 ? 1 : 0);
             const M& t = titles_[k];
-            const Text& title = p_.subgraphs[k].title;
-            b_.Text(t, D2D1::Point2F((r.left + r.right) / 2 - t.w / 2, r.top + 4), Role(kDgText), title.pos, title.len);
+            b_.Text(t, D2D1::Point2F((r.left + r.right) / 2 - t.w / 2, r.top + 4), st.color.role != kDgNone ? st.color : Role(kDgText),
+                    sg.title.pos, sg.title.len);
         }
     }
 
@@ -871,7 +939,7 @@ private:
             return below ? D2D1::Point2F(b.center.x + side, b.center.y + out) : D2D1::Point2F(b.center.x + out, b.center.y + side);
         };
         const float edge = (below ? b.h : b.w) / 2, across = (below ? b.w : b.h) / 2;
-        const float s = std::min(std::min(across / 2, 12.f) + 14 * static_cast<float>(n), across - 2);
+        const float s = std::min(std::min(across / 2, 12.f) + kLoopStep * static_cast<float>(n), across - 2);
         const float reach = kLoopReach * (1 + 0.6f * static_cast<float>(n)) + 16;
         const D2D1_POINT_2F a0 = at(edge, -s), a1 = at(edge, s);
         const D2D1_POINT_2F c1 = at(edge + reach, -s - 12), c2 = at(edge + reach, s + 12);
@@ -916,7 +984,10 @@ private:
             for (size_t c = 0; c < 4; ++c) {
                 if (b.columns[c] <= 0) continue;
                 const M& cell = b.cells[k][c];
-                if (cell.layout) b_.Text(cell, D2D1::Point2F(x + kCellX, y + (rh - cell.h) / 2), text, src[c]->pos, src[c]->len);
+                if (cell.layout) {
+                    b_.Text(cell, D2D1::Point2F(x + kCellX, y + (rh - cell.h) / 2), k % 2 == 0 ? Role(kDgText) : text, src[c]->pos,
+                            src[c]->len);
+                }
                 x += b.columns[c];
                 // A line between the cells.
                 if (x < r.right - 1) {

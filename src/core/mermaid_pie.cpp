@@ -50,7 +50,10 @@ private:
         }
         if (c_.EatKeyword(L"title")) {
             c_.SkipBlanks();
-            const std::wstring_view t = c_.WholeLine();
+            // (Up to the line's end or a %% comment, ';' and all.)
+            const size_t start = c_.pos();
+            while (!c_.AtEnd() && c_.Peek() != L'\n' && !(c_.Peek() == L'%' && c_.Peek(1) == L'%')) c_.Advance();
+            const std::wstring_view t = Trim(src_.text.substr(start, c_.pos() - start));
             title = std::wstring(t);
             title_pos = static_cast<uint32_t>(t.data() - src_.text.data());
             title_len = static_cast<uint32_t>(t.size());
@@ -78,8 +81,12 @@ private:
         const size_t start = c_.pos();
         Slice s;
         while (!c_.AtEnd() && c_.Peek() != quote && c_.Peek() != L'\n') {
-            if (c_.Peek() == L'\\' && c_.Peek(1) != L'\n' && c_.Peek(1) != L'\0') c_.Advance();
-            s.label.push_back(c_.Peek());
+            wchar_t ch = c_.Peek();
+            if (ch == L'\\' && c_.Peek(1) != L'\n' && c_.Peek(1) != L'\0') {
+                c_.Advance();
+                ch = c_.Peek() == L'n' ? L'\n' : c_.Peek() == L't' ? L'\t' : c_.Peek();
+            }
+            s.label.push_back(ch);
             c_.Advance();
         }
         if (c_.Peek() != quote) {
@@ -147,11 +154,28 @@ void AddSlice(SceneBuilder& b, D2D1_POINT_2F c, float r, float a0, float a1) {
     b.Close();
 }
 
-// A value as JavaScript writes numbers (the shortest that reads back).
+// A value as JavaScript writes numbers: the shortest digits that read
+// back, plainly from 1e-7 to 1e21, else as 1.5e+21.
 std::wstring Number(double v) {
     char buf[64];
-    const auto r = std::to_chars(buf, buf + sizeof(buf), v);
-    return std::wstring(buf, r.ptr);
+    const auto r = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::scientific);
+    const std::string sci(buf, r.ptr);  // d[.ddd]e+XX
+    const size_t e = sci.find('e');
+    std::string digits = sci.substr(0, e);
+    digits.erase(std::remove(digits.begin(), digits.end(), '.'), digits.end());
+    const int exp = std::atoi(sci.c_str() + e + 1);
+    std::string out;
+    if (exp >= -7 + 1 && exp < 21) {
+        if (exp >= 0) {
+            out = digits.size() > static_cast<size_t>(exp) + 1 ? digits.substr(0, static_cast<size_t>(exp) + 1) + "." + digits.substr(static_cast<size_t>(exp) + 1)
+                                                            : digits + std::string(static_cast<size_t>(exp) + 1 - digits.size(), '0');
+        } else {
+            out = "0." + std::string(static_cast<size_t>(-exp - 1), '0') + digits;
+        }
+    } else {
+        out = digits.substr(0, 1) + (digits.size() > 1 ? "." + digits.substr(1) : "") + (exp < 0 ? "e-" : "e+") + std::to_string(std::abs(exp));
+    }
+    return std::wstring(out.begin(), out.end());
 }
 
 std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Source& src) {
