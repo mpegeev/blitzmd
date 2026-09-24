@@ -2136,12 +2136,12 @@ bool Viewer::Search(const std::wstring& text, int flags) {
                     }
                     const float h = scene->height * m.width / scene->width;
                     const D2D1_RECT_F box = D2D1::RectF(m.left, base - h, m.left + m.width, base);
-                    const D2D1_RECT_F shown = IsZoomed(o) ? ZoomedRect(box, o) : box;
-                    const float s = (shown.right - shown.left) / scene->width;
-                    target = D2D1::RectF(std::clamp(shown.left + t.origin.x * s, box.left, box.right),
-                                         std::clamp(shown.top + t.origin.y * s, box.top, box.bottom),
-                                         std::clamp(shown.left + (t.origin.x + t.w) * s, box.left, box.right),
-                                         std::clamp(shown.top + (t.origin.y + t.h) * s, box.top, box.bottom));
+                    const D2D1_RECT_F drawn = IsZoomed(o) ? ZoomedRect(box, o) : box;
+                    const float s = (drawn.right - drawn.left) / scene->width;
+                    target = D2D1::RectF(std::clamp(drawn.left + t.origin.x * s, box.left, box.right),
+                                         std::clamp(drawn.top + t.origin.y * s, box.top, box.bottom),
+                                         std::clamp(drawn.left + (t.origin.x + t.w) * s, box.left, box.right),
+                                         std::clamp(drawn.top + (t.origin.y + t.h) * s, box.top, box.bottom));
                     have_target = true;
                 }
                 break;

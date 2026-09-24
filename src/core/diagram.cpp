@@ -28,6 +28,7 @@ constexpr uint32_t kLight[kDgRoleCount] = {
     0xFFECECFF,  // box tab fill
     0xFFFFFFFF,  // page
     0xFF6E7781,  // muted
+    0x00000000,  // tint (explicit)
     // categories
     0xFF8E7CE0, 0xFFF2C14E, 0xFF5FB49C, 0xFFE8736B, 0xFF4FA3E0, 0xFFB57EDC,
     0xFFF08A4B, 0xFF6CC3D5, 0xFFA3C76D, 0xFFE58FB8, 0xFF9BA7B4, 0xFFC7A36B,
@@ -52,6 +53,7 @@ constexpr uint32_t kDark[kDgRoleCount] = {
     0xFF2D333B,  // box tab fill
     0xFF0D1117,  // page
     0xFF8B949E,  // muted
+    0x00000000,  // tint (explicit)
     // categories
     0xFF8E7CE0, 0xFFD9A93A, 0xFF4E9E88, 0xFFD2645C, 0xFF4592CB, 0xFFA66FCB,
     0xFFD9793E, 0xFF5BAFC0, 0xFF8FB25C, 0xFFCF7DA4, 0xFF8791A0, 0xFFB08F5A,
@@ -62,10 +64,15 @@ D2D1_COLOR_F ToColor(uint32_t argb) {
                         ((argb >> 24) & 0xFF) / 255.f);
 }
 
-bool Painted(const DgColor& c) { return c.role != kDgNone && (c.role != kDgArgb || (c.argb >> 24) != 0); }
+bool Painted(const DgColor& c) {
+    return c.role != kDgNone && ((c.role != kDgArgb && c.role != kDgTint) || (c.argb >> 24) != 0);
+}
 
 uint32_t Resolve(const DgColor& c, bool dark) {
     if (c.role == kDgArgb) return c.argb;
+    // Light backgrounds picked for a white page would glare on a dark one
+    // (and hide light text): a quarter of the color there.
+    if (c.role == kDgTint) return dark ? (c.argb & 0xFFFFFF) | (std::min(c.argb >> 24, 0x40u) << 24) : c.argb;
     return c.role < kDgRoleCount ? (dark ? kDark : kLight)[c.role] : 0;
 }
 

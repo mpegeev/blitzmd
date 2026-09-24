@@ -84,7 +84,14 @@ void Cursor::SkipStatementGap() {
 
 bool Cursor::AtStatementEnd() const {
     const wchar_t c = Peek();
-    return AtEnd() || c == L'\n' || c == L'\r' || c == L';' || (c == L'%' && Peek(1) == L'%');
+    if (c == L';') {
+        // Not the ; of an entity code (#9829; #59; &amp;): Mermaid encodes
+        // those before it reads statements.
+        size_t k = pos_;
+        while (k > 0 && std::iswalnum(s_[k - 1]) && s_[k - 1] < 0x80) --k;
+        return !(k < pos_ && k > 0 && (s_[k - 1] == L'#' || s_[k - 1] == L'&'));
+    }
+    return AtEnd() || c == L'\n' || c == L'\r' || (c == L'%' && Peek(1) == L'%');
 }
 
 void Cursor::SkipToLineEnd() {

@@ -1244,20 +1244,22 @@ LayeredLayout LayoutLayered(const LayeredGraph& g, bool ranks_only) {
         // (Sibling boxes keep one order in every rank, so there is no cycle;
         // should there be one, the sides stay as placed.)
         if (order.size() == static_cast<size_t>(nv)) {
-            std::vector<float> right = xs, left = xs;
+            std::vector<float> pushed_right = xs, pushed_left = xs;
             for (int a : order) {
                 for (const auto& [b, s] : succ[static_cast<size_t>(a)]) {
-                    right[static_cast<size_t>(b)] = std::max(right[static_cast<size_t>(b)], right[static_cast<size_t>(a)] + s);
+                    pushed_right[static_cast<size_t>(b)] =
+                        std::max(pushed_right[static_cast<size_t>(b)], pushed_right[static_cast<size_t>(a)] + s);
                 }
             }
             for (auto it = order.rbegin(); it != order.rend(); ++it) {
                 for (const auto& [b, s] : succ[static_cast<size_t>(*it)]) {
-                    left[static_cast<size_t>(*it)] = std::min(left[static_cast<size_t>(*it)], left[static_cast<size_t>(b)] - s);
+                    pushed_left[static_cast<size_t>(*it)] =
+                        std::min(pushed_left[static_cast<size_t>(*it)], pushed_left[static_cast<size_t>(b)] - s);
                 }
             }
             for (int v = 0; v < total; ++v) {
                 const size_t i = static_cast<size_t>(var[static_cast<size_t>(v)]);
-                nodes[static_cast<size_t>(v)].x = (right[i] + left[i]) / 2;
+                nodes[static_cast<size_t>(v)].x = (pushed_right[i] + pushed_left[i]) / 2;
             }
         }
         for (int c = 0; c < nc; ++c) {
