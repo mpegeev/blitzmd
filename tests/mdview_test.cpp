@@ -1493,6 +1493,7 @@ int main(int argc, char** ansi_argv) {
             {L"erDiagram\nsubgraph title1\nCUSTOMER {\nstring name\n}\nend\nsubgraph grp [\"Nice title\"]\ndirection LR\nCAR ||--o{ NAMED-DRIVER : allows\nsubgraph inner\nENGINE\nend\nend\nCUSTOMER ||--o{ CAR : owns\ngrp ||--|| CUSTOMER : links\nCUSTOMER }o--o{ title1 : in\ngrp |o--o| grp : self", true, nullptr},
             {L"erDiagram\nA one to many B : x\nC o|--|o D : y\nE |o.-o| F : z\nE |o-.o| F : z2\npublic.users ||--o{ public.orders : places\nI |O--O{ J : v\nx*y ||--|| a-b- : t", true, nullptr},
             {L"erDiagram\nclassDef c1 fill:#f00\nclassDef c2 stroke:#00f\nclass A,B c1,c2\nA:::c1,c2 ||--|| B : x\nA { string a int b PK,FK \"note\" }\nB {\n`some type` `some name` PK\n}", true, nullptr},
+            {L"erDiagram\nsubgraph \"Customer Domain\"\nCUSTOMER ||--o{ ORDER : places\nend\n\"Customer Domain\" ||--o{ INVOICE : has\nsubgraph outer\nsubgraph inner\nA\nend\nA\nB\nend\nsubgraph Empty\nend\nA ||--o{ Empty : lost\nstyle outer fill:#f96\nclass inner c\nC { string x } C ||--|| A : r\nE |o--o| E : a\nE |o--o| E : b\nE |o--o| E : c", true, nullptr},
             {L"erDiagram\nsubgraph S\nA ||--|| B : x", false, L"Line 2"},
             {L"erDiagram\nA {\n`unclosed type\n}", false, L"Line 3"},
             {L"erDiagram\nA ||--o{ B", false, L"Line 2"},
