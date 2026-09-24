@@ -34,6 +34,10 @@ struct LayeredGraph {
     struct Cluster {
         int parent = -1;
         float title_w = 0, title_h = 0;  // a title band at the box's top
+        // Starts and ends on its parent's ranks, no empty rank rows inside
+        // (a state's concurrent region: no box of its own is drawn).
+        bool share_ranks = false;
+        float after = 0;              // room kept beside its box (right; below sideways)
     };
     std::vector<Node> nodes;
     std::vector<Edge> edges;          // no self loops (the caller draws those)

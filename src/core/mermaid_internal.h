@@ -119,6 +119,10 @@ D2D1_POINT_2F ClipPolygon(D2D1_POINT_2F center, const std::vector<D2D1_POINT_2F>
 // Moves `p` towards `from` by `d`.
 D2D1_POINT_2F Retreat(D2D1_POINT_2F p, D2D1_POINT_2F from, float d);
 
+// Drops bends where a clipped end already is (a bend on a box's border the
+// end was clipped to): the ends' markers need a direction.
+void DropDoubledEnds(std::vector<D2D1_POINT_2F>* pts);
+
 // Diagram types.
 std::shared_ptr<DiagramScene> Flowchart(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> Sequence(const Source& src, SceneBuilder* builder);
