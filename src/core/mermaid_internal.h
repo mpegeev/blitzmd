@@ -41,6 +41,7 @@ struct Source {
     size_t body = 0;          // where the diagram starts
     std::wstring title;       // front matter title
     uint32_t title_pos = 0, title_len = 0;
+    std::wstring display_mode;  // front matter displayMode (Gantt charts), at any depth
 };
 Source Preprocess(std::wstring_view text);
 
@@ -60,6 +61,7 @@ public:
     bool AtStatementEnd() const;        // newline, ';', '%%' or the end
     void SkipToLineEnd();               // to (not past) the next newline
     std::wstring_view LineRest();       // up to the statement end, trimmed
+    std::wstring_view WholeLine();      // up to the newline (';' and all), trimmed
     bool Eat(wchar_t c);
     bool EatStr(std::wstring_view str);
     // A keyword not followed by a word character. Flowchart statements are
@@ -129,5 +131,8 @@ std::shared_ptr<DiagramScene> Sequence(const Source& src, SceneBuilder* builder)
 std::shared_ptr<DiagramScene> ClassDiagram(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> StateDiagram(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> ErDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> PieChart(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> Journey(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> Gantt(const Source& src, SceneBuilder* builder);
 
 }  // namespace mdv::mermaid

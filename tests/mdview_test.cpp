@@ -1501,6 +1501,32 @@ int main(int argc, char** ansi_argv) {
             {L"erDiagram\nA {\nstring", false, L"Line 3"},
             {L"erDiagram\nA {\nstring x", false, L"Line 2"},
             {L"classDiagram\nnote for A x", false, L"Line 2"},
+            {L"pie showData\ntitle Pets\n\"Dogs\" : 386\n\"Cats\" : 85.5\n\"Rats\" : 0", true, nullptr},
+            {L"pie\naccTitle: t\naccDescr {\nx\n}\n\"A\" : 1", true, nullptr},
+            {L"pie", true, nullptr},
+            {L"pie showData\ntitle A;B title\n\"Big\" : 60\n\"Tiny\" : 0.5\n\"Big\" : 5\n'Single' : 1.000\n\"Esc \\\" q\" : 3", true, nullptr},
+            {L"pie\n\"A\" : 1e300", false, L"Line 2"},
+            {L"journey\nsection S\nA: 4.5: Zed, Amy\nB: : Amy\nC:", true, nullptr},
+            {L"gantt\ndateFormat D.M.YYYY\nexcludes weekends\nA : 5.1.2024, 1.5d\nB : 05.01.2024, 2w\nC : Jan 5 2024, 1M\nD : x, 2024, 2024-1-9\nE : 1y\nF : until nobody", true, nullptr},
+            {L"---\ndisplayMode: compact\n---\ngantt\ntitle T;x\naxisFormat %V %G %U %W %c %x %X %Z %f %Q %s\nsection S;1\nA : 2024-01-01, 3d\nB : 2024-01-02, 1d", true, nullptr},
+            {L"gantt\nA : 2024-01-01, 2d # note", false, L"Line 2"},
+            {L"pie\n\"A\" : -1", false, L"Line 2"},
+            {L"pie\n\"A\" : x", false, L"Line 2"},
+            {L"pie\n\"A : 1", false, L"Line 2"},
+            {L"pie\nA : 1", false, L"Line 2"},
+            {L"journey\ntitle Day\nsection Work\nTea: 5: Me\nWork: 1: Me, Cat\nsection Home\nSit: 3", true, nullptr},
+            {L"journey\nTask: 0: A", true, nullptr},
+            {L"journey\nTask: x: Me", false, L"Line 2"},
+            {L"journey\nTask", false, L"Line 2"},
+            {L"gantt\ndateFormat YYYY-MM-DD\ntitle T\nexcludes weekends\nsection S\nA :done, a1, 2014-01-06, 2014-01-08\nB :active, a2, after a1, 3d\nC :crit, 5d\nD :until m\nM :milestone, m, 2014-01-25, 0d", true, nullptr},
+            {L"gantt\ndateFormat DD.MM.YYYY HH:mm\naxisFormat %H:%M\ntickInterval 2hour\ndisplayMode compact\ntopAxis\nA :01.01.2024 08:00, 3h\nB :vert, 01.01.2024 10:00, 0h", true, nullptr},
+            {L"gantt\ndateFormat X\nA :a, 1700000000, 1d\nB :after a missing, 12h\nC :x, after a, until nothing", true, nullptr},
+            {L"gantt\ndateFormat MMM Do YYYY\ninclusiveEndDates\nweekend friday\nexcludes weekends, Jan 3rd 2024\nincludes Jan 5th 2024\nA :Jan 1st 2024, Jan 9th 2024", true, nullptr},
+            {L"gantt\nA :2024-02-30, 1d", false, L"Line 2"},
+            {L"gantt\nA :a, after b, 1d\nB :b, after a, 1d", false, L"Line 2"},
+            {L"gantt\nA :2024-01-01, 99999999y", false, L"Line 2"},
+            {L"gantt\nA :a, b, c, d, e", false, L"Line 2"},
+            {L"gantt\nA task", false, L"Line 2"},
             {L"gitGraph\ncommit", false, L"gitGraph"},
             {L"", false, nullptr},
             {L"not a diagram", false, nullptr},
@@ -1635,6 +1661,28 @@ int main(int argc, char** ansi_argv) {
                 }
                 return s;
             }(),
+            L"pie showData\n" + repeat(L"\"slice\" : 1e300\n", 2000),
+            L"pie\n" + repeat(L"\"" + std::wstring(200, L's') + L"\" : 0.000001\n", 1000),
+            [&] {  // many actors on many tasks
+                std::wstring s = L"journey\n", actors;
+                for (int i = 0; i < 64; ++i) actors += (i ? L", A" : L"A") + std::to_wstring(i);
+                for (int i = 0; i < 500; ++i) s += (i % 7 == 0 ? L"section S\n" : L"") + std::wstring(L"Task: 3: ") + actors + L"\n";
+                return s;
+            }(),
+            [&] {  // every task after the next one: a pass to resolve each
+                std::wstring s = L"gantt\n";
+                for (int i = 1; i < 500; ++i) s += L"T :t" + std::to_wstring(i) + L", after t" + std::to_wstring(i + 1) + L" t0, 1d\n";
+                return s + L"Last :t500, 2024-01-01, 1d\n";
+            }(),
+            [&] {  // long tasks through a long list of holidays
+                std::wstring s = L"gantt\nexcludes weekends";
+                for (int d = 0; d < 3000; ++d) s += L", " + std::to_wstring(2000 + d / 365) + L"-0" + std::to_wstring(1 + d % 9) + L"-1" + std::to_wstring(d % 10);
+                return s + L"\n" + repeat(L"Long :3650d\n", 500);
+            }(),
+            L"gantt\nexcludes monday tuesday wednesday thursday friday saturday sunday\n" + repeat(L"Never :30d\n", 500),
+            L"gantt\ntickInterval 1millisecond\nA :-9999-01-01, 2024-01-01\nB :9999-01-01, 1d",
+            L"gantt\ndateFormat x\nA :0, 1ms\nB :1, 1ms\ntickInterval 1year",
+            L"gantt\n" + repeat(L"section " + std::wstring(300, L's') + L"\nT :2024-01-01, 1d\n", 450),
         };
         for (const std::wstring& h : hostile) {
             const double t0 = NowMs();
@@ -1892,6 +1940,45 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated ER diagrams in %.0f ms\n", iterations / 4, NowMs() - e0);
+        // Well-formed random charts: pies, journeys, Gantt charts.
+        static const wchar_t* kTags[] = {L"", L"done, ", L"active, ", L"crit, ", L"milestone, ", L"crit, active, ", L"vert, "};
+        static const wchar_t* kEnds[] = {L"1d", L"36h", L"2w", L"30m", L"0d", L"2024-03-01"};
+        const double h0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            std::wstring src;
+            const int count = static_cast<int>(rnd() % 12);
+            switch (it % 3) {
+            case 0:
+                src = (rnd() & 1) ? L"pie showData\n" : L"pie\ntitle Shares\n";
+                for (int k = 0; k < count; ++k) src += L"\"Slice " + std::to_wstring(k) + L"\" : " + std::to_wstring(rnd() % 1000) + L"." + std::to_wstring(rnd() % 100) + L"\n";
+                break;
+            case 1:
+                src = L"journey\ntitle A day\n";
+                for (int k = 0; k < count; ++k) {
+                    if (rnd() % 4 == 0) src += L"section Part " + std::to_wstring(k) + L"\n";
+                    src += L"Step " + std::to_wstring(k) + L": " + std::to_wstring(rnd() % 6) + ((rnd() & 1) ? L": Me, You\n" : L"\n");
+                }
+                break;
+            default:
+                src = std::wstring(L"gantt\ndateFormat YYYY-MM-DD\n") + ((rnd() & 3) == 0 ? L"excludes weekends\n" : L"") +
+                      ((rnd() & 3) == 0 ? L"displayMode compact\n" : L"") + ((rnd() & 3) == 0 ? L"inclusiveEndDates\n" : L"");
+                for (int k = 0; k < count; ++k) {
+                    if (rnd() % 4 == 0) src += L"section Part " + std::to_wstring(k) + L"\n";
+                    src += L"Task " + std::to_wstring(k) + L" :" + kTags[rnd() % std::size(kTags)] + L"t" + std::to_wstring(k) + L", ";
+                    if (k > 0 && (rnd() & 1)) src += L"after t" + std::to_wstring(rnd() % static_cast<uint32_t>(k));
+                    else src += L"2024-0" + std::to_wstring(1 + rnd() % 2) + L"-1" + std::to_wstring(rnd() % 10);
+                    src += std::wstring(L", ") + kEnds[rnd() % std::size(kEnds)] + L"\n";
+                }
+                break;
+            }
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 200)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated charts in %.0f ms\n", iterations / 4, NowMs() - h0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();

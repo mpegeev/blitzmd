@@ -54,10 +54,16 @@ Source Preprocess(std::wstring_view text) {
                 src.title_pos = static_cast<uint32_t>(t.data() - text.data());
                 src.title_len = static_cast<uint32_t>(t.size());
             }
+            if (line.starts_with(L"displayMode:")) {
+                std::wstring_view v = Trim(line.substr(12));
+                if (v.size() >= 2 && (v.front() == L'"' || v.front() == L'\'') && v.back() == v.front()) v = v.substr(1, v.size() - 2);
+                src.display_mode = v;
+            }
             if (after == p) break;
             p = after;
         }
         src.title.clear();  // not closed: not front matter
+        src.display_mode.clear();
     }
     return src;
 }
@@ -101,6 +107,12 @@ void Cursor::SkipToLineEnd() {
 std::wstring_view Cursor::LineRest() {
     const size_t start = pos_;
     while (!AtStatementEnd()) ++pos_;
+    return Trim(s_.substr(start, pos_ - start));
+}
+
+std::wstring_view Cursor::WholeLine() {
+    const size_t start = pos_;
+    while (pos_ < s_.size() && s_[pos_] != L'\n') ++pos_;
     return Trim(s_.substr(start, pos_ - start));
 }
 
@@ -509,7 +521,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er };
+enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -525,6 +537,9 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (EqualsNoCase(*name, L"classDiagram") || EqualsNoCase(*name, L"classDiagram-v2")) return Kind::Class;
     if (EqualsNoCase(*name, L"stateDiagram") || EqualsNoCase(*name, L"stateDiagram-v2")) return Kind::State;
     if (EqualsNoCase(*name, L"erDiagram")) return Kind::Er;
+    if (EqualsNoCase(*name, L"pie")) return Kind::Pie;
+    if (EqualsNoCase(*name, L"journey")) return Kind::Journey;
+    if (EqualsNoCase(*name, L"gantt")) return Kind::Gantt;
     return Kind::Unknown;
 }
 
@@ -561,6 +576,9 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         case Kind::Class: ClassDiagram(src, nullptr); return true;
         case Kind::State: StateDiagram(src, nullptr); return true;
         case Kind::Er: ErDiagram(src, nullptr); return true;
+        case Kind::Pie: PieChart(src, nullptr); return true;
+        case Kind::Journey: Journey(src, nullptr); return true;
+        case Kind::Gantt: Gantt(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -580,6 +598,9 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         case Kind::Class: return ClassDiagram(src, &builder);
         case Kind::State: return StateDiagram(src, &builder);
         case Kind::Er: return ErDiagram(src, &builder);
+        case Kind::Pie: return PieChart(src, &builder);
+        case Kind::Journey: return Journey(src, &builder);
+        case Kind::Gantt: return Gantt(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;

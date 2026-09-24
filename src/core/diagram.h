@@ -37,8 +37,10 @@ enum DiagramRole : uint8_t {
     kDgPage,            // the page behind the diagram
     kDgMuted,           // secondary text
     kDgTint,            // an explicit background color, toned down in the dark theme
-    kDgCategory,        // + n: categorical colors (pie slices, sections...)
-    kDgRoleCount = kDgCategory + 12,
+    kDgCategory,        // + n: categorical colors (pie slices), blended over the page
+    kDgCategorySolid = kDgCategory + 12,  // + n: the same, not blended (the pie's legend)
+    kDgFillType = kDgCategorySolid + 12,  // + n: Mermaid's fillType0..7 (journey sections)
+    kDgRoleCount = kDgFillType + 8,
 };
 
 struct DgColor {

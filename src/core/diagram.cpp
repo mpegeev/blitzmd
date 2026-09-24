@@ -29,9 +29,15 @@ constexpr uint32_t kLight[kDgRoleCount] = {
     0xFFFFFFFF,  // page
     0xFF6E7781,  // muted
     0x00000000,  // tint (explicit)
-    // categories
-    0xFF8E7CE0, 0xFFF2C14E, 0xFF5FB49C, 0xFFE8736B, 0xFF4FA3E0, 0xFFB57EDC,
-    0xFFF08A4B, 0xFF6CC3D5, 0xFFA3C76D, 0xFFE58FB8, 0xFF9BA7B4, 0xFFC7A36B,
+    // categories: Mermaid's pie1..pie12 (the default theme derives them from
+    // its primary, secondary and tertiary colors)
+    0xFFECECFF, 0xFFFFFFDE, 0xFFB5FF20, 0xFFB9B9FF, 0xFFFFFF45, 0xFFD7FF86,
+    0xFFFF86FF, 0xFF20FFFF, 0xFFFF2020, 0xFFFF20FF, 0xFF20FF8F, 0xFFFF5353,
+    // the same, not blended
+    0xFFECECFF, 0xFFFFFFDE, 0xFFB5FF20, 0xFFB9B9FF, 0xFFFFFF45, 0xFFD7FF86,
+    0xFFFF86FF, 0xFF20FFFF, 0xFFFF2020, 0xFFFF20FF, 0xFF20FF8F, 0xFFFF5353,
+    // fillType0..7
+    0xFFECECFF, 0xFFFFFFDE, 0xFFFFECFE, 0xFFDEFFE0, 0xFFECFFFE, 0xFFFFDEE0, 0xFFFFEFEC, 0xFFDEFBFF,
 };
 constexpr uint32_t kDark[kDgRoleCount] = {
     0x00000000,  // none
@@ -54,9 +60,14 @@ constexpr uint32_t kDark[kDgRoleCount] = {
     0xFF0D1117,  // page
     0xFF8B949E,  // muted
     0x00000000,  // tint (explicit)
-    // categories
-    0xFF8E7CE0, 0xFFD9A93A, 0xFF4E9E88, 0xFFD2645C, 0xFF4592CB, 0xFFA66FCB,
-    0xFFD9793E, 0xFF5BAFC0, 0xFF8FB25C, 0xFFCF7DA4, 0xFF8791A0, 0xFFB08F5A,
+    // categories: the dark theme's pie1..pie12
+    0xFF0B0000, 0xFF4D1037, 0xFF3F5258, 0xFF4F2F1B, 0xFF6E0A0A, 0xFF3B0048,
+    0xFF995A01, 0xFF154706, 0xFF161722, 0xFF00296F, 0xFF01629C, 0xFF010029,
+    // the same, not blended
+    0xFF0B0000, 0xFF4D1037, 0xFF3F5258, 0xFF4F2F1B, 0xFF6E0A0A, 0xFF3B0048,
+    0xFF995A01, 0xFF154706, 0xFF161722, 0xFF00296F, 0xFF01629C, 0xFF010029,
+    // fillType0..7
+    0xFF1F2020, 0xFF474949, 0xFF1F1F20, 0xFF474749, 0xFF1F201F, 0xFF474947, 0xFF201F20, 0xFF494749,
 };
 
 D2D1_COLOR_F ToColor(uint32_t argb) {
@@ -73,7 +84,17 @@ uint32_t Resolve(const DgColor& c, bool dark) {
     // Light backgrounds picked for a white page would glare on a dark one
     // (and hide light text): a quarter of the color there.
     if (c.role == kDgTint) return dark ? (c.argb & 0xFFFFFF) | (std::min(c.argb >> 24, 0x40u) << 24) : c.argb;
-    return c.role < kDgRoleCount ? (dark ? kDark : kLight)[c.role] : 0;
+    if (c.role >= kDgRoleCount) return 0;
+    const uint32_t* table = dark ? kDark : kLight;
+    if (c.role < kDgCategory || c.role >= kDgCategorySolid) return table[c.role];
+    // Categories as Mermaid paints pie slices: at 70% over the page.
+    const uint32_t v = table[c.role], page = table[kDgPage];
+    uint32_t out = 0xFF000000;
+    for (int shift = 0; shift <= 16; shift += 8) {
+        const uint32_t a = (v >> shift) & 0xFF, b = (page >> shift) & 0xFF;
+        out |= ((a * 7 + b * 3 + 5) / 10) << shift;
+    }
+    return out;
 }
 
 // Label text builder: styles toggled by tags and markdown markers.
