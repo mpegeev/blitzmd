@@ -414,7 +414,7 @@ void PlaceLayer(const std::vector<float>& desired, const std::vector<float>& wei
 
 }  // namespace
 
-LayeredLayout LayoutLayered(const LayeredGraph& g) {
+LayeredLayout LayoutLayered(const LayeredGraph& g, bool ranks_only) {
     LayeredLayout out;
     const int n = static_cast<int>(g.nodes.size());
     const int nc = static_cast<int>(g.clusters.size());
@@ -524,12 +524,13 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
                     sub.edges.push_back(se);
                     edge_map[p].push_back(static_cast<int>(i));
                 }
-                parts[p] = LayoutLayered(sub);
+                parts[p] = LayoutLayered(sub, ranks_only);
                 if (parts[p].too_large) {
                     out.too_large = true;
                     return out;
                 }
             }
+            if (ranks_only) return out;
             float along = 0, across = 0;  // along: where parts line up; across: their common extent
             for (const LayeredLayout& part : parts) across = std::max(across, sideways ? part.width : part.height);
             for (size_t p = 0; p < parts.size(); ++p) {
@@ -649,7 +650,15 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
     {
         std::vector<RankEdge> all;
         for (size_t i = 0; i < ne; ++i) {
-            if (valid[i]) all.push_back({upper(i), lower(i), std::clamp(g.edges[i].minlen, 1, 64) * 2, weight_of(i)});
+            if (!valid[i]) continue;
+            // A rank more for every box border the edge crosses (dagre's
+            // nesting graph does the same): boxes linked one after the other
+            // stack, and the label finds a rank between them.
+            const int cu = cluster_of(upper(i)), cv = cluster_of(lower(i)), l = lca(cu, cv);
+            const int dl = l < 0 ? 0 : depth[static_cast<size_t>(l)];
+            const int crossed =
+                (cu < 0 ? 0 : depth[static_cast<size_t>(cu)] - dl) + (cv < 0 ? 0 : depth[static_cast<size_t>(cv)] - dl);
+            all.push_back({upper(i), lower(i), std::clamp(g.edges[i].minlen, 1, 64) * 2 + crossed, weight_of(i)});
         }
         for (int v = 0; v < n; ++v) {
             const int c = cluster_of(v);
@@ -733,6 +742,7 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
             out.too_large = true;
             return out;
         }
+        if (ranks_only) return out;
     }
 
     // Dummies along edges spanning ranks; the middle one of a labelled edge
@@ -745,7 +755,6 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
         if (!valid[i]) continue;
         const int u = upper(i), v = lower(i);
         const int ru = nodes[static_cast<size_t>(u)].rank, rv = nodes[static_cast<size_t>(v)].rank;
-        const int mid = ru + (rv - ru) / 2;
         const bool labelled = g.edges[i].label_w > 0 && g.edges[i].label_h > 0;
         const float weight = weight_of(i);
         // Bends belong to the clusters the edge passes through, as dagre's
@@ -761,6 +770,15 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
         std::reverse(path.begin() + static_cast<std::ptrdiff_t>(turn), path.end());
         auto first_rank = [&](int c) { return nodes[static_cast<size_t>(top[static_cast<size_t>(c)])].rank; };
         auto last_rank = [&](int c) { return nodes[static_cast<size_t>(bottom[static_cast<size_t>(c)])].rank; };
+        // The label between the boxes the edge leaves and those it enters,
+        // not on a title or a border.
+        int mid = ru + (rv - ru) / 2;
+        {
+            int lo = ru + 1, hi = rv - 1;
+            for (size_t k = 0; k + 1 < turn; ++k) lo = std::max(lo, last_rank(path[k]) + 1);
+            for (size_t k = turn; k < path.size(); ++k) hi = std::min(hi, first_rank(path[k]) - 1);
+            if (lo <= hi) mid = lo + (hi - lo) / 2;
+        }
         size_t at = 0;
         bool ascending = true;
         int prev = u;

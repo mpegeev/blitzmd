@@ -194,11 +194,19 @@ private:
             // e1@{ animate: true }: settings of the edge with that id (none
             // of them drawn).
             size_t k = 0;
-            while (IsIdChar(c_.Peek(k))) ++k;
+            while (c_.Peek(k) && !IsSpace(c_.Peek(k)) && c_.Peek(k) != L'"' && c_.Peek(k) != L'@' && c_.Peek(k) != L';') ++k;
             if (k > 0 && c_.Peek(k) == L'@' && c_.Peek(k + 1) == L'{' && edge_ids_.count(std::wstring(c_.Rest().substr(0, k)))) {
+                const size_t open = c_.pos() + k;
                 c_.Advance(k + 2);
-                while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
-                if (!c_.Eat(L'}')) c_.Fail(Tr(L"Expected '}'", L"Ожидалась «}»"));
+                bool quoted = false;  // a } in a "value" doesn't end it
+                while (!c_.AtEnd() && (quoted || c_.Peek() != L'}')) {
+                    if (c_.Peek() == L'"') quoted = !quoted;
+                    c_.Advance();
+                }
+                if (!c_.Eat(L'}')) {
+                    c_.set_pos(open);
+                    c_.Fail(Tr(L"'@{' without '}'", L"«@{» без «}»"));
+                }
                 return;
             }
         }
@@ -629,12 +637,14 @@ private:
             return false;
         };
         {
-            // v11: an id before the arrow (A e1@--> B).
+            // v11: an id before the arrow (A e1@--> B): anything up to an @
+            // not followed by { or a quote, as Mermaid's lexer takes it.
             size_t k = 0;
-            while (IsIdChar(c_.Peek(k))) ++k;
-            if (k > 0 && c_.Peek(k) == L'@' && c_.Peek(k + 1) != L'{') {
+            while (c_.Peek(k) && !IsSpace(c_.Peek(k)) && c_.Peek(k) != L'"' && c_.Peek(k) != L'@' && c_.Peek(k) != L';') ++k;
+            if (k > 0 && c_.Peek(k) == L'@' && c_.Peek(k + 1) != L'{' && c_.Peek(k + 1) != L'"') {
                 edge_ids_.emplace(std::wstring(c_.Rest().substr(0, k)), static_cast<int>(edges.size()));
                 c_.Advance(k + 1);
+                c_.SkipBlanks();
             }
         }
         const wchar_t c0 = c_.Peek(), c1 = c_.Peek(1);
@@ -821,6 +831,7 @@ struct Placed {
     D2D1_POINT_2F center{};           // absolute, once placed
     int loops = 0;                    // self loops: right of it, one around the other
     bool loop_below = false;          // below it instead (LR/RL)
+    float loop_labels = 0;            // where their labels end, out from its box
 };
 
 // The point halfway along a polyline.
@@ -841,6 +852,10 @@ D2D1_POINT_2F Halfway(const std::vector<D2D1_POINT_2F>& pts) {
 
 // How far the k-th self loop of a node reaches out.
 float LoopReach(int k) { return kLoopReach * (1 + 0.6f * static_cast<float>(k)); }
+
+// Where a loop's label starts, out from the node's box: past the outermost
+// of its `n` loops, and past the label before it (`end`).
+float LoopLabelStart(int n, float end) { return std::max(LoopReach(n - 1) * 0.75f + 6, end > 0 ? end + 6 : 0.f); }
 
 // A subgraph is laid out on its own when no edge crosses its border (then
 // its direction applies and it is one node of its parent's layout), or else
@@ -950,7 +965,14 @@ private:
                 pl.text_h = pl.text.h;
             }
             const float w = pl.text_w + kPadding, h = pl.text_h + kPadding;
-            const bool across = p_.dir == RankDir::LR || p_.dir == RankDir::RL;
+            RankDir dir = p_.dir;  // its subgraph's, if one says
+            for (int c = n.cluster; c >= 0; c = Parent(c)) {
+                if (p_.clusters[static_cast<size_t>(c)].has_dir) {
+                    dir = p_.clusters[static_cast<size_t>(c)].dir;
+                    break;
+                }
+            }
+            const bool across = dir == RankDir::LR || dir == RankDir::RL;
             switch (n.shape) {
             case Shape::SmallCircle:
             case Shape::FilledCircle:
@@ -1160,7 +1182,6 @@ private:
             g.clusters.push_back(gc);
         }
         lv.edge_slot.assign(p_.edges.size(), -1);
-        std::vector<float> loop_room(lv.items.size(), 0.f);
         for (int ei : lv.edges) {
             const Edge& e = p_.edges[static_cast<size_t>(ei)];
             const Ref a = Representative(e.from, static_cast<int>(li)), b = Representative(e.to, static_cast<int>(li));
@@ -1168,14 +1189,13 @@ private:
             if (ia == slot.end() || ib == slot.end()) continue;
             const int sa = ia->second, sb = ib->second;
             if (sa == sb) {
-                if (!e.from.cluster && !e.to.cluster && e.from.index == e.to.index) {
-                    // A self loop: room beside the node for it and its label.
+                if (!e.from.cluster && !e.to.cluster && e.from.index == e.to.index && e.stroke != 3) {
+                    // A self loop: counted, with its label's length.
                     Placed& pl = P(e.from.index);
                     pl.loop_below = g.dir == RankDir::LR || g.dir == RankDir::RL;
                     const SceneBuilder::Measured& m = edge_labels_[static_cast<size_t>(ei)];
-                    const float label = m.layout ? (pl.loop_below ? m.h : m.w) : 0.f;  // past the loop's end
-                    loop_room[static_cast<size_t>(sa)] =
-                        std::max(loop_room[static_cast<size_t>(sa)], LoopReach(pl.loops++) * 0.75f + label + 6);
+                    ++pl.loops;
+                    if (m.layout) pl.loop_labels += (pl.loop_below ? m.h : m.w) + 6;
                 }
                 continue;
             }
@@ -1191,7 +1211,14 @@ private:
             lv.edge_slot[static_cast<size_t>(ei)] = static_cast<int>(g.edges.size());
             g.edges.push_back(ge);
         }
-        for (size_t k = 0; k < lv.items.size(); ++k) g.nodes[k].after = loop_room[k];
+        // Room beside a node for its loops, then their labels one after
+        // another (DrawLoop places them the same way).
+        for (size_t k = 0; k < lv.items.size(); ++k) {
+            const Ref& r = lv.items[k];
+            if (r.cluster || P(r.index).loops == 0) continue;
+            const Placed& pl = P(r.index);
+            g.nodes[k].after = LoopReach(pl.loops - 1) * 0.75f + 6 + pl.loop_labels;
+        }
         lv.layout = LayoutLayered(g);
         if (lv.layout.too_large) TooLarge();
         if (lv.cluster >= 0) {
@@ -1305,6 +1332,7 @@ private:
     void DrawEdges() {
         std::vector<std::pair<size_t, SceneBuilder::Measured*>> labels;
         std::vector<int> loops(p_.nodes.size(), 0);  // drawn so far, per node
+        std::vector<float> loop_labels(p_.nodes.size(), 0.f);
         for (size_t li = 0; li < levels_.size(); ++li) {
             const Level& lv = levels_[li];
             const D2D1_POINT_2F o = origin_[li];
@@ -1318,7 +1346,8 @@ private:
                 const uint8_t dash = e.stroke == 2 ? 2 : (st.dash == 1 ? 1 : 0);
                 if (slot < 0) {
                     if (!e.from.cluster && !e.to.cluster && e.from.index == e.to.index && e.stroke != 3) {
-                        DrawLoop(e, static_cast<size_t>(ei), loops[static_cast<size_t>(e.from.index)]++, color, width, dash, st);
+                        DrawLoop(e, static_cast<size_t>(ei), loops[static_cast<size_t>(e.from.index)]++,
+                                 &loop_labels[static_cast<size_t>(e.from.index)], color, width, dash, st);
                     }
                     continue;
                 }
@@ -1373,8 +1402,9 @@ private:
     }
 
     // The k-th self loop of a node: out of its outline and back, right of it
-    // (below it in LR/RL), around the ones before; its label on its far end.
-    void DrawLoop(const Edge& e, size_t ei, int k, DgColor color, float width, uint8_t dash, const Style& st) {
+    // (below it in LR/RL), around the ones before; its label past its far
+    // end and past the labels before (`labels`: where they end).
+    void DrawLoop(const Edge& e, size_t ei, int k, float* labels, DgColor color, float width, uint8_t dash, const Style& st) {
         const Ref ref{e.from.index, false};
         const Placed& pl = placed_[static_cast<size_t>(e.from.index)];
         const bool below = pl.loop_below;
@@ -1395,7 +1425,9 @@ private:
         AddMarker(b_, e.start, a, c1, color, width);
         const SceneBuilder::Measured& m = edge_labels_[ei];
         if (m.layout) {
-            const D2D1_POINT_2F c = at(edge + reach * 0.75f + (below ? m.h : m.w) / 2 - 4, 0);
+            const float len = below ? m.h : m.w, start = LoopLabelStart(pl.loops, *labels);
+            *labels = start + len;
+            const D2D1_POINT_2F c = at(half_out + start + len / 2, 0);
             b_.Rect(D2D1::RectF(c.x - m.w / 2 - 2, c.y - m.h / 2, c.x + m.w / 2 + 2, c.y + m.h / 2), 0, Role(kDgLabelBg),
                     Role(kDgNone));
             b_.Text(m, D2D1::Point2F(c.x - m.w / 2, c.y - m.h / 2), st.color.role != kDgNone ? st.color : Role(kDgText),
@@ -1501,10 +1533,51 @@ private:
 
 }  // namespace
 
+namespace {
+
+// Whether the layout will fit its budget, found when the document is read
+// (a diagram too large stays code): every node and subgraph in one layered
+// graph, sizes aside, as they don't change the ranks.
+void CheckBudget(const Parser& p) {
+    LayeredGraph g;
+    g.dir = p.dir;
+    for (const Cluster& c : p.clusters) {
+        LayeredGraph::Cluster gc;
+        gc.parent = c.parent;
+        g.clusters.push_back(gc);
+    }
+    std::vector<int> member(p.clusters.size(), -1);  // a node inside each subgraph
+    for (size_t i = 0; i < p.nodes.size(); ++i) {
+        LayeredGraph::Node n;
+        n.w = n.h = 10;
+        n.cluster = p.nodes[i].cluster;
+        g.nodes.push_back(n);
+        for (int c = p.nodes[i].cluster; c >= 0 && member[static_cast<size_t>(c)] < 0; c = p.clusters[static_cast<size_t>(c)].parent) {
+            member[static_cast<size_t>(c)] = static_cast<int>(i);
+        }
+    }
+    auto end = [&](const Ref& r) { return r.cluster ? member[static_cast<size_t>(r.index)] : r.index; };
+    for (const Edge& e : p.edges) {
+        const int a = end(e.from), b = end(e.to);
+        if (a < 0 || b < 0 || a == b) continue;
+        LayeredGraph::Edge ge;
+        ge.from = a;
+        ge.to = b;
+        ge.minlen = e.length;
+        g.edges.push_back(ge);
+    }
+    if (LayoutLayered(g, true).too_large) TooLarge();
+}
+
+}  // namespace
+
 std::shared_ptr<DiagramScene> Flowchart(const Source& src, SceneBuilder* builder) {
     Parser p(src);
     p.Parse();
-    if (!builder) return nullptr;
+    if (!builder) {
+        CheckBudget(p);
+        return nullptr;
+    }
     Builder b(p, *builder, src);
     return b.Build();
 }

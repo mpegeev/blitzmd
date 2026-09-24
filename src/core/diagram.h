@@ -88,6 +88,7 @@ struct DiagramScene {
     };
 
     float width = 0, height = 0;
+    bool error = false;                 // a note in place of a diagram: not zoomable
     std::vector<Shape> shapes;
     std::vector<Text> texts;
     std::vector<Item> items;            // drawing order

@@ -169,7 +169,7 @@ public:
             local_.push_back(hl);
         }
         // A wide, flat diagram (a left-to-right pipeline) is still one to zoom.
-        const bool zoomable = dc.interactive && std::max(w_, h_) >= kMinZoomable;
+        const bool zoomable = dc.interactive && !scene_->error && std::max(w_, h_) >= kMinZoomable;
         if (zoomable && dc.drawn) RecordDrawn(dc, object_, box);
         if (zoomable && IsZoomed(*object_)) {
             dc.rt->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -870,7 +870,8 @@ float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width
         if (c == 0x2028) breaks += 1.f;
         units += (c >= 0x1100) ? 1.f : 0.52f;
     }
-    const float total = s.nowrap_w > 0 ? s.nowrap_w : units * st.size + formulas_w;
+    // (A measured one-line width counts the diagrams too: not with them.)
+    const float total = s.nowrap_w > 0 && diagrams == 0 ? s.nowrap_w : units * st.size + formulas_w;
     const float text_lines = total > 0 || diagrams == 0 ? std::max(1.f, std::ceil(total / std::max(width, 1.f) * 1.04f)) : 0.f;
     const float lines = text_lines + diagrams + breaks;
     return lines * line_h + extra_h;
