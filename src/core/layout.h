@@ -167,14 +167,17 @@ public:
 
     const TableInfo* Table(const Block* table) const;
 
-    // Title layouts for alerts and such (cached).
-    IDWriteTextLayout* LabelLayout(const std::wstring& text, float size, uint16_t weight);
+    // Title layouts for alerts and such (cached); `wrap` > 0 wraps them to
+    // that width.
+    IDWriteTextLayout* LabelLayout(const std::wstring& text, float size, uint16_t weight, float wrap = 0);
     // Code block line numbers: a number in the code font, with its baseline.
     IDWriteTextLayout* LineNumberLayout(int number, float size, float* baseline);
     // Gap between the line numbers and the code.
     float GutterGap(float size) const { return size * 1.25f; }
-    // A code block's note (Block::note): its line above the code.
-    float NoteHeight(float size) const { return size * 1.6f; }
+    // A code block's note (Block::note): muted text above the code, after a
+    // warning sign and clear of the copy button, in a block `block_w` wide.
+    IDWriteTextLayout* NoteLayout(const std::wstring& note, float size, float block_w);
+    float NoteHeight(const std::wstring& note, float size, float block_w);
 
     DrawContext& draw_context() { return draw_ctx_; }
     ImageStore* images() const { return images_; }

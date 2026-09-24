@@ -88,7 +88,7 @@ flowchart LR
     test -->|yes| pkg[Package]:::step --> rel([Release])
     test -->|no| fix[Fix it] --> build
     classDef step fill:#dbeafe,stroke:#3b82f6,stroke-width:2px,color:#1e3a8a
-    style rel fill:#dcfce7,stroke:#16a34a,stroke-width:2px
+    style rel fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
     linkStyle 3 stroke:#16a34a,stroke-width:3px
 ```
 

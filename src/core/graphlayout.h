@@ -18,6 +18,8 @@ struct LayeredGraph {
     struct Node {
         float w = 0, h = 0;
         int cluster = -1;             // innermost cluster (index into clusters)
+        float after = 0;              // room kept beside it in its rank (right; below
+                                      // in LR/RL), as dagre does for self loops
     };
     struct Edge {
         int from = 0, to = 0;
@@ -45,10 +47,16 @@ struct LayeredLayout {
     std::vector<D2D1_POINT_2F> labels;                 // per edge: center of its label
     std::vector<D2D1_RECT_F> clusters;                 // per cluster (empty ones: zero size)
     float width = 0, height = 0;                       // bounding box (origin at 0,0)
+    bool too_large = false;                            // over the budget below: nothing laid out
 };
 
+// Bends and cluster sides the layout may create: long edges through many
+// ranks cost one node per rank, and the cost grows with the square of the
+// graph's size.
+constexpr int kMaxLayoutNodes = 40000;
+
 // Lays out `g`; the work is bounded, so huge graphs still finish (with a
-// plainer layout).
+// plainer layout) or give up (too_large).
 LayeredLayout LayoutLayered(const LayeredGraph& g);
 
 }  // namespace mdv

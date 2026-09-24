@@ -12,6 +12,7 @@
 
 #include "core/diagram.h"
 #include "core/graphlayout.h"
+#include "core/util.h"
 
 namespace mdv::mermaid {
 
@@ -21,10 +22,15 @@ struct ParseError {
     std::wstring message;
 };
 [[noreturn]] inline void Fail(size_t pos, std::wstring message) { throw ParseError{pos, std::move(message)}; }
+// An error about the whole diagram, not one of its lines.
+constexpr size_t kNoLine = static_cast<size_t>(-1);
+[[noreturn]] inline void TooLarge() {
+    Fail(kNoLine, Tr(L"The diagram is too large", L"Диаграмма слишком большая"));
+}
 
 // Size limits (hostile input).
 constexpr size_t kMaxNodes = 2000;
-constexpr size_t kMaxEdges = 4000;
+constexpr size_t kMaxEdges = 500;    // Mermaid's own limit (maxEdges)
 constexpr size_t kMaxLabel = 4000;   // characters of one label
 constexpr int kMaxNesting = 24;
 
@@ -34,6 +40,7 @@ struct Source {
     std::wstring_view text;
     size_t body = 0;          // where the diagram starts
     std::wstring title;       // front matter title
+    uint32_t title_pos = 0, title_len = 0;
 };
 Source Preprocess(std::wstring_view text);
 
@@ -55,8 +62,9 @@ public:
     std::wstring_view LineRest();       // up to the statement end, trimmed
     bool Eat(wchar_t c);
     bool EatStr(std::wstring_view str);
-    // A keyword (ASCII, case-insensitive) not followed by a word character.
-    bool EatKeyword(std::wstring_view word);
+    // A keyword not followed by a word character. Flowchart statements are
+    // case-sensitive in Mermaid ("End" is a node), sequence diagrams not.
+    bool EatKeyword(std::wstring_view word, bool match_case = false);
     [[noreturn]] void Fail(std::wstring message) const { mermaid::Fail(pos_, std::move(message)); }
 
 private:
@@ -101,7 +109,8 @@ void AddMarker(SceneBuilder& b, Marker m, D2D1_POINT_2F tip, D2D1_POINT_2F from,
 // for edges): Begin() ... for SceneBuilder, the caller ends the path.
 void AddBasisCurve(SceneBuilder& b, const std::vector<D2D1_POINT_2F>& pts);
 
-// Where the segment from a shape's center towards `outside` leaves it.
+// Where the ray from a shape's center through `outside` leaves it (`outside`
+// may lie inside too).
 D2D1_POINT_2F ClipRect(D2D1_POINT_2F center, float w, float h, D2D1_POINT_2F outside);
 D2D1_POINT_2F ClipEllipse(D2D1_POINT_2F center, float rx, float ry, D2D1_POINT_2F outside);
 D2D1_POINT_2F ClipPolygon(D2D1_POINT_2F center, const std::vector<D2D1_POINT_2F>& poly, D2D1_POINT_2F outside);

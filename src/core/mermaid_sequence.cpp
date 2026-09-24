@@ -13,6 +13,10 @@
 namespace mdv::mermaid {
 namespace {
 
+// Messages, notes and blocks: they only stack up (linear work), so more than
+// a flowchart's links.
+constexpr size_t kMaxItems = 4000;
+
 struct Text {
     std::wstring raw;
     uint32_t pos = 0, len = 0;  // in the source
@@ -83,6 +87,7 @@ public:
     std::vector<Group> groups;
     std::vector<Item> items;
     std::wstring title;
+    uint32_t title_pos = 0, title_len = 0;
 
 private:
     void Statement() {
@@ -157,7 +162,10 @@ private:
         if (c_.EatKeyword(L"title")) {
             c_.SkipBlanks();
             c_.Eat(L':');
-            title = std::wstring(Trim(c_.LineRest()));
+            const std::wstring_view t = Trim(c_.LineRest());
+            title = std::wstring(t);
+            title_pos = static_cast<uint32_t>(t.data() - src_.text.data());
+            title_len = static_cast<uint32_t>(t.size());
             return;
         }
         for (const wchar_t* kw : {L"accTitle", L"accDescr", L"link", L"links", L"properties", L"details"}) {
@@ -181,7 +189,7 @@ private:
     }
 
     void Add(Item it) {
-        if (items.size() >= kMaxEdges) c_.Fail(Tr(L"Too many messages", L"Слишком много сообщений"));
+        if (items.size() >= kMaxItems) c_.Fail(Tr(L"Too many messages", L"Слишком много сообщений"));
         items.push_back(std::move(it));
     }
 
@@ -194,6 +202,11 @@ private:
         Participant p;
         p.id = id;
         p.label.raw = id;
+        // Named first here: that's its text for search.
+        if (const size_t at = src_.text.find(id, pos); at != std::wstring_view::npos && at - pos < 64) {
+            p.label.pos = static_cast<uint32_t>(at);
+            p.label.len = static_cast<uint32_t>(id.size());
+        }
         p.box = open_box_;
         if (open_box_ >= 0) groups[static_cast<size_t>(open_box_)].members.push_back(static_cast<int>(people.size()));
         ids_.emplace(id, static_cast<int>(people.size()));
@@ -398,8 +411,12 @@ private:
         for (const Group& g : p_.groups) {
             box_titles_.push_back(g.title.raw.empty() ? M{} : b_.Measure(ParseLabel(g.title.raw, false), 0, true, kSmall));
         }
-        const std::wstring& title = p_.title.empty() ? src_.title : p_.title;  // title statement or front matter
-        if (!title.empty()) title_ = b_.Measure(ParseLabel(title, false), 0, true, 1.125f);
+        // The title statement or the front matter's, 18px as in Mermaid.
+        const bool own = !p_.title.empty();
+        const std::wstring& title = own ? p_.title : src_.title;
+        title_pos_ = own ? p_.title_pos : src_.title_pos;
+        title_len_ = own ? p_.title_len : src_.title_len;
+        if (!title.empty()) title_ = b_.Measure(ParseLabel(title, false), 0, false, 1.125f);
     }
 
     // Centers left to right: gaps as wide as the messages and notes between
@@ -675,7 +692,7 @@ private:
             f.x1 += x_shift;
         }
 
-        if (title_.layout) b_.Text(title_, D2D1::Point2F((width - title_.w) / 2, kMarginY), Role(kDgText));
+        if (title_.layout) b_.Text(title_, D2D1::Point2F((width - title_.w) / 2, kMarginY), Role(kDgText), title_pos_, title_len_);
         // Group boxes behind everything.
         for (size_t g = 0; g < p_.groups.size(); ++g) {
             const Group& grp = p_.groups[g];
@@ -841,6 +858,7 @@ private:
     const Source& src_;
     std::vector<M> names_, texts_, box_titles_;
     M title_;
+    uint32_t title_pos_ = 0, title_len_ = 0;
     std::vector<float> widths_, centers_, appear_, end_;
     float right_ = 0, top_ = 0, bottom_ = 0, shift_ = 0;
     std::vector<Frame> frames_;

@@ -15,7 +15,13 @@ namespace {
 enum class Shape : uint8_t {
     Rect, Round, Stadium, Subroutine, Cylinder, Circle, DoubleCircle, Asymmetric, Rhombus, Hexagon,
     LeanRight, LeanLeft, Trapezoid, TrapezoidAlt, Text,
+    PaperTape, SmallCircle, FilledCircle, FramedCircle, Fork,  // v11 names only
 };
+
+// Shapes too small for a label (Mermaid shows none).
+bool Unlabelled(Shape s) {
+    return s == Shape::SmallCircle || s == Shape::FilledCircle || s == Shape::FramedCircle || s == Shape::Fork;
+}
 
 struct Label {
     std::wstring raw;
@@ -26,6 +32,7 @@ struct Label {
 
 struct Node {
     std::wstring id;
+    uint32_t id_pos = 0, id_len = 0;  // where it is first named (its text without a label)
     Label label;
     Shape shape = Shape::Rect;
     int cluster = -1;           // innermost subgraph
@@ -64,8 +71,9 @@ struct EdgeToken {
     Label label;
 };
 
-bool IsIdChar(wchar_t c) {
-    return IsWordChar(c) || c == L'.' || c == L'$' || c == L'!' || c == L'?' || c == L'*' || c == L'+' || c == L'\'';
+bool IsIdChar(wchar_t c) {  // Mermaid's NODE_STRING ('-' and '=' apart)
+    return IsWordChar(c) || c == L'.' || c == L'$' || c == L'!' || c == L'?' || c == L'*' || c == L'+' || c == L'\'' ||
+           c == L'/' || c == L'\\' || c == L'#';
 }
 
 RankDir ParseDirection(std::wstring_view w, bool* ok) {
@@ -98,7 +106,11 @@ Shape ShapeByName(std::wstring_view name) {
         {L"trapezoid", Shape::Trapezoid}, {L"priority", Shape::Trapezoid}, {L"trapezoid-bottom", Shape::Trapezoid},
         {L"trap-t", Shape::TrapezoidAlt}, {L"inv-trapezoid", Shape::TrapezoidAlt}, {L"manual", Shape::TrapezoidAlt},
         {L"trapezoid-top", Shape::TrapezoidAlt}, {L"text", Shape::Text}, {L"odd", Shape::Asymmetric},
-        {L"flag", Shape::Asymmetric},
+        {L"flag", Shape::PaperTape}, {L"paper-tape", Shape::PaperTape}, {L"subprocess", Shape::Subroutine},
+        {L"sm-circ", Shape::SmallCircle}, {L"small-circle", Shape::SmallCircle}, {L"start", Shape::SmallCircle},
+        {L"f-circ", Shape::FilledCircle}, {L"filled-circle", Shape::FilledCircle}, {L"junction", Shape::FilledCircle},
+        {L"fr-circ", Shape::FramedCircle}, {L"framed-circle", Shape::FramedCircle}, {L"stop", Shape::FramedCircle},
+        {L"fork", Shape::Fork}, {L"join", Shape::Fork},
     };
     for (const Entry& e : kNames) {
         if (EqualsNoCase(name, e.name)) return e.shape;
@@ -125,7 +137,10 @@ public:
             while (!c_.AtStatementEnd() && !IsSpace(c_.Peek())) c_.Advance();
             bool ok = false;
             dir = ParseDirection(src_.text.substr(start, c_.pos() - start), &ok);
-            if (!ok) c_.set_pos(start);  // a statement on the same line
+            if (!ok) {
+                c_.set_pos(start);
+                c_.Fail(Tr(L"Unknown direction", L"Неизвестное направление"));
+            }
         }
         for (;;) {
             c_.SkipStatementGap();
@@ -135,6 +150,7 @@ public:
             if (!c_.AtStatementEnd()) c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
         }
         while (!open_.empty()) CloseSubgraph();
+        MergeSubgraphNodes();
     }
 
     RankDir dir = RankDir::TB;
@@ -147,13 +163,13 @@ public:
 
 private:
     void Statement() {
-        if (c_.EatKeyword(L"subgraph")) return Subgraph();
-        if (c_.EatKeyword(L"end")) {
+        if (c_.EatKeyword(L"subgraph", true)) return Subgraph();
+        if (c_.EatKeyword(L"end", true)) {
             if (open_.empty()) c_.Fail(Tr(L"\"end\" without \"subgraph\"", L"«end» без «subgraph»"));
             CloseSubgraph();
             return;
         }
-        if (c_.EatKeyword(L"direction")) {
+        if (c_.EatKeyword(L"direction", true)) {
             c_.SkipBlanks();
             bool ok = false;
             const RankDir d = ParseDirection(c_.LineRest(), &ok);
@@ -166,15 +182,27 @@ private:
             }
             return;
         }
-        if (c_.EatKeyword(L"classDef")) return ClassDef();
-        if (c_.EatKeyword(L"class")) return ClassStatement();
-        if (c_.EatKeyword(L"style")) return StyleStatement();
-        if (c_.EatKeyword(L"linkStyle")) return LinkStyle();
-        if (c_.EatKeyword(L"click") || c_.EatKeyword(L"callback") || c_.EatKeyword(L"accTitle")) {
+        if (c_.EatKeyword(L"classDef", true)) return ClassDef();
+        if (c_.EatKeyword(L"class", true)) return ClassStatement();
+        if (c_.EatKeyword(L"style", true)) return StyleStatement();
+        if (c_.EatKeyword(L"linkStyle", true)) return LinkStyle();
+        if (c_.EatKeyword(L"click", true) || c_.EatKeyword(L"callback", true) || c_.EatKeyword(L"accTitle", true)) {
             c_.LineRest();
             return;
         }
-        if (c_.EatKeyword(L"accDescr")) {
+        {
+            // e1@{ animate: true }: settings of the edge with that id (none
+            // of them drawn).
+            size_t k = 0;
+            while (IsIdChar(c_.Peek(k))) ++k;
+            if (k > 0 && c_.Peek(k) == L'@' && c_.Peek(k + 1) == L'{' && edge_ids_.count(std::wstring(c_.Rest().substr(0, k)))) {
+                c_.Advance(k + 2);
+                while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
+                if (!c_.Eat(L'}')) c_.Fail(Tr(L"Expected '}'", L"Ожидалась «}»"));
+                return;
+            }
+        }
+        if (c_.EatKeyword(L"accDescr", true)) {
             c_.SkipBlanks();
             if (c_.Eat(L'{')) {
                 while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
@@ -229,6 +257,40 @@ private:
         clusters.push_back(std::move(cl));
     }
 
+    // A subgraph linked to before its definition was read as a node: in
+    // Mermaid, the link goes to the subgraph.
+    void MergeSubgraphNodes() {
+        std::vector<int> as_cluster(nodes.size(), -1);
+        bool any = false;
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            auto it = cluster_ids_.find(nodes[i].id);
+            if (nodes[i].label.set || it == cluster_ids_.end()) continue;
+            as_cluster[i] = it->second;
+            Cluster& cl = clusters[static_cast<size_t>(it->second)];
+            cl.style.Merge(nodes[i].style);
+            cl.classes.insert(cl.classes.end(), nodes[i].classes.begin(), nodes[i].classes.end());
+            any = true;
+        }
+        if (!any) return;
+        std::vector<int> remap(nodes.size(), -1);
+        std::vector<Node> kept;
+        for (size_t i = 0; i < nodes.size(); ++i) {
+            if (as_cluster[i] >= 0) continue;
+            remap[i] = static_cast<int>(kept.size());
+            kept.push_back(std::move(nodes[i]));
+        }
+        nodes = std::move(kept);
+        for (Edge& e : edges) {
+            for (Ref* r : {&e.from, &e.to}) {
+                if (r->cluster) continue;
+                const size_t i = static_cast<size_t>(r->index);
+                *r = as_cluster[i] >= 0 ? Ref{as_cluster[i], true} : Ref{remap[i], false};
+            }
+        }
+        node_ids_.clear();
+        for (size_t i = 0; i < nodes.size(); ++i) node_ids_.emplace(nodes[i].id, static_cast<int>(i));
+    }
+
     void CloseSubgraph() {
         const int id = open_.back();
         open_.pop_back();
@@ -254,27 +316,28 @@ private:
         std::vector<std::wstring> ids = Names();
         c_.SkipBlanks();
         const std::wstring name(c_.LineRest());
+        // Only for what exists by now, as in Mermaid.
         for (const std::wstring& id : ids) {
             if (auto it = cluster_ids_.find(id); it != cluster_ids_.end()) {
                 clusters[static_cast<size_t>(it->second)].classes.push_back(name);
-            } else {
-                nodes[static_cast<size_t>(NodeIndex(id))].classes.push_back(name);
+            } else if (auto nt = node_ids_.find(id); nt != node_ids_.end()) {
+                nodes[static_cast<size_t>(nt->second)].classes.push_back(name);
             }
         }
     }
 
     void StyleStatement() {
         c_.SkipBlanks();
-        const size_t start = c_.pos();
-        while (!c_.AtStatementEnd() && !IsSpace(c_.Peek())) c_.Advance();
-        const std::wstring id(src_.text.substr(start, c_.pos() - start));
+        std::vector<std::wstring> ids = Names();
         c_.SkipBlanks();
         Style st;
         st.Apply(c_.LineRest());
-        if (auto it = cluster_ids_.find(id); it != cluster_ids_.end()) {
-            clusters[static_cast<size_t>(it->second)].style.Merge(st);
-        } else if (!id.empty()) {
-            nodes[static_cast<size_t>(NodeIndex(id))].style.Merge(st);
+        for (const std::wstring& id : ids) {
+            if (auto it = cluster_ids_.find(id); it != cluster_ids_.end()) {
+                clusters[static_cast<size_t>(it->second)].style.Merge(st);
+            } else {
+                nodes[static_cast<size_t>(NodeIndex(id))].style.Merge(st);
+            }
         }
     }
 
@@ -328,7 +391,10 @@ private:
         c_.Eat(L'"');
         const size_t start = c_.pos();
         while (!c_.AtEnd() && c_.Peek() != L'"') c_.Advance();
-        if (c_.AtEnd()) c_.Fail(Tr(L"Unclosed quote", L"Не закрыта кавычка"));
+        if (c_.AtEnd()) {
+            c_.set_pos(start - 1);  // reported where it opens
+            c_.Fail(Tr(L"Unclosed quote", L"Не закрыта кавычка"));
+        }
         std::wstring_view raw = src_.text.substr(start, c_.pos() - start);
         c_.Eat(L'"');
         l.pos = static_cast<uint32_t>(start);
@@ -385,7 +451,9 @@ private:
             std::vector<Ref> next = NodeGroup();
             for (const Ref& a : group) {
                 for (const Ref& b : next) {
-                    if (edges.size() >= kMaxEdges) c_.Fail(Tr(L"Too many edges", L"Слишком много связей"));
+                    if (edges.size() >= kMaxEdges) {
+                        c_.Fail(Tr(L"Too many links: Mermaid draws at most 500", L"Слишком много связей: Mermaid рисует не больше 500"));
+                    }
                     Edge edge;
                     edge.from = a;
                     edge.to = b;
@@ -423,15 +491,14 @@ private:
             if (IsIdChar(ch)) {
                 id.push_back(ch);
                 c_.Advance();
-            } else if (ch == L'-' && !id.empty() && IsIdChar(c_.Peek(1)) && c_.Peek(1) != L'.') {
-                id.push_back(ch);  // node-1
+            } else if ((ch == L'-' || ch == L'=') && !id.empty() && IsIdChar(c_.Peek(1)) && c_.Peek(1) != L'.') {
+                id.push_back(ch);  // node-1, a=b (not before an arrow)
                 c_.Advance();
             } else {
                 break;
             }
         }
         if (id.empty()) c_.Fail(Tr(L"Expected a node", L"Ожидался узел"));
-        (void)start;
         const bool shaped = c_.Peek() == L'[' || c_.Peek() == L'(' || c_.Peek() == L'{' ||
                             (c_.Peek() == L'>' && !id.empty()) || (c_.Peek() == L'@' && c_.Peek(1) == L'{');
         if (!shaped) {
@@ -440,6 +507,10 @@ private:
             }
         }
         const int index = NodeIndex(id);
+        if (nodes[static_cast<size_t>(index)].id_len == 0) {
+            nodes[static_cast<size_t>(index)].id_pos = static_cast<uint32_t>(start);
+            nodes[static_cast<size_t>(index)].id_len = static_cast<uint32_t>(id.size());
+        }
         if (!open_.empty()) clusters[static_cast<size_t>(open_.back())].mentioned.push_back(index);
         if (shaped) ShapeOf(nodes[static_cast<size_t>(index)]);
         while (c_.EatStr(L":::")) {
@@ -453,16 +524,24 @@ private:
     void ShapeOf(Node& n) {
         if (c_.Peek() == L'@') {
             // A@{ shape: rect, label: "Text" }
+            const size_t open = c_.pos();
+            auto unclosed = [&] {
+                c_.set_pos(open);
+                c_.Fail(Tr(L"'@{' without '}'", L"«@{» без «}»"));
+            };
             c_.Advance(2);
             for (;;) {
                 c_.SkipStatementGap();
                 if (c_.Eat(L'}')) return;
-                if (c_.AtEnd()) c_.Fail(Tr(L"Expected '}'", L"Ожидалась «}»"));
+                if (c_.AtEnd()) unclosed();
                 const size_t ks = c_.pos();
                 while (!c_.AtEnd() && (IsWordChar(c_.Peek()) || c_.Peek() == L'-')) c_.Advance();
                 const std::wstring key(src_.text.substr(ks, c_.pos() - ks));
                 c_.SkipBlanks();
-                if (!c_.Eat(L':')) c_.Fail(Tr(L"Expected ':'", L"Ожидалось «:»"));
+                if (!c_.Eat(L':')) {
+                    if (src_.text.find(L'}', open) == std::wstring_view::npos) unclosed();
+                    c_.Fail(Tr(L"Expected ':'", L"Ожидалось «:»"));
+                }
                 c_.SkipBlanks();
                 Label value;
                 if (c_.Peek() == L'"') {
@@ -549,6 +628,15 @@ private:
             c_.set_pos(save);
             return false;
         };
+        {
+            // v11: an id before the arrow (A e1@--> B).
+            size_t k = 0;
+            while (IsIdChar(c_.Peek(k))) ++k;
+            if (k > 0 && c_.Peek(k) == L'@' && c_.Peek(k + 1) != L'{') {
+                edge_ids_.emplace(std::wstring(c_.Rest().substr(0, k)), static_cast<int>(edges.size()));
+                c_.Advance(k + 1);
+            }
+        }
         const wchar_t c0 = c_.Peek(), c1 = c_.Peek(1);
         if (c0 == L'<' && (c1 == L'-' || c1 == L'=' )) {
             e->start = Marker::Arrow;
@@ -564,7 +652,7 @@ private:
                 c_.Advance();
                 return true;
             }
-            if ((ch == L'o' || ch == L'x') && !IsIdChar(c_.Peek(1))) {
+            if (ch == L'o' || ch == L'x') {  // even before a node: A--oB is A --o B in Mermaid
                 e->end = ch == L'o' ? Marker::Circle : Marker::Cross;
                 c_.Advance();
                 return true;
@@ -713,6 +801,7 @@ private:
     Cursor c_;
     std::vector<int> open_;  // subgraphs being read
     std::unordered_map<std::wstring, int> node_ids_, cluster_ids_;
+    std::unordered_map<std::wstring, int> edge_ids_;  // v11: A e1@--> B
 };
 
 // ---------------------------------------------------------------------------
@@ -730,8 +819,28 @@ struct Placed {
     SceneBuilder::Measured text;
     Style style;
     D2D1_POINT_2F center{};           // absolute, once placed
-    bool loop = false;                // has a self loop (drawn right of it)
+    int loops = 0;                    // self loops: right of it, one around the other
+    bool loop_below = false;          // below it instead (LR/RL)
 };
+
+// The point halfway along a polyline.
+D2D1_POINT_2F Halfway(const std::vector<D2D1_POINT_2F>& pts) {
+    float total = 0;
+    for (size_t i = 1; i < pts.size(); ++i) total += std::hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+    float left = total / 2;
+    for (size_t i = 1; i < pts.size(); ++i) {
+        const float d = std::hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+        if (d >= left && d > 0) {
+            const float t = left / d;
+            return D2D1::Point2F(pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t, pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t);
+        }
+        left -= d;
+    }
+    return pts.empty() ? D2D1::Point2F(0, 0) : pts.back();
+}
+
+// How far the k-th self loop of a node reaches out.
+float LoopReach(int k) { return kLoopReach * (1 + 0.6f * static_cast<float>(k)); }
 
 // A subgraph is laid out on its own when no edge crosses its border (then
 // its direction applies and it is one node of its parent's layout), or else
@@ -778,7 +887,7 @@ public:
         float top = kMargin;
         SceneBuilder::Measured title;
         if (!src_.title.empty()) {
-            title = b_.Measure(ParseLabel(src_.title, false), 0, true, 1.125f);
+            title = b_.Measure(ParseLabel(src_.title, false), 0, false, 1.125f);  // 18px, as Mermaid's
             top += title.h + 8;
         }
         const Level& root = levels_[0];
@@ -788,7 +897,9 @@ public:
         Place(0, left, top);
         const float height = top + root.layout.height + kMargin;
 
-        if (title.layout) b_.Text(title, D2D1::Point2F((width - title.w) / 2, kMargin), Role(kDgText));
+        if (title.layout) {
+            b_.Text(title, D2D1::Point2F((width - title.w) / 2, kMargin), Role(kDgText), src_.title_pos, src_.title_len);
+        }
         DrawClusters();
         DrawEdges();
         DrawNodes();
@@ -832,12 +943,23 @@ private:
             const Node& n = p_.nodes[i];
             Placed& pl = placed_[i];
             pl.style = NodeStyle(n);
-            const RichText t = LabelText(n.label, n.id, pl.style.bold == 1, pl.style.italic == 1);
-            pl.text = b_.Measure(t, n.label.markdown ? 200.f : 0.f);
-            pl.text_w = pl.text.w;
-            pl.text_h = pl.text.h;
+            if (!Unlabelled(n.shape)) {
+                const RichText t = LabelText(n.label, n.id, pl.style.bold == 1, pl.style.italic == 1);
+                pl.text = b_.Measure(t, n.label.markdown ? 200.f : 0.f);
+                pl.text_w = pl.text.w;
+                pl.text_h = pl.text.h;
+            }
             const float w = pl.text_w + kPadding, h = pl.text_h + kPadding;
+            const bool across = p_.dir == RankDir::LR || p_.dir == RankDir::RL;
             switch (n.shape) {
+            case Shape::SmallCircle:
+            case Shape::FilledCircle:
+            case Shape::FramedCircle: pl.w = pl.h = 14; break;
+            case Shape::Fork:  // a bar across the flow
+                pl.w = across ? 10.f : 70.f;
+                pl.h = across ? 70.f : 10.f;
+                break;
+            case Shape::PaperTape: pl.w = w; pl.h = h + h / 3; break;
             case Shape::Stadium: pl.w = w + h / 2; pl.h = h; break;
             case Shape::Subroutine: pl.w = w + 16; pl.h = h; break;
             case Shape::Cylinder: {
@@ -1038,6 +1160,7 @@ private:
             g.clusters.push_back(gc);
         }
         lv.edge_slot.assign(p_.edges.size(), -1);
+        std::vector<float> loop_room(lv.items.size(), 0.f);
         for (int ei : lv.edges) {
             const Edge& e = p_.edges[static_cast<size_t>(ei)];
             const Ref a = Representative(e.from, static_cast<int>(li)), b = Representative(e.to, static_cast<int>(li));
@@ -1045,7 +1168,15 @@ private:
             if (ia == slot.end() || ib == slot.end()) continue;
             const int sa = ia->second, sb = ib->second;
             if (sa == sb) {
-                if (!e.from.cluster && !e.to.cluster && e.from.index == e.to.index) P(e.from.index).loop = true;
+                if (!e.from.cluster && !e.to.cluster && e.from.index == e.to.index) {
+                    // A self loop: room beside the node for it and its label.
+                    Placed& pl = P(e.from.index);
+                    pl.loop_below = g.dir == RankDir::LR || g.dir == RankDir::RL;
+                    const SceneBuilder::Measured& m = edge_labels_[static_cast<size_t>(ei)];
+                    const float label = m.layout ? (pl.loop_below ? m.h : m.w) : 0.f;  // past the loop's end
+                    loop_room[static_cast<size_t>(sa)] =
+                        std::max(loop_room[static_cast<size_t>(sa)], LoopReach(pl.loops++) * 0.75f + label + 6);
+                }
                 continue;
             }
             LayeredGraph::Edge ge;
@@ -1060,12 +1191,9 @@ private:
             lv.edge_slot[static_cast<size_t>(ei)] = static_cast<int>(g.edges.size());
             g.edges.push_back(ge);
         }
-        // Room for self loops.
-        for (size_t k = 0; k < lv.items.size(); ++k) {
-            const Ref& r = lv.items[k];
-            if (!r.cluster && P(r.index).loop) g.nodes[k].w += 2 * kLoopReach;
-        }
+        for (size_t k = 0; k < lv.items.size(); ++k) g.nodes[k].after = loop_room[k];
         lv.layout = LayoutLayered(g);
+        if (lv.layout.too_large) TooLarge();
         if (lv.cluster >= 0) {
             ClusterBox& box = boxes_[static_cast<size_t>(lv.cluster)];
             box.content_w = lv.layout.width;
@@ -1091,8 +1219,7 @@ private:
                 const float top = box.rect.top + kClusterPad + box.top;
                 Place(static_cast<size_t>(box.level), left, top);
             } else {
-                // A node with a loop sits left of its widened slot.
-                P(r.index).center = D2D1::Point2F(abs.x - (P(r.index).loop ? kLoopReach : 0.f), abs.y);
+                P(r.index).center = abs;
             }
         }
         for (size_t k = 0; k < lv.clusters.size(); ++k) {
@@ -1135,7 +1262,10 @@ private:
         const Placed& pl = placed_[static_cast<size_t>(r.index)];
         switch (p_.nodes[static_cast<size_t>(r.index)].shape) {
         case Shape::Circle:
-        case Shape::DoubleCircle: return ClipEllipse(pl.center, pl.w / 2, pl.h / 2, toward);
+        case Shape::DoubleCircle:
+        case Shape::SmallCircle:
+        case Shape::FilledCircle:
+        case Shape::FramedCircle: return ClipEllipse(pl.center, pl.w / 2, pl.h / 2, toward);
         case Shape::Rhombus:
         case Shape::Hexagon:
         case Shape::LeanRight:
@@ -1174,6 +1304,7 @@ private:
 
     void DrawEdges() {
         std::vector<std::pair<size_t, SceneBuilder::Measured*>> labels;
+        std::vector<int> loops(p_.nodes.size(), 0);  // drawn so far, per node
         for (size_t li = 0; li < levels_.size(); ++li) {
             const Level& lv = levels_[li];
             const D2D1_POINT_2F o = origin_[li];
@@ -1187,7 +1318,7 @@ private:
                 const uint8_t dash = e.stroke == 2 ? 2 : (st.dash == 1 ? 1 : 0);
                 if (slot < 0) {
                     if (!e.from.cluster && !e.to.cluster && e.from.index == e.to.index && e.stroke != 3) {
-                        DrawLoop(e, static_cast<size_t>(ei), color, width, dash, st);
+                        DrawLoop(e, static_cast<size_t>(ei), loops[static_cast<size_t>(e.from.index)]++, color, width, dash, st);
                     }
                     continue;
                 }
@@ -1196,6 +1327,18 @@ private:
                 pts.push_back(CenterOf(e.from));
                 for (const D2D1_POINT_2F& p : lv.layout.bends[static_cast<size_t>(slot)]) pts.push_back(D2D1::Point2F(o.x + p.x, o.y + p.y));
                 pts.push_back(CenterOf(e.to));
+                // A subgraph end: the edge starts (or ends) where it leaves
+                // the box, not at bends still inside it.
+                auto inside = [&](const Ref& r, D2D1_POINT_2F p) {
+                    const D2D1_RECT_F& b = boxes_[static_cast<size_t>(r.index)].rect;
+                    return p.x > b.left && p.x < b.right && p.y > b.top && p.y < b.bottom;
+                };
+                if (e.from.cluster) {
+                    while (pts.size() > 2 && inside(e.from, pts[1])) pts.erase(pts.begin() + 1);
+                }
+                if (e.to.cluster) {
+                    while (pts.size() > 2 && inside(e.to, pts[pts.size() - 2])) pts.erase(pts.end() - 2);
+                }
                 pts.front() = Clip(e.from, pts[1]);
                 pts.back() = Clip(e.to, pts[pts.size() - 2]);
                 const D2D1_POINT_2F tip_end = pts.back(), tip_start = pts.front();
@@ -1209,6 +1352,9 @@ private:
                 if (edge_labels_[static_cast<size_t>(ei)].layout) {
                     const D2D1_POINT_2F lp = lv.layout.labels[static_cast<size_t>(slot)];
                     label_at_[static_cast<size_t>(ei)] = D2D1::Point2F(o.x + lp.x, o.y + lp.y);
+                    // Laid out towards a node inside, drawn to the box: the
+                    // label goes in the middle of what is drawn.
+                    if (e.from.cluster || e.to.cluster) label_at_[static_cast<size_t>(ei)] = Halfway(pts);
                     labels.push_back({static_cast<size_t>(ei), &edge_labels_[static_cast<size_t>(ei)]});
                 }
             }
@@ -1226,19 +1372,30 @@ private:
         }
     }
 
-    void DrawLoop(const Edge& e, size_t ei, DgColor color, float width, uint8_t dash, const Style& st) {
+    // The k-th self loop of a node: out of its outline and back, right of it
+    // (below it in LR/RL), around the ones before; its label on its far end.
+    void DrawLoop(const Edge& e, size_t ei, int k, DgColor color, float width, uint8_t dash, const Style& st) {
+        const Ref ref{e.from.index, false};
         const Placed& pl = placed_[static_cast<size_t>(e.from.index)];
-        const float r = pl.center.x + pl.w / 2;
-        const float y0 = pl.center.y - pl.h / 4, y1 = pl.center.y + pl.h / 4;
-        const D2D1_POINT_2F start = D2D1::Point2F(r, y0), end = D2D1::Point2F(r + 2, y1);
-        b_.Begin(start);
-        b_.CubicTo(D2D1::Point2F(r + kLoopReach, y0 - 12), D2D1::Point2F(r + kLoopReach, y1 + 12),
-                   D2D1::Point2F(end.x + MarkerLength(e.end) * 0.7f, end.y + 2));
+        const bool below = pl.loop_below;
+        auto at = [&](float out, float side) {  // `out` from the center away from the node, `side` along it
+            return below ? D2D1::Point2F(pl.center.x + side, pl.center.y + out) : D2D1::Point2F(pl.center.x + out, pl.center.y + side);
+        };
+        const float half_out = (below ? pl.h : pl.w) / 2, s = (below ? pl.w : pl.h) / 4;
+        const D2D1_POINT_2F a = Clip(ref, at(half_out, -s)), b = Clip(ref, at(half_out, s));
+        const float edge = below ? std::max(a.y, b.y) - pl.center.y : std::max(a.x, b.x) - pl.center.x;
+        const float reach = LoopReach(k);
+        const D2D1_POINT_2F c1 = at(edge + reach, -s - 12), c2 = at(edge + reach, s + 12);
+        const D2D1_POINT_2F from = e.start != Marker::None ? Retreat(a, c1, MarkerLength(e.start)) : a;
+        const D2D1_POINT_2F to = e.end != Marker::None ? Retreat(b, c2, MarkerLength(e.end)) : b;
+        b_.Begin(from);
+        b_.CubicTo(c1, c2, to);
         b_.End(Role(kDgNone), color, width, dash);
-        AddMarker(b_, e.end, end, D2D1::Point2F(end.x + 10, end.y + 3), color, width);
+        AddMarker(b_, e.end, b, c2, color, width);
+        AddMarker(b_, e.start, a, c1, color, width);
         const SceneBuilder::Measured& m = edge_labels_[ei];
         if (m.layout) {
-            const D2D1_POINT_2F c = D2D1::Point2F(r + kLoopReach * 0.75f, pl.center.y);
+            const D2D1_POINT_2F c = at(edge + reach * 0.75f + (below ? m.h : m.w) / 2 - 4, 0);
             b_.Rect(D2D1::RectF(c.x - m.w / 2 - 2, c.y - m.h / 2, c.x + m.w / 2 + 2, c.y + m.h / 2), 0, Role(kDgLabelBg),
                     Role(kDgNone));
             b_.Text(m, D2D1::Point2F(c.x - m.w / 2, c.y - m.h / 2), st.color.role != kDgNone ? st.color : Role(kDgText),
@@ -1300,12 +1457,34 @@ private:
                 break;
             case Shape::Text: break;
             case Shape::Rect: b_.Rect(r, 0, fill, stroke, sw, dash); break;
+            case Shape::SmallCircle: b_.Ellipse(r, fill, stroke, sw, dash); break;
+            case Shape::FilledCircle: b_.Ellipse(r, stroke, stroke, sw, dash); break;
+            case Shape::FramedCircle:
+                b_.Ellipse(r, fill, stroke, sw, dash);
+                b_.Ellipse(D2D1::RectF(r.left + 3, r.top + 3, r.right - 3, r.bottom - 3), stroke, Role(kDgNone));
+                break;
+            case Shape::Fork: b_.Rect(r, 0, stroke, stroke, sw); break;
+            case Shape::PaperTape: {
+                // Wavy top and bottom: a sine wave, one period across.
+                const float a = pl.h / 16, w = pl.w, t = r.top + 2 * a, bt = r.bottom - 2 * a;
+                b_.Begin(D2D1::Point2F(r.left, t));
+                b_.CubicTo(D2D1::Point2F(r.left + w / 6, t - 2 * a), D2D1::Point2F(r.left + w / 3, t - 2 * a), D2D1::Point2F(cx, t));
+                b_.CubicTo(D2D1::Point2F(cx + w / 6, t + 2 * a), D2D1::Point2F(cx + w / 3, t + 2 * a), D2D1::Point2F(r.right, t));
+                b_.LineTo(D2D1::Point2F(r.right, bt));
+                b_.CubicTo(D2D1::Point2F(r.right - w / 6, bt + 2 * a), D2D1::Point2F(r.right - w / 3, bt + 2 * a), D2D1::Point2F(cx, bt));
+                b_.CubicTo(D2D1::Point2F(cx - w / 6, bt - 2 * a), D2D1::Point2F(cx - w / 3, bt - 2 * a), D2D1::Point2F(r.left, bt));
+                b_.Close();
+                b_.End(fill, stroke, sw, dash);
+                break;
+            }
             default: b_.Polygon(Outline(static_cast<int>(i)), fill, stroke, sw, dash); break;
             }
             float tx = cx - pl.text_w / 2;
             if (n.shape == Shape::Asymmetric) tx += pl.h / 8;
-            b_.Text(pl.text, D2D1::Point2F(tx, cy - pl.text_h / 2), st.color.role != kDgNone ? st.color : Role(kDgText),
-                    n.label.set ? n.label.pos : 0, n.label.set ? n.label.len : 0);
+            if (pl.text.layout) {
+                b_.Text(pl.text, D2D1::Point2F(tx, cy - pl.text_h / 2), st.color.role != kDgNone ? st.color : Role(kDgText),
+                        n.label.set ? n.label.pos : n.id_pos, n.label.set ? n.label.len : n.id_len);
+            }
         }
     }
 

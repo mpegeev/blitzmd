@@ -284,6 +284,7 @@ enum class Kind : uint8_t {
 
 struct WNode {
     float w = 0, h = 0;
+    float after = 0;          // room right of it (LayeredGraph::Node::after)
     Kind kind = Kind::Real;
     int owner = -1;           // innermost cluster it is inside
     int rank = 0;
@@ -524,6 +525,10 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
                     edge_map[p].push_back(static_cast<int>(i));
                 }
                 parts[p] = LayoutLayered(sub);
+                if (parts[p].too_large) {
+                    out.too_large = true;
+                    return out;
+                }
             }
             float along = 0, across = 0;  // along: where parts line up; across: their common extent
             for (const LayeredLayout& part : parts) across = std::max(across, sideways ? part.width : part.height);
@@ -572,6 +577,7 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
         WNode& d = nodes[static_cast<size_t>(i)];
         d.w = sideways ? s.h : s.w;
         d.h = sideways ? s.w : s.h;
+        d.after = std::clamp(s.after, 0.f, 10000.f);
         d.owner = cluster_of(i);
     }
     std::vector<int> top(static_cast<size_t>(nc), -1), bottom(static_cast<size_t>(nc), -1);
@@ -633,13 +639,17 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
     }
     auto upper = [&](size_t i) { return reversed[i] ? g.edges[i].to : g.edges[i].from; };
     auto lower = [&](size_t i) { return reversed[i] ? g.edges[i].from : g.edges[i].to; };
+    auto weight_of = [&](size_t i) {
+        const float w = g.edges[i].weight;
+        return w >= 0.01f && w <= 1000.f ? w : (w > 1000.f ? 1000.f : 1.f);
+    };
 
     // Ranks, per connected component (parallel edges merged). Clusters wrap
     // their members: top border -> member -> bottom border.
     {
         std::vector<RankEdge> all;
         for (size_t i = 0; i < ne; ++i) {
-            if (valid[i]) all.push_back({upper(i), lower(i), std::max(1, g.edges[i].minlen) * 2, g.edges[i].weight});
+            if (valid[i]) all.push_back({upper(i), lower(i), std::clamp(g.edges[i].minlen, 1, 64) * 2, weight_of(i)});
         }
         for (int v = 0; v < n; ++v) {
             const int c = cluster_of(v);
@@ -707,26 +717,64 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
             for (size_t k = 0; k < mem.size(); ++k) nodes[static_cast<size_t>(mem[k])].rank = r[k];
         }
     }
+    // What follows needs a node per rank an edge or cluster spans.
+    {
+        long long extra = 0;
+        for (size_t i = 0; i < ne; ++i) {
+            if (valid[i]) extra += std::max(0, nodes[static_cast<size_t>(lower(i))].rank - nodes[static_cast<size_t>(upper(i))].rank - 1);
+        }
+        for (int c = 0; c < nc; ++c) {
+            if (used[static_cast<size_t>(c)]) {
+                extra += 2LL * (nodes[static_cast<size_t>(bottom[static_cast<size_t>(c)])].rank -
+                                nodes[static_cast<size_t>(top[static_cast<size_t>(c)])].rank + 1);
+            }
+        }
+        if (extra > kMaxLayoutNodes) {
+            out.too_large = true;
+            return out;
+        }
+    }
 
-    // Dummies along edges spanning ranks (inside the smallest cluster
-    // holding both ends); the middle one of a labelled edge is as big as its
-    // label.
+    // Dummies along edges spanning ranks; the middle one of a labelled edge
+    // is as big as its label.
     std::vector<std::vector<int>> chains(ne);  // dummies from the upper end down
     std::vector<int> label_node(ne, -1);
     std::vector<WEdge> wedges;
+    std::vector<int> path;  // clusters an edge passes through
     for (size_t i = 0; i < ne; ++i) {
         if (!valid[i]) continue;
         const int u = upper(i), v = lower(i);
         const int ru = nodes[static_cast<size_t>(u)].rank, rv = nodes[static_cast<size_t>(v)].rank;
         const int mid = ru + (rv - ru) / 2;
         const bool labelled = g.edges[i].label_w > 0 && g.edges[i].label_h > 0;
-        const float weight = g.edges[i].weight;
-        const int owner = lca(cluster_of(u), cluster_of(v));
+        const float weight = weight_of(i);
+        // Bends belong to the clusters the edge passes through, as dagre's
+        // parentDummyChains has it: out of the upper end's clusters as they
+        // end, into the lower end's as they start. Edges leave boxes through
+        // their bottom, not their sides.
+        const int cu = cluster_of(u), cv = cluster_of(v), owner = lca(cu, cv);
+        path.clear();
+        for (int c = cu; c != owner; c = parent[static_cast<size_t>(c)]) path.push_back(c);
+        path.push_back(owner);
+        const size_t turn = path.size();
+        for (int c = cv; c != owner; c = parent[static_cast<size_t>(c)]) path.push_back(c);
+        std::reverse(path.begin() + static_cast<std::ptrdiff_t>(turn), path.end());
+        auto first_rank = [&](int c) { return nodes[static_cast<size_t>(top[static_cast<size_t>(c)])].rank; };
+        auto last_rank = [&](int c) { return nodes[static_cast<size_t>(bottom[static_cast<size_t>(c)])].rank; };
+        size_t at = 0;
+        bool ascending = true;
         int prev = u;
         for (int r = ru + 1; r < rv; ++r) {
+            if (ascending) {
+                while (path[at] != owner && last_rank(path[at]) < r) ++at;
+                if (path[at] == owner) ascending = false;
+            }
+            if (!ascending) {
+                while (at + 1 < path.size() && first_rank(path[at + 1]) <= r) ++at;
+            }
             WNode d;
             d.kind = Kind::Dummy;
-            d.owner = owner;
+            d.owner = path[at];
             d.rank = r;
             if (labelled && r == mid) {
                 d.w = sideways ? g.edges[i].label_h : g.edges[i].label_w;
@@ -765,6 +813,16 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
     for (const WEdge& e : wedges) {
         down[static_cast<size_t>(e.u)].push_back({e.v, e.weight});
         up[static_cast<size_t>(e.v)].push_back({e.u, e.weight});
+    }
+    // Cluster sides run on from rank to rank, as dagre's border nodes do:
+    // edges across them count as crossings, and they hold their box in place.
+    for (int c = 0; c < nc; ++c) {
+        for (const auto* side : {&lefts[static_cast<size_t>(c)], &rights[static_cast<size_t>(c)]}) {
+            for (size_t k = 0; k + 1 < side->size(); ++k) {
+                down[static_cast<size_t>((*side)[k])].push_back({(*side)[k + 1], 1.f});
+                up[static_cast<size_t>((*side)[k + 1])].push_back({(*side)[k], 1.f});
+            }
+        }
     }
     auto kind = [&](int v) { return nodes[static_cast<size_t>(v)].kind; };
 
@@ -843,12 +901,10 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
             bl.pos = std::min(bl.pos, d.order);
             if (d.kind == Kind::Left) bl.left = v;
             else if (d.kind == Kind::Right) bl.right = v;
-            else {
-                bl.nodes.push_back(v);
-                if (has[static_cast<size_t>(v)]) {
-                    bl.bc_sum += bary[static_cast<size_t>(v)];
-                    bl.bc_n += 1;
-                }
+            else bl.nodes.push_back(v);
+            if (has[static_cast<size_t>(v)]) {  // the sides too: a box stays where it was
+                bl.bc_sum += bary[static_cast<size_t>(v)];
+                bl.bc_n += 1;
             }
         }
         // Ancestors of every block, and the tree links (deepest first so
@@ -1013,50 +1069,41 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
         layers = std::move(best);
         number();
     }
-
-    // Rank positions. A cluster's top hugs its first members (the bottom of
-    // its rank), its bottom its last ones: tall neighbours in those ranks
-    // don't open gaps in the box.
-    {
-        float y = 0;
-        for (auto& layer : layers) {
-            float h = 0;
-            for (int v : layer) h = std::max(h, nodes[static_cast<size_t>(v)].h);
-            for (int v : layer) {
-                WNode& d = nodes[static_cast<size_t>(v)];
-                d.y = d.kind == Kind::Top ? y + h - d.h / 2 : (d.kind == Kind::Bottom ? y + d.h / 2 : y + h / 2);
-            }
-            y += h + rank_sep;
+    // Cluster tops and bottoms only matter across the ranks: a title spans
+    // its box above what is in its rank (an edge passing into the box, as in
+    // Mermaid), and only sets how wide the box is at least.
+    std::vector<std::vector<int>> xlayers(layers.size());
+    for (size_t r = 0; r < layers.size(); ++r) {
+        for (int v : layers[r]) {
+            if (kind(v) == Kind::Top || kind(v) == Kind::Bottom) continue;
+            nodes[static_cast<size_t>(v)].order = static_cast<int>(xlayers[r].size());
+            xlayers[r].push_back(v);
         }
     }
+    auto title_room = [&](int c) {  // TB/BT: the box around its title
+        const float w = g.clusters[static_cast<size_t>(c)].title_w;
+        return sideways || w <= 0 ? 0.f : w + 2 * pad;
+    };
 
     // Positions in the ranks: each node where its neighbours in the rank
     // above (or below) pull it, with long edges pulling hardest so they run
     // straight, no closer to the next node than allowed. Cluster sides pull
-    // on their own continuation so boxes stay straight.
-    auto half = [&](int v) { return nodes[static_cast<size_t>(v)].w / 2; };
+    // on their own continuation, and are made straight at the end.
+    auto half = [&](int v) { return nodes[static_cast<size_t>(v)].w / 2; };                // its left
+    auto right = [&](int v) { return nodes[static_cast<size_t>(v)].w / 2 + nodes[static_cast<size_t>(v)].after; };
     auto gap = [&](int v) { return kind(v) == Kind::Dummy ? g.edge_sep : g.node_sep; };
     auto side_band = [&](int c) { return sideways ? band(c) : 0.f; };
     auto sep = [&](int a, int b) {
         const Kind ka = kind(a), kb = kind(b);
         const bool sa = ka == Kind::Left || ka == Kind::Right, sb = kb == Kind::Left || kb == Kind::Right;
         if (ka == Kind::Left) return pad + side_band(nodes[static_cast<size_t>(a)].owner) + (sb ? 0.f : half(b));
-        if (kb == Kind::Right) return (sa ? 0.f : half(a)) + pad;
+        if (kb == Kind::Right) return (sa ? 0.f : right(a)) + pad;
         if (ka == Kind::Right && kb == Kind::Left) return g.node_sep * 0.5f;
         if (ka == Kind::Right) return half(b) + gap(b) * 0.5f;
-        if (kb == Kind::Left) return half(a) + gap(a) * 0.5f;
-        return half(a) + gap(a) / 2 + gap(b) / 2 + half(b);
+        if (kb == Kind::Left) return right(a) + gap(a) * 0.5f;
+        return right(a) + gap(a) / 2 + gap(b) / 2 + half(b);
     };
-    std::vector<std::vector<std::pair<int, float>>> pup = up, pdown = down;
-    for (int c = 0; c < nc; ++c) {
-        for (const auto* side : {&lefts[static_cast<size_t>(c)], &rights[static_cast<size_t>(c)]}) {
-            for (size_t k = 0; k + 1 < side->size(); ++k) {
-                pdown[static_cast<size_t>((*side)[k])].push_back({(*side)[k + 1], 1.f});
-                pup[static_cast<size_t>((*side)[k + 1])].push_back({(*side)[k], 1.f});
-            }
-        }
-    }
-    for (auto& layer : layers) {
+    for (auto& layer : xlayers) {
         float x = 0;
         for (size_t i = 0; i < layer.size(); ++i) {
             if (i > 0) x += sep(layer[i - 1], layer[i]);
@@ -1079,7 +1126,7 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
             float sum = 0, wsum = 0;
             for (int s = 0; s < 2; ++s) {
                 if (mode != 2 && mode != s) continue;
-                const auto& nb = s == 0 ? pup[static_cast<size_t>(v)] : pdown[static_cast<size_t>(v)];
+                const auto& nb = s == 0 ? up[static_cast<size_t>(v)] : down[static_cast<size_t>(v)];
                 if (nb.empty()) continue;
                 vw.clear();
                 float wt = 0;
@@ -1101,12 +1148,155 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
     const int passes = total > 5000 ? 2 : kCoordinatePasses;
     for (int p = 0; p < passes; ++p) {
         if (p % 2 == 0) {
-            for (int r = 1; r <= max_rank; ++r) place(layers[static_cast<size_t>(r)], 0);
+            for (int r = 1; r <= max_rank; ++r) place(xlayers[static_cast<size_t>(r)], 0);
         } else {
-            for (int r = max_rank - 1; r >= 0; --r) place(layers[static_cast<size_t>(r)], 1);
+            for (int r = max_rank - 1; r >= 0; --r) place(xlayers[static_cast<size_t>(r)], 1);
         }
     }
-    for (int r = 0; r <= max_rank; ++r) place(layers[static_cast<size_t>(r)], 2);
+    for (int r = 0; r <= max_rank; ++r) place(xlayers[static_cast<size_t>(r)], 2);
+
+    // Box sides, straight: one position per side on all the ranks it spans.
+    std::vector<float> cx0(static_cast<size_t>(nc), 0.f), cx1(static_cast<size_t>(nc), 0.f);
+    if (nc > 0) {
+        // Each side becomes one variable, starting as close to what the box
+        // holds as its ranks allow (inner boxes first), and wide enough for
+        // the title. Nodes then move apart wherever a rank's separations are
+        // broken: once pushing rightwards, once leftwards, and the mean of
+        // the two keeps every separation.
+        const int nv = total + 2 * nc;
+        std::vector<int> var(static_cast<size_t>(total));
+        std::iota(var.begin(), var.end(), 0);
+        std::vector<float> xs(static_cast<size_t>(nv), 0.f);
+        for (int v = 0; v < total; ++v) xs[static_cast<size_t>(v)] = nodes[static_cast<size_t>(v)].x;
+        auto at = [&](int v, int di) {  // the node beside v in its rank
+            const auto& layer = xlayers[static_cast<size_t>(nodes[static_cast<size_t>(v)].rank)];
+            return layer[static_cast<size_t>(nodes[static_cast<size_t>(v)].order + di)];
+        };
+        for (int c = nc - 1; c >= 0; --c) {
+            if (!used[static_cast<size_t>(c)]) continue;
+            const auto& ls = lefts[static_cast<size_t>(c)];
+            const auto& rs = rights[static_cast<size_t>(c)];
+            float l = 1e30f, r = -1e30f, lo = 1e30f, hi = -1e30f;
+            for (size_t k = 0; k < ls.size(); ++k) {
+                lo = std::min(lo, nodes[static_cast<size_t>(ls[k])].x);
+                hi = std::max(hi, nodes[static_cast<size_t>(rs[k])].x);
+                const int first = at(ls[k], 1), last = at(rs[k], -1);
+                if (first == rs[k]) continue;  // nothing of the box in this rank
+                l = std::min(l, xs[static_cast<size_t>(var[static_cast<size_t>(first)])] - sep(ls[k], first));
+                r = std::max(r, xs[static_cast<size_t>(var[static_cast<size_t>(last)])] + sep(last, rs[k]));
+            }
+            if (l > r) {
+                l = lo;
+                r = hi;
+            }
+            const float room = title_room(c);
+            if (r - l < room) {
+                const float mid = (l + r) / 2;
+                l = mid - room / 2;
+                r = mid + room / 2;
+            }
+            for (int v : ls) var[static_cast<size_t>(v)] = total + 2 * c;
+            for (int v : rs) var[static_cast<size_t>(v)] = total + 2 * c + 1;
+            xs[static_cast<size_t>(total + 2 * c)] = l;
+            xs[static_cast<size_t>(total + 2 * c + 1)] = r;
+        }
+        std::vector<std::vector<std::pair<int, float>>> succ(static_cast<size_t>(nv));
+        std::vector<int> indeg(static_cast<size_t>(nv), 0), order;
+        for (const auto& layer : xlayers) {
+            for (size_t i = 0; i + 1 < layer.size(); ++i) {
+                const int a = var[static_cast<size_t>(layer[i])], b = var[static_cast<size_t>(layer[i + 1])];
+                succ[static_cast<size_t>(a)].push_back({b, sep(layer[i], layer[i + 1])});
+                ++indeg[static_cast<size_t>(b)];
+            }
+        }
+        for (int c = 0; c < nc; ++c) {
+            if (used[static_cast<size_t>(c)] && title_room(c) > 0) {
+                succ[static_cast<size_t>(total + 2 * c)].push_back({total + 2 * c + 1, title_room(c)});
+                ++indeg[static_cast<size_t>(total + 2 * c + 1)];
+            }
+        }
+        for (int v = 0; v < nv; ++v) {
+            if (indeg[static_cast<size_t>(v)] == 0) order.push_back(v);
+        }
+        for (size_t k = 0; k < order.size(); ++k) {
+            for (const auto& [b, s] : succ[static_cast<size_t>(order[k])]) {
+                if (--indeg[static_cast<size_t>(b)] == 0) order.push_back(b);
+            }
+        }
+        // (Sibling boxes keep one order in every rank, so there is no cycle;
+        // should there be one, the sides stay as placed.)
+        if (order.size() == static_cast<size_t>(nv)) {
+            std::vector<float> right = xs, left = xs;
+            for (int a : order) {
+                for (const auto& [b, s] : succ[static_cast<size_t>(a)]) {
+                    right[static_cast<size_t>(b)] = std::max(right[static_cast<size_t>(b)], right[static_cast<size_t>(a)] + s);
+                }
+            }
+            for (auto it = order.rbegin(); it != order.rend(); ++it) {
+                for (const auto& [b, s] : succ[static_cast<size_t>(*it)]) {
+                    left[static_cast<size_t>(*it)] = std::min(left[static_cast<size_t>(*it)], left[static_cast<size_t>(b)] - s);
+                }
+            }
+            for (int v = 0; v < total; ++v) {
+                const size_t i = static_cast<size_t>(var[static_cast<size_t>(v)]);
+                nodes[static_cast<size_t>(v)].x = (right[i] + left[i]) / 2;
+            }
+        }
+        for (int c = 0; c < nc; ++c) {
+            if (!used[static_cast<size_t>(c)]) continue;
+            float l = 1e30f, r = -1e30f;
+            for (int v : lefts[static_cast<size_t>(c)]) l = std::min(l, nodes[static_cast<size_t>(v)].x);
+            for (int v : rights[static_cast<size_t>(c)]) r = std::max(r, nodes[static_cast<size_t>(v)].x);
+            cx0[static_cast<size_t>(c)] = l;
+            cx1[static_cast<size_t>(c)] = r;
+            // Titles centered in their box.
+            nodes[static_cast<size_t>(top[static_cast<size_t>(c)])].x = (l + r) / 2;
+            nodes[static_cast<size_t>(bottom[static_cast<size_t>(c)])].x = (l + r) / 2;
+        }
+    }
+
+    // Rank positions. A cluster's top hugs its first members (the bottom of
+    // its rank), its bottom its last ones: tall neighbours in those ranks
+    // don't open gaps in the box. A rank where one box ends above where
+    // another starts holds both, one above the other. Sideways, a box is at
+    // least as long as its title.
+    for (int round = 0; round < 4; ++round) {
+        float y = 0;
+        for (const auto& layer : layers) {
+            float h = 0;
+            for (int v : layer) h = std::max(h, nodes[static_cast<size_t>(v)].h);
+            for (int b : layer) {
+                if (kind(b) != Kind::Bottom) continue;
+                const size_t cb = static_cast<size_t>(nodes[static_cast<size_t>(b)].owner);
+                for (int t : layer) {
+                    if (kind(t) != Kind::Top) continue;
+                    const size_t ct = static_cast<size_t>(nodes[static_cast<size_t>(t)].owner);
+                    if (cx0[cb] < cx1[ct] && cx0[ct] < cx1[cb]) {
+                        h = std::max(h, nodes[static_cast<size_t>(b)].h + rank_sep + nodes[static_cast<size_t>(t)].h);
+                    }
+                }
+            }
+            for (int v : layer) {
+                WNode& d = nodes[static_cast<size_t>(v)];
+                d.y = d.kind == Kind::Top ? y + h - d.h / 2 : (d.kind == Kind::Bottom ? y + d.h / 2 : y + h / 2);
+            }
+            y += h + rank_sep;
+        }
+        if (!sideways) break;
+        bool grown = false;
+        for (int c = 0; c < nc; ++c) {
+            if (!used[static_cast<size_t>(c)] || g.clusters[static_cast<size_t>(c)].title_w <= 0) continue;
+            WNode& t = nodes[static_cast<size_t>(top[static_cast<size_t>(c)])];
+            WNode& b = nodes[static_cast<size_t>(bottom[static_cast<size_t>(c)])];
+            const float lack = g.clusters[static_cast<size_t>(c)].title_w + 2 * pad - ((b.y + b.h / 2) - (t.y - t.h / 2));
+            if (lack > 0.5f) {
+                t.h += lack / 2;
+                b.h += lack / 2;
+                grown = true;
+            }
+        }
+        if (!grown) break;
+    }
 
     // Bounding box, then the requested direction.
     float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f;
@@ -1114,7 +1304,7 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
         const WNode& d = nodes[static_cast<size_t>(v)];
         if (v >= n && v < ranked && !used[static_cast<size_t>(d.owner)]) continue;
         x0 = std::min(x0, d.x - d.w / 2);
-        x1 = std::max(x1, d.x + d.w / 2);
+        x1 = std::max(x1, d.x + d.w / 2 + d.after);
         y0 = std::min(y0, d.y - d.h / 2);
         y1 = std::max(y1, d.y + d.h / 2);
     }
@@ -1134,12 +1324,9 @@ LayeredLayout LayoutLayered(const LayeredGraph& g) {
     for (int v = 0; v < n; ++v) out.centers[static_cast<size_t>(v)] = map_node(v);
     for (int c = 0; c < nc; ++c) {
         if (!used[static_cast<size_t>(c)]) continue;
-        float cx0 = 1e30f, cx1 = -1e30f;
-        for (int v : lefts[static_cast<size_t>(c)]) cx0 = std::min(cx0, nodes[static_cast<size_t>(v)].x);
-        for (int v : rights[static_cast<size_t>(c)]) cx1 = std::max(cx1, nodes[static_cast<size_t>(v)].x);
         const WNode& t = nodes[static_cast<size_t>(top[static_cast<size_t>(c)])];
         const WNode& b = nodes[static_cast<size_t>(bottom[static_cast<size_t>(c)])];
-        const D2D1_POINT_2F p = map(cx0, t.y - t.h / 2), q = map(cx1, b.y + b.h / 2);
+        const D2D1_POINT_2F p = map(cx0[static_cast<size_t>(c)], t.y - t.h / 2), q = map(cx1[static_cast<size_t>(c)], b.y + b.h / 2);
         out.clusters[static_cast<size_t>(c)] =
             D2D1::RectF(std::min(p.x, q.x), std::min(p.y, q.y), std::max(p.x, q.x), std::max(p.y, q.y));
     }
