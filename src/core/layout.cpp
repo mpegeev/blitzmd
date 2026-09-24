@@ -168,7 +168,8 @@ public:
             hl.end = std::min(hl.end, object_->pos + object_->length) - object_->pos;
             local_.push_back(hl);
         }
-        const bool zoomable = dc.interactive && w_ >= kMinZoomable && h_ >= kMinZoomable;
+        // A wide, flat diagram (a left-to-right pipeline) is still one to zoom.
+        const bool zoomable = dc.interactive && std::max(w_, h_) >= kMinZoomable;
         if (zoomable && dc.drawn) RecordDrawn(dc, object_, box);
         if (zoomable && IsZoomed(*object_)) {
             dc.rt->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -331,8 +332,19 @@ private:
     float scale_, raise_, ascent_ = 0, descent_ = 0;
 };
 
-bool HasMath(const Block* b) {
-    return std::any_of(b->objects.begin(), b->objects.end(), [](const InlineObject& o) { return o.math >= 0; });
+// Formulas and diagrams shrink to the column only so far; beyond that their
+// paragraph scrolls sideways.
+bool HasWideObjects(const Block* b) {
+    return std::any_of(b->objects.begin(), b->objects.end(),
+                       [](const InlineObject& o) { return o.math >= 0 || o.diagram >= 0; });
+}
+
+// A diagram's scale: its natural size at the text's size, shrunk to the
+// column if wider (as on GitHub), but not below half, where its text would
+// be too small to read.
+float DiagramFit(float natural, float scene_w, float width) {
+    if (width >= kHugeWidth || width <= 0 || scene_w * natural <= width) return natural;
+    return std::max(width / scene_w, natural * 0.5f);
 }
 
 // Font size of a run (inline code, <small>, <big>...).
@@ -404,11 +416,12 @@ void LayoutEngine::SetDocument(Document* doc) {
 }
 
 void LayoutEngine::SetConfig(const LayoutConfig& cfg) {
-    if (cfg.font_family != cfg_.font_family) diagrams_.clear();  // their text is in it
+    const std::wstring old_family = cfg_.font_family;
     cfg_ = cfg;
     if (cfg_.font_family.empty() || (dw_ && !FontFamilyExists(dw_.Get(), cfg_.font_family.c_str()))) {
         cfg_.font_family = L"Segoe UI";
     }
+    if (cfg_.font_family != old_family) diagrams_.clear();  // their text is in it
     mono_family_ = cfg_.mono_family;
     if (dw_ && (mono_family_.empty() || !FontFamilyExists(dw_.Get(), mono_family_.c_str()))) {
         mono_family_ = FontFamilyExists(dw_.Get(), L"Cascadia Mono") ? L"Cascadia Mono" : L"Consolas";
@@ -466,6 +479,7 @@ std::shared_ptr<const DiagramScene> LayoutEngine::Diagram(int32_t index) {
     std::wstring error;
     std::shared_ptr<const DiagramScene> scene =
         LayoutMermaid(doc_->diagrams[static_cast<size_t>(index)].source, dw_.Get(), cfg_.font_family, kDiagramRefSize, &error);
+    if (!scene) scene = MermaidErrorScene(error, dw_.Get(), cfg_.font_family, kDiagramRefSize);
     diagrams_.emplace(index, scene);
     return scene;
 }
@@ -741,11 +755,9 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         }
         auto run_size = [&] { return RunFontSize(st.size, run_flags); };
         if (o.diagram >= 0) {
-            // As wide as the text makes it, shrunk to the column if wider.
             const std::shared_ptr<const DiagramScene> scene = Diagram(o.diagram);
             if (!scene) continue;  // the source stays visible
-            float k = st.size / kDiagramRefSize;
-            if (width < kHugeWidth && width > 0 && scene->width * k > width) k = width / scene->width;
+            const float k = DiagramFit(st.size / kDiagramRefSize, scene->width, width);
             auto* obj = new DiagramObject(this, &o, scene, scene->width * k, scene->height * k, spacing,
                                           st.size * MetricsOf(family).descent);
             layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, o.length});
@@ -788,8 +800,8 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, 1});
         obj->Release();
     }
-    if (width < kHugeWidth && !st.rtl && HasMath(b)) {
-        // Wider than its column even after shrinking (a formula): it starts at
+    if (width < kHugeWidth && !st.rtl && HasWideObjects(b)) {
+        // Wider than its column even after shrinking (a formula, a diagram): it starts at
         // the column's start and scrolls, rather than overflowing both sides.
         // (Trailing spaces hang past a wrapped line's end: they don't count.)
         DWRITE_TEXT_METRICS tm{};
@@ -826,7 +838,8 @@ float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width
     // Formulas count with their typeset size where known: display ones are
     // typeset for it (they change the height most), inline ones not yet
     // typeset are guessed from their source.
-    float formulas_w = 0, extra_h = 0, units = 0, breaks = 0;
+    // Diagrams fill lines of their own.
+    float formulas_w = 0, extra_h = 0, units = 0, breaks = 0, diagrams = 0;
     size_t next = 0;
     for (size_t i = 0; i < t.size(); ++i) {
         const wchar_t c = t[i];
@@ -834,9 +847,8 @@ float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width
             const InlineObject& o = b->objects[next++];
             if (o.diagram >= 0) {
                 if (const auto scene = Diagram(o.diagram)) {
-                    float k = st.size / kDiagramRefSize;
-                    if (scene->width * k > width && width > 0) k = width / scene->width;
-                    formulas_w += scene->width * k;
+                    const float k = DiagramFit(st.size / kDiagramRefSize, scene->width, width);
+                    diagrams += 1.f;
                     extra_h += std::max(0.f, scene->height * k - line_h);
                     i += o.length - 1;
                     continue;
@@ -859,7 +871,8 @@ float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width
         units += (c >= 0x1100) ? 1.f : 0.52f;
     }
     const float total = s.nowrap_w > 0 ? s.nowrap_w : units * st.size + formulas_w;
-    const float lines = std::max(1.f, std::ceil(total / std::max(width, 1.f) * 1.04f)) + breaks;
+    const float text_lines = total > 0 || diagrams == 0 ? std::max(1.f, std::ceil(total / std::max(width, 1.f) * 1.04f)) : 0.f;
+    const float lines = text_lines + diagrams + breaks;
     return lines * line_h + extra_h;
 }
 
@@ -885,7 +898,7 @@ float LayoutEngine::MeasureLeaf(Block* b, float width, bool exact) {
     }
     DWRITE_TEXT_METRICS tm{};
     s.layout->GetMetrics(&tm);
-    s.overflow_w = width < kHugeWidth && !s.style.rtl && tm.width > width + 0.5f && HasMath(b) ? tm.width : 0.f;
+    s.overflow_w = width < kHugeWidth && !s.style.rtl && tm.width > width + 0.5f && HasWideObjects(b) ? tm.width : 0.f;
     s.text_h = tm.height;
     s.width = width;
     s.exact = true;
@@ -1195,7 +1208,7 @@ float LayoutEngine::LayoutLeaf(Block* b, float x, float y, float w, const Ctx& c
         pad_l = pad_t = pad_r = pad_b = m_.code_pad * ctx.scale;
         s.gutter = GutterWidth(b, st);
         pad_l += s.gutter;
-        if (!b->note.empty()) pad_t += NoteHeight(st.size);  // a line above the code (render.cpp)
+        if (!b->note.empty()) pad_t += NoteHeight(b->note, st.size, w);  // above the code (render.cpp)
     } else if (b->type == BlockType::Heading && b->level <= 2) {
         pad_b = st.size * 0.3f + 1.f;
     } else if (b->type == BlockType::Summary) {
@@ -1666,9 +1679,21 @@ IDWriteTextLayout* LayoutEngine::LineNumberLayout(int number, float size, float*
     return it->second.layout.Get();
 }
 
-IDWriteTextLayout* LayoutEngine::LabelLayout(const std::wstring& text, float size, uint16_t weight) {
+IDWriteTextLayout* LayoutEngine::NoteLayout(const std::wstring& note, float size, float block_w) {
+    const float wrap = std::max(block_w - m_.code_pad - size * 1.3f - m_.em * 2.9f, m_.em * 4);
+    return LabelLayout(note, size * 0.85f, 400, wrap);
+}
+
+float LayoutEngine::NoteHeight(const std::wstring& note, float size, float block_w) {
+    DWRITE_TEXT_METRICS tm{};
+    IDWriteTextLayout* tl = NoteLayout(note, size, block_w);
+    if (!tl || FAILED(tl->GetMetrics(&tm))) return size * 1.6f;
+    return std::max(size * 1.6f, tm.height + size * 0.5f);
+}
+
+IDWriteTextLayout* LayoutEngine::LabelLayout(const std::wstring& text, float size, uint16_t weight, float wrap) {
     const std::wstring key = text + L"\x1F" + std::to_wstring(static_cast<int>(size * 100)) + L"\x1F" +
-                             std::to_wstring(weight);
+                             std::to_wstring(weight) + L"\x1F" + std::to_wstring(static_cast<int>(wrap));
     auto it = labels_.find(key);
     if (it != labels_.end()) return it->second.Get();
     // Distinct labels (list numbers, status texts) are unbounded: start over
@@ -1677,11 +1702,12 @@ IDWriteTextLayout* LayoutEngine::LabelLayout(const std::wstring& text, float siz
     IDWriteTextFormat* fmt = Format(cfg_.font_family, size, weight, false);
     if (!fmt) return nullptr;
     ComPtr<IDWriteTextLayout> layout;
-    if (FAILED(dw_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), fmt, kHugeWidth,
-                                     kHugeWidth, &layout))) {
+    if (FAILED(dw_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), fmt,
+                                     wrap > 0 ? static_cast<float>(static_cast<int>(wrap)) : kHugeWidth, kHugeWidth,
+                                     &layout))) {
         return nullptr;
     }
-    layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+    layout->SetWordWrapping(wrap > 0 ? DWRITE_WORD_WRAPPING_WRAP : DWRITE_WORD_WRAPPING_NO_WRAP);
     IDWriteTextLayout* raw = layout.Get();
     labels_.emplace(key, std::move(layout));
     return raw;

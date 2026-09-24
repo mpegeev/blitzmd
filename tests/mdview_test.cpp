@@ -25,6 +25,7 @@
 
 #include "core/texmath.h"
 #include "core/flags.h"
+#include "core/graphlayout.h"
 #include "core/images.h"
 #include "core/layout.h"
 #include "core/mathlayout.h"
@@ -1426,6 +1427,15 @@ int main(int argc, char** ansi_argv) {
             {L"flowchart TD\nA -- text --> B -. dotted .-> C == thick ==> D", true, nullptr},
             {L"flowchart TD\nA[\"a ] b\"] --> B", true, nullptr},
             {L"flowchart TD\nsubgraph S [Title]\nA\nend\nS --> B", true, nullptr},
+            {L"flowchart TD\nEnd((End)) --> Start", true, nullptr},  // keywords are lowercase
+            {L"flowchart TD\nClass --> Object\nStyle --> Click", true, nullptr},
+            {L"flowchart TD\nA e1@--> B\ne1@{ animate: true }", true, nullptr},
+            {L"flowchart TD\nA--oB\nC---xD", true, nullptr},
+            {L"flowchart TD\nx@{ shape: fork } --> y@{ shape: flag } --> z@{ shape: sm-circ }", true, nullptr},
+            {L"flowchart TD\nstyle A,B fill:#f00\nclass Nothing c", true, nullptr},
+            {L"flowchart XY\nA --> B", false, L"Line 1"},
+            {L"flowchart TD\nA[\"open\nB --> C\nC --> D", false, L"Line 2"},
+            {L"flowchart TD\nA@{ shape: rect\nB --> C", false, L"Line 2"},
             {L"flowchart TD\nA[unclosed --> B", false, L"2"},
             {L"flowchart TD\nA --> B\nend", false, L"3"},
             {L"flowchart TD\nA -> B", false, L"2"},
@@ -1448,24 +1458,38 @@ int main(int argc, char** ansi_argv) {
             for (int i = 0; i < n; ++i) r += s;
             return r;
         };
+        // Up to the limits (500 links, 24 levels of subgraphs) and past them.
         std::wstring chain = L"flowchart TD\n", dense = L"flowchart LR\n", nested = L"flowchart TD\n", fan = L"flowchart TD\n";
-        for (int i = 0; i < 1500; ++i) chain += L"n" + std::to_wstring(i) + L" --> n" + std::to_wstring(i + 1) + L"\n";
+        std::wstring bomb = L"flowchart TD\n", deep = L"flowchart TD\n", boxes = L"flowchart LR\n";
+        for (int i = 0; i < 500; ++i) chain += L"n" + std::to_wstring(i) + L" --> n" + std::to_wstring(i + 1) + L"\n";
         for (int i = 0; i < 60; ++i) {
             for (int j = 0; j < 60; ++j) {
-                if ((i * 7 + j * 3) % 5 == 0) dense += L"a" + std::to_wstring(i) + L" --> b" + std::to_wstring(j) + L"\n";
+                if ((i * 7 + j * 3) % 8 == 0) dense += L"a" + std::to_wstring(i) + L" --> b" + std::to_wstring(j) + L"\n";
             }
         }
         for (int i = 0; i < 40; ++i) nested += L"subgraph s" + std::to_wstring(i) + L"\nx" + std::to_wstring(i) + L" --> y" + std::to_wstring(i) + L"\n";
         nested += repeat(L"end\n", 40);
-        for (int i = 0; i < 1500; ++i) fan += L"root --> leaf" + std::to_wstring(i) + L"\n";
+        for (int i = 0; i < 500; ++i) fan += L"root --> leaf" + std::to_wstring(i) + L"\n";
+        // Long links down a chain plus links from its start to every node:
+        // bends grow with the square of the size.
+        for (int i = 0; i < 249; ++i) bomb += L"a" + std::to_wstring(i) + L" ----------> a" + std::to_wstring(i + 1) + L"\n";
+        for (int k = 2; k < 252; ++k) bomb += L"a0 --> a" + std::to_wstring(k) + L"\n";
+        // Every level of nesting linked out to the top.
+        for (int i = 0; i < 24; ++i) deep += L"subgraph d" + std::to_wstring(i) + L"\nn" + std::to_wstring(i) + L" --> top\n";
+        deep += repeat(L"end\n", 24);
+        // Many boxes linked across each other.
+        for (int i = 0; i < 60; ++i) {
+            boxes += L"subgraph b" + std::to_wstring(i) + L"\np" + std::to_wstring(i) + L" --> q" + std::to_wstring(i) + L"\nend\n";
+            boxes += L"q" + std::to_wstring(i) + L" --> p" + std::to_wstring((i * 7 + 3) % 60) + L"\n";
+        }
         const std::wstring hostile[] = {
-            chain, dense, nested, fan,
+            chain, dense, nested, fan, bomb, deep, boxes,
             L"flowchart TD\nA[" + std::wstring(3900, L'x') + L"] --> B",
-            L"flowchart TD\n" + repeat(L"A --> A\n", 2000),
-            L"flowchart TD\n" + repeat(L"A & B & C & D & E --> F & G & H & I & J\n", 100),
+            L"flowchart TD\n" + repeat(L"A --> A\n", 500),
+            L"flowchart TD\n" + repeat(L"A & B & C & D & E --> F & G & H & I & J\n", 20),
             L"flowchart TD\n" + repeat(L"subgraph X\n", 30) + L"A --> B\n" + repeat(L"end\n", 30),
-            L"flowchart TD\n" + repeat(L"classDef c fill:#f00\n", 3000),
-            L"flowchart TD\nA" + repeat(L" --> A", 3000),
+            L"flowchart TD\n" + repeat(L"classDef c fill:#f00\n", 2000),
+            L"flowchart TD\nA" + repeat(L" --> A", 500),
             L"flowchart TD\n" + repeat(L"A[\"a\"]:::x:::y:::z --- B\n", 500),
             std::wstring(L"flowchart TD\n") + std::wstring(70000, L'A'),
         };
@@ -1549,6 +1573,85 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated flowcharts in %.0f ms\n", iterations / 4, NowMs() - g0);
+        // The layered layout on random clustered graphs: members inside their
+        // box, nothing else in it, boxes apart unless nested.
+        const double c0 = NowMs();
+        for (int it = 0; it < iterations; ++it) {
+            LayeredGraph g;
+            g.dir = static_cast<RankDir>(rnd() % 4);
+            const int nc = static_cast<int>(rnd() % 5);
+            for (int c = 0; c < nc; ++c) {
+                LayeredGraph::Cluster cl;
+                cl.parent = c > 0 && rnd() % 3 == 0 ? static_cast<int>(rnd() % static_cast<uint32_t>(c)) : -1;
+                cl.title_w = rnd() % 2 ? static_cast<float>(40 + rnd() % 200) : 0.f;
+                cl.title_h = cl.title_w > 0 ? 20.f : 0.f;
+                g.clusters.push_back(cl);
+            }
+            const int n = 2 + static_cast<int>(rnd() % 12);
+            for (int i = 0; i < n; ++i) {
+                LayeredGraph::Node nd;
+                nd.w = static_cast<float>(30 + rnd() % 80);
+                nd.h = static_cast<float>(20 + rnd() % 40);
+                nd.cluster = nc > 0 && rnd() % 2 ? static_cast<int>(rnd() % static_cast<uint32_t>(nc)) : -1;
+                if (rnd() % 8 == 0) nd.after = 40;
+                g.nodes.push_back(nd);
+            }
+            for (int i = static_cast<int>(rnd() % static_cast<uint32_t>(2 * n)); i > 0; --i) {
+                LayeredGraph::Edge e;
+                e.from = static_cast<int>(rnd() % static_cast<uint32_t>(n));
+                e.to = static_cast<int>(rnd() % static_cast<uint32_t>(n));
+                if (e.from == e.to) continue;
+                if (rnd() % 4 == 0) {
+                    e.label_w = 40;
+                    e.label_h = 18;
+                }
+                g.edges.push_back(e);
+            }
+            const LayeredLayout l = LayoutLayered(g);
+            auto in = [&](int v, int c) {
+                for (int k = g.nodes[static_cast<size_t>(v)].cluster; k >= 0; k = g.clusters[static_cast<size_t>(k)].parent) {
+                    if (k == c) return true;
+                }
+                return false;
+            };
+            auto nested = [&](int a, int b) {  // b inside a
+                for (int k = b; k >= 0; k = g.clusters[static_cast<size_t>(k)].parent) {
+                    if (k == a) return true;
+                }
+                return false;
+            };
+            auto meet = [](const D2D1_RECT_F& a, const D2D1_RECT_F& b) {
+                return a.left < b.right - 0.5f && b.left < a.right - 0.5f && a.top < b.bottom - 0.5f && b.top < a.bottom - 0.5f;
+            };
+            auto empty = [](const D2D1_RECT_F& r) { return r.right <= r.left || r.bottom <= r.top; };
+            std::string bad;
+            for (int c = 0; c < nc && bad.empty(); ++c) {
+                const D2D1_RECT_F& box = l.clusters[static_cast<size_t>(c)];
+                if (empty(box)) continue;
+                for (int v = 0; v < n && bad.empty(); ++v) {
+                    const D2D1_POINT_2F p = l.centers[static_cast<size_t>(v)];
+                    const float hw = g.nodes[static_cast<size_t>(v)].w / 2, hh = g.nodes[static_cast<size_t>(v)].h / 2;
+                    const D2D1_RECT_F r = D2D1::RectF(p.x - hw, p.y - hh, p.x + hw, p.y + hh);
+                    if (in(v, c)) {
+                        if (r.left < box.left - 0.5f || r.right > box.right + 0.5f || r.top < box.top - 0.5f || r.bottom > box.bottom + 0.5f) {
+                            bad = "a member outside its box";
+                        }
+                    } else if (meet(r, box)) {
+                        bad = "a node inside another box";
+                    }
+                }
+                for (int d = c + 1; d < nc && bad.empty(); ++d) {
+                    const D2D1_RECT_F& other = l.clusters[static_cast<size_t>(d)];
+                    if (!empty(other) && !nested(c, d) && !nested(d, c) && meet(box, other)) bad = "boxes overlap";
+                }
+            }
+            if (!bad.empty()) {
+                std::printf("FAIL: layout of random graph %d (dir %d, %d nodes, %d clusters): %s\n", it, static_cast<int>(g.dir), n, nc,
+                            bad.c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d random clustered layouts checked in %.0f ms\n", iterations, NowMs() - c0);
         std::printf(failures ? "mermaid FAILED\n" : "mermaid OK\n");
         return failures ? 1 : 0;
     }

@@ -176,8 +176,12 @@ RichText ParseLabel(std::wstring_view raw, bool markdown) {
             const size_t len = dbl ? 2 : 1;
             // A marker next to a letter or space on the right side opens, the
             // mirror closes; stray markers stay text.
-            const bool can_open = i + len < raw.size() && !IsSpace(raw[i + len]);
-            const bool can_close = i > 0 && !IsSpace(raw[i - 1]);
+            bool can_open = i + len < raw.size() && !IsSpace(raw[i + len]);
+            bool can_close = i > 0 && !IsSpace(raw[i - 1]);
+            if (c == L'_') {  // not inside words (snake_case_name), as in CommonMark
+                if (i > 0 && std::iswalnum(raw[i - 1])) can_open = false;
+                if (i + len < raw.size() && std::iswalnum(raw[i + len])) can_close = false;
+            }
             bool& flag = dbl ? w.bold : w.italic;
             if ((flag && can_close) || (!flag && can_open)) {
                 const std::wstring_view rest = raw.substr(i + len);

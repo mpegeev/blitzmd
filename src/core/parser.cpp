@@ -551,7 +551,7 @@ void Builder::FinalizeCode(Block* b) {
         // A diagram drawn over its source (copy and search see the source);
         // one mdview can't draw stays code with a note saying why.
         std::wstring error;
-        if (!Trim(b->text).empty() && CheckMermaid(b->text, &error)) {
+        if (CheckMermaid(b->text, &error)) {
             std::wstring source = std::move(b->text);
             b->text.clear();
             b->runs.clear();
@@ -564,7 +564,7 @@ void Builder::FinalizeCode(Block* b) {
             b->objects.push_back(obj);
             for (wchar_t& c : source) {
                 if (c == L'\n') c = kLineBreak;
-                else if (c == L'\r' || c == L'\t') c = L' ';
+                else if (c == L'\r') c = L' ';
             }
             AppendToLeaf(b, source, 0, -1);
             return;

@@ -274,7 +274,7 @@ DialogTemplate SettingsDialog::BuildTemplate() {
     label(y, Tr(L"Z&oom, %:", L"Масшта&б, %:"));
     number(y, kIdZoom);
     y += Row;
-    label(y, Tr(L"Text &width:", L"Шир&ина текста:"));
+    label(y, Tr(L"Text &width:", L"Ширина т&екста:"));
     number(y, kIdWidth);
     constexpr short FX = CX + NW + 6;
     t.Add(kButton, Tr(L"Full win&dow width", L"На &всю ширину окна"), kIdFullWidth, BS_AUTOCHECKBOX | WS_TABSTOP, FX,
@@ -298,7 +298,7 @@ DialogTemplate SettingsDialog::BuildTemplate() {
     check(RX, y, RW, kIdRemote, Tr(L"&Images from the internet", L"&Изображения из интернета"));
     check(RX, y, RW, kIdEmoji, Tr(L"&Emoji codes like :smile:", L"&Эмодзи-коды вида :smile:"));
     check(RX, y, RW, kIdMath, Tr(L"Math formula&s: $…$", L"&Формулы: $…$"));
-    check(RX, y, RW, kIdMermaid, Tr(L"Mermaid dia&grams", L"&Диаграммы Mermaid"));
+    check(RX, y, RW, kIdMermaid, Tr(L"Mermaid diagrams as &pictures", L"Диа&граммы Mermaid"));
 
     y = static_cast<short>(std::max(y, left_end) + 10);
     t.Add(kButton, Tr(L"&Reset", L"&Сбросить"), kIdReset, BS_PUSHBUTTON | WS_TABSTOP, M, y, 56, 14);

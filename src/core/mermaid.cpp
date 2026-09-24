@@ -14,7 +14,11 @@ namespace mermaid {
 // Source
 // ---------------------------------------------------------------------------
 
-bool IsWordChar(wchar_t c) { return c == L'_' || std::iswalnum(c) || c >= 0x80; }
+bool IsWordChar(wchar_t c) {
+    // Non-ASCII letters too, but not the Unicode spaces (no-break, em...).
+    if (c >= 0x80) return c != 0xA0 && c != 0x3000 && c != 0xFEFF && !(c >= 0x2000 && c <= 0x200B);
+    return c == L'_' || std::iswalnum(c);
+}
 
 Source Preprocess(std::wstring_view text) {
     Source src;
@@ -47,6 +51,8 @@ Source Preprocess(std::wstring_view text) {
                     t = t.substr(1, t.size() - 2);
                 }
                 src.title = t;
+                src.title_pos = static_cast<uint32_t>(t.data() - text.data());
+                src.title_len = static_cast<uint32_t>(t.size());
             }
             if (after == p) break;
             p = after;
@@ -103,15 +109,17 @@ bool Cursor::EatStr(std::wstring_view str) {
     return true;
 }
 
-bool Cursor::EatKeyword(std::wstring_view word) {
+bool Cursor::EatKeyword(std::wstring_view word, bool match_case) {
     const std::wstring_view r = Rest();
-    if (r.size() < word.size() || !EqualsNoCase(r.substr(0, word.size()), word)) return false;
+    if (r.size() < word.size()) return false;
+    if (match_case ? r.substr(0, word.size()) != word : !EqualsNoCase(r.substr(0, word.size()), word)) return false;
     if (r.size() > word.size() && (IsWordChar(r[word.size()]) || r[word.size()] == L'-')) return false;
     pos_ += word.size();
     return true;
 }
 
 std::wstring FormatError(std::wstring_view source, const ParseError& e) {
+    if (e.pos == kNoLine) return e.message;
     const size_t p = std::min(e.pos, source.size());
     const size_t line = 1 + static_cast<size_t>(std::count(source.begin(), source.begin() + static_cast<std::ptrdiff_t>(p), L'\n'));
     return std::wstring(Tr(L"Line ", L"Строка ")) + std::to_wstring(line) + L": " + e.message;
@@ -382,11 +390,12 @@ D2D1_POINT_2F ClipEllipse(D2D1_POINT_2F c, float rx, float ry, D2D1_POINT_2F p) 
     const float dx = p.x - c.x, dy = p.y - c.y;
     if ((dx == 0 && dy == 0) || rx <= 0 || ry <= 0) return c;
     const float t = 1.f / std::sqrt((dx / rx) * (dx / rx) + (dy / ry) * (dy / ry));
-    return D2D1::Point2F(c.x + dx * std::min(t, 1.f), c.y + dy * std::min(t, 1.f));
+    return D2D1::Point2F(c.x + dx * t, c.y + dy * t);
 }
 
 D2D1_POINT_2F ClipPolygon(D2D1_POINT_2F c, const std::vector<D2D1_POINT_2F>& poly, D2D1_POINT_2F p) {
-    // The crossing of center -> p with the polygon farthest along it.
+    // The crossing of the ray center -> p with the polygon farthest along it
+    // (p may be inside: the ray runs on to the outline, as for the others).
     float best = -1;
     const float dx = p.x - c.x, dy = p.y - c.y;
     for (size_t i = 0; i < poly.size(); ++i) {
@@ -396,7 +405,7 @@ D2D1_POINT_2F ClipPolygon(D2D1_POINT_2F c, const std::vector<D2D1_POINT_2F>& pol
         if (std::fabs(den) < 1e-9f) continue;
         const float t = ((a.x - c.x) * ey - (a.y - c.y) * ex) / den;  // along center -> p
         const float u = ((a.x - c.x) * dy - (a.y - c.y) * dx) / den;  // along the side
-        if (t >= 0 && t <= 1.0001f && u >= -0.0001f && u <= 1.0001f) best = std::max(best, t);
+        if (t >= 0 && u >= -0.0001f && u <= 1.0001f) best = std::max(best, t);
     }
     if (best < 0) return c;
     return D2D1::Point2F(c.x + dx * best, c.y + dy * best);
@@ -545,6 +554,24 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
             return nullptr;
         }
     });
+}
+
+std::shared_ptr<DiagramScene> MermaidErrorScene(const std::wstring& error, IDWriteFactory* dw,
+                                                const std::wstring& family, float size) {
+    try {
+        SceneBuilder b(dw, family, size);
+        RichText t;
+        t.text = std::wstring(Tr(L"Mermaid diagram not shown: ", L"Диаграмма Mermaid не показана: ")) + error;
+        const SceneBuilder::Measured m = b.Measure(t, 0, false, 0.875f, false);
+        if (!m.layout) return nullptr;
+        const float pad = 8;
+        b.Rect(D2D1::RectF(0.5f, 0.5f, m.w + 2 * pad + 0.5f, m.h + 2 * pad + 0.5f), 4, Role(kDgNoteFill),
+               Role(kDgNoteStroke));
+        b.Text(m, D2D1::Point2F(pad, pad), Role(kDgNoteText));
+        return b.Finish(m.w + 2 * pad + 1, m.h + 2 * pad + 1);
+    } catch (const std::bad_alloc&) {
+        return nullptr;
+    }
 }
 
 }  // namespace mdv
