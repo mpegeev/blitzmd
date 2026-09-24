@@ -354,6 +354,7 @@ SceneBuilder::Measured SceneBuilder::Measure(const RichText& t, float wrap, bool
         const DWRITE_TEXT_RANGE r{s.start, s.length};
         if (s.bold) m.layout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, r);
         if (s.italic) m.layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, r);
+        if (s.underline) m.layout->SetUnderline(TRUE, r);
     }
     DWRITE_TEXT_METRICS tm{};
     m.layout->GetMetrics(&tm);
@@ -426,6 +427,8 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
     };
     std::vector<Stroke> strokes;
     auto stroke_style = [&](uint8_t dash, float width) -> ID2D1StrokeStyle* {
+        // Gaps under a pixel look solid anyway, and cost dearly to draw.
+        if (k < 0.2f) dash = 0;
         for (const Stroke& st : strokes) {
             if (st.dash == dash && st.width == width) return st.style.Get();
         }

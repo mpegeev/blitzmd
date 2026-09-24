@@ -435,6 +435,7 @@ float MarkerLength(Marker m) {
     case Marker::Diamond:
     case Marker::OpenDiamond: return 18.f;
     case Marker::LineArrow: return 1.f;
+    case Marker::Lollipop: return 12.f;
     default: return 0.f;
     }
 }
@@ -483,6 +484,11 @@ void AddMarker(SceneBuilder& b, Marker m, D2D1_POINT_2F tip, D2D1_POINT_2F from,
         b.LineTo(at(10, -6));
         b.End(Role(kDgNone), color, stroke_width);
         break;
+    case Marker::Lollipop: {
+        const D2D1_POINT_2F c = at(6.f, 0);
+        b.Ellipse(D2D1::RectF(c.x - 6, c.y - 6, c.x + 6, c.y + 6), Role(kDgPage), color, stroke_width);
+        break;
+    }
     default: break;
     }
 }
@@ -497,7 +503,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence };
+enum class Kind { Unknown, Flowchart, Sequence, Class };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -510,6 +516,7 @@ Kind DetectKind(const Source& src, std::wstring* name) {
         return Kind::Flowchart;
     }
     if (EqualsNoCase(*name, L"sequenceDiagram")) return Kind::Sequence;
+    if (EqualsNoCase(*name, L"classDiagram") || EqualsNoCase(*name, L"classDiagram-v2")) return Kind::Class;
     return Kind::Unknown;
 }
 
@@ -543,6 +550,7 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         switch (DetectKind(src, &name)) {
         case Kind::Flowchart: Flowchart(src, nullptr); return true;
         case Kind::Sequence: Sequence(src, nullptr); return true;
+        case Kind::Class: ClassDiagram(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -559,6 +567,7 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         switch (DetectKind(src, &name)) {
         case Kind::Flowchart: return Flowchart(src, &builder);
         case Kind::Sequence: return Sequence(src, &builder);
+        case Kind::Class: return ClassDiagram(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;

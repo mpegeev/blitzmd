@@ -42,7 +42,10 @@ autolink `www.` / `https://` / e-mail), изображения, HTML-сущно�
     в подписях. Раскладка — послойная (Sugiyama: ранги сетевым симплексом, минимизация пересечений,
     выравнивание узлов);
   - sequenceDiagram: участники и актёры, все виды стрелок, активации, заметки, `autonumber`, блоки
-    `loop` / `alt` / `opt` / `par` / `critical` / `break` / `rect`, группы `box`, `create` / `destroy`.
+    `loop` / `alt` / `opt` / `par` / `critical` / `break` / `rect`, группы `box`, `create` / `destroy`;
+  - classDiagram: классы с аннотациями (`<<interface>>`), полями и методами (видимость, `$` / `*`,
+    обобщения `List~int~`), все виды связей с кратностями и подписями, lollipop-интерфейсы,
+    заметки, `namespace`, `direction`, стили.
   Диаграммы масштабируются и открываются на всё окно, как картинки; копирование даёт исходный
   текст, поиск подсвечивает подписи. Неподдержанный тип или ошибка — блок кода с пометкой о причине.
   Темы Mermaid (`%%{init: {theme: ...}}%%`, `themeVariables`) не применяются: цвета всегда
@@ -212,6 +215,7 @@ out\build\x64-release\emoji_test.exe          # таблица эмодзи-ко
 & $t math samples\gfm\18-math.md              # формулы: разбор TeX, вёрстка, фаззинг
 & $t mermaid samples\gfm\20-mermaid-flowchart.md  # диаграммы: разбор, вёрстка, враждебный ввод, фаззинг
 & $t mermaid samples\gfm\21-mermaid-sequence.md   # то же для диаграмм последовательностей
+& $t mermaid samples\gfm\22-mermaid-class.md      # и для диаграмм классов
 & $t mmd diagram.mmd out.png [--dark]          # одна диаграмма Mermaid в PNG
 & $t tex "\frac{a}{b}"                        # дерево разобранной формулы
 ```
@@ -253,7 +257,7 @@ src/core/layout.*     разметка: DirectWrite, точная у видим�
 src/core/render.*     отрисовка Direct2D (темы GitHub Primer)
 src/core/images.*     WIC, SVG, фоновая загрузка по http(s) с кешем
 src/core/zoom.*       масштаб картинок и диаграмм в их рамке и на всё окно, кнопки масштаба
-src/core/mermaid*     диаграммы Mermaid: разбор (flowchart, sequence), построение сцены
+src/core/mermaid*     диаграммы Mermaid: разбор (flowchart, sequence, class), построение сцены
 src/core/graphlayout.* послойная раскладка графов (Sugiyama) с кластерами
 src/core/diagram.*    сцена диаграммы: фигуры, пути, текст DirectWrite; отрисовка по теме
 src/core/viewer.*     окно Lister: прокрутка, выделение, ссылки, поиск, меню

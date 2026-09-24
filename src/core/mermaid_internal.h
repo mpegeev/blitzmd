@@ -100,6 +100,7 @@ enum class Marker : uint8_t {
     Diamond,         // filled diamond (composition)
     OpenDiamond,     // hollow diamond (aggregation)
     LineArrow,       // open "V" (dependency)
+    Lollipop,        // class diagrams: hollow circle (a provided interface)
 };
 float MarkerLength(Marker m);
 // Draws a marker whose tip is at `tip`, pointing away from `from`.
@@ -121,5 +122,6 @@ D2D1_POINT_2F Retreat(D2D1_POINT_2F p, D2D1_POINT_2F from, float d);
 // Diagram types.
 std::shared_ptr<DiagramScene> Flowchart(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> Sequence(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> ClassDiagram(const Source& src, SceneBuilder* builder);
 
 }  // namespace mdv::mermaid

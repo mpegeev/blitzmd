@@ -1455,6 +1455,18 @@ int main(int argc, char** ansi_argv) {
             {L"sequenceDiagram\nA=>B: x", false, L"2"},
             {L"sequenceDiagram\nNote above A: x", false, L"2"},
             {L"sequenceDiagram\nelse x", false, L"2"},
+            {L"classDiagram\nAnimal <|-- Duck\nAnimal : +int age\nAnimal: +isMammal() bool$", true, nullptr},
+            {L"classDiagram\nclass Square~Shape~{\n  int id\n  List~int~ position\n  getPoints() List~int~\n}", true, nullptr},
+            {L"classDiagram\nA \"1\" --> \"*\" B : has\nC ..|> D\nE --* F\nG o-- H\nI ()-- J\nK <|--|> L", true, nullptr},
+            {L"classDiagram\nnamespace N {\nclass A\nclass B\n}\nnote for A \"x\"\nnote \"y\"\n<<interface>> A", true, nullptr},
+            {L"classDiagram\ndirection LR\nclass Note\nClass --> Note\nclassDef c fill:#f9f\ncssClass \"Note\" c\nstyle Class fill:#fff", true, nullptr},
+            {L"classDiagram\nclass `Odd name!`\nclass A[\"A label\"]", true, nullptr},
+            {L"classDiagram\nA..B\nclassK..>classL\nclass Shape <<interface>> {\n+draw()\n}\nnamespace N { class Z }", true, nullptr},
+            {L"classDiagram\nA : +foo ( int x )$ int\nnote for Ghost \"alone\"\nstyle Ghost fill:#f00", true, nullptr},
+            {L"classDiagram\nclass A {\n+x", false, L"Line 2"},
+            {L"classDiagram\nA <-> B", false, L"Line 2"},
+            {L"classDiagram\n}", false, L"Line 2"},
+            {L"classDiagram\nnote for A x", false, L"Line 2"},
             {L"gitGraph\ncommit", false, L"gitGraph"},
             {L"", false, nullptr},
             {L"not a diagram", false, nullptr},
@@ -1518,6 +1530,26 @@ int main(int argc, char** ansi_argv) {
             L"sequenceDiagram\n" + repeat(L"A->>+B: x\n", 1000) + repeat(L"B-->>-A: y\n", 1000),
             L"sequenceDiagram\nA->>B: " + std::wstring(3900, L'x'),
             L"sequenceDiagram\n" + repeat(L"Note over A,B: " + std::wstring(200, L'n') + L"\n", 500),
+            [&] {  // a chain of classes, and links from the first to all: too many bends
+                std::wstring s = L"classDiagram\n";
+                for (int i = 0; i < 249; ++i) s += L"C" + std::to_wstring(i) + L" <|-- C" + std::to_wstring(i + 1) + L"\n";
+                for (int k = 2; k < 252; ++k) s += L"C0 --> C" + std::to_wstring(k) + L"\n";
+                return s;
+            }(),
+            [&] {  // many classes linked across namespaces
+                std::wstring s = L"classDiagram\n";
+                for (int i = 0; i < 40; ++i) {
+                    s += L"namespace N" + std::to_wstring(i) + L" {\nclass A" + std::to_wstring(i) + L"\nclass B" + std::to_wstring(i) + L"\n}\n";
+                    s += L"A" + std::to_wstring(i) + L" --> B" + std::to_wstring((i * 7 + 3) % 40) + L" : x\n";
+                }
+                return s;
+            }(),
+            L"classDiagram\nclass A {\n" + repeat(L"+method(List~List~int~~ x) Map~K~$\n", 1500) + L"}",
+            L"classDiagram\n" + repeat(L"namespace N {\n", 30) + L"class A\n" + repeat(L"}\n", 30),
+            L"classDiagram\n" + repeat(L"A --> A : self\n", 400),
+            L"classDiagram\nA : " + std::wstring(3900, L'~'),  // (no recursion per ~)
+            L"classDiagram\nclass A\n" + repeat(L"note for A \"n\"\n", 600),
+            L"classDiagram\n" + repeat(L"note \"" + std::wstring(300, L'n') + L"\"\n", 100),
         };
         for (const std::wstring& h : hostile) {
             const double t0 = NowMs();
@@ -1655,6 +1687,53 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated sequence diagrams in %.0f ms\n", iterations / 4, NowMs() - q0);
+        // Well-formed random class diagrams.
+        static const wchar_t* kRelations[] = {L"<|--", L"*--", L"o--", L"-->", L"--", L"..>", L"..|>", L"..",
+                                              L"--|>", L"--*", L"--o", L"<--", L"()--", L"<|--|>"};
+        static const wchar_t* kMembers[] = {L"+int id", L"-String name$", L"#List~int~ items", L"~helper()",
+                                            L"+run(int a, List~T~ b) bool*", L"getAll() List~List~int~~$", L"<<interface>>"};
+        const double k0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            std::wstring src = std::wstring(L"classDiagram\n") + ((rnd() & 3) == 0 ? L"direction LR\n" : L"");
+            const int count = 1 + static_cast<int>(rnd() % 12);
+            int open = 0;
+            for (int k = 0; k < count * 2; ++k) {
+                const std::wstring a = L"C" + std::to_wstring(rnd() % count), b = L"C" + std::to_wstring(rnd() % count);
+                switch (rnd() % 9) {
+                case 0:
+                    if (open < 3) {
+                        src += L"namespace NS" + std::to_wstring(k) + L" {\n";
+                        ++open;
+                    }
+                    break;
+                case 1:
+                    if (open > 0) {
+                        src += L"}\n";
+                        --open;
+                    }
+                    break;
+                case 2:
+                    src += L"class " + a + ((rnd() & 1) ? L"~T~" : L"") + L" {\n";
+                    for (int m = static_cast<int>(rnd() % 4); m > 0; --m) src += std::wstring(kMembers[rnd() % std::size(kMembers)]) + L"\n";
+                    src += L"}\n";
+                    break;
+                case 3: src += a + L" : " + kMembers[rnd() % std::size(kMembers)] + L"\n"; break;
+                case 4: src += L"note for " + a + L" \"note " + std::to_wstring(k) + L"\"\n"; break;
+                default:
+                    src += a + ((rnd() & 3) == 0 ? L" \"1\" " : L" ") + kRelations[rnd() % std::size(kRelations)] +
+                           ((rnd() & 3) == 0 ? L" \"*\" " : L" ") + b + ((rnd() & 1) ? L" : label" : L"") + L"\n";
+                    break;
+                }
+            }
+            while (open-- > 0) src += L"}\n";
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 200)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated class diagrams in %.0f ms\n", iterations / 4, NowMs() - k0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();
