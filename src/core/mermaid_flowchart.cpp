@@ -1501,10 +1501,51 @@ private:
 
 }  // namespace
 
+namespace {
+
+// Whether the layout will fit its budget, found when the document is read
+// (a diagram too large stays code): every node and subgraph in one layered
+// graph, sizes aside, as they don't change the ranks.
+void CheckBudget(const Parser& p) {
+    LayeredGraph g;
+    g.dir = p.dir;
+    for (const Cluster& c : p.clusters) {
+        LayeredGraph::Cluster gc;
+        gc.parent = c.parent;
+        g.clusters.push_back(gc);
+    }
+    std::vector<int> member(p.clusters.size(), -1);  // a node inside each subgraph
+    for (size_t i = 0; i < p.nodes.size(); ++i) {
+        LayeredGraph::Node n;
+        n.w = n.h = 10;
+        n.cluster = p.nodes[i].cluster;
+        g.nodes.push_back(n);
+        for (int c = p.nodes[i].cluster; c >= 0 && member[static_cast<size_t>(c)] < 0; c = p.clusters[static_cast<size_t>(c)].parent) {
+            member[static_cast<size_t>(c)] = static_cast<int>(i);
+        }
+    }
+    auto end = [&](const Ref& r) { return r.cluster ? member[static_cast<size_t>(r.index)] : r.index; };
+    for (const Edge& e : p.edges) {
+        const int a = end(e.from), b = end(e.to);
+        if (a < 0 || b < 0 || a == b) continue;
+        LayeredGraph::Edge ge;
+        ge.from = a;
+        ge.to = b;
+        ge.minlen = e.length;
+        g.edges.push_back(ge);
+    }
+    if (LayoutLayered(g, true).too_large) TooLarge();
+}
+
+}  // namespace
+
 std::shared_ptr<DiagramScene> Flowchart(const Source& src, SceneBuilder* builder) {
     Parser p(src);
     p.Parse();
-    if (!builder) return nullptr;
+    if (!builder) {
+        CheckBudget(p);
+        return nullptr;
+    }
     Builder b(p, *builder, src);
     return b.Build();
 }

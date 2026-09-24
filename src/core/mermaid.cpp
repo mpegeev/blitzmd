@@ -568,7 +568,9 @@ std::shared_ptr<DiagramScene> MermaidErrorScene(const std::wstring& error, IDWri
         b.Rect(D2D1::RectF(0.5f, 0.5f, m.w + 2 * pad + 0.5f, m.h + 2 * pad + 0.5f), 4, Role(kDgNoteFill),
                Role(kDgNoteStroke));
         b.Text(m, D2D1::Point2F(pad, pad), Role(kDgNoteText));
-        return b.Finish(m.w + 2 * pad + 1, m.h + 2 * pad + 1);
+        auto scene = b.Finish(m.w + 2 * pad + 1, m.h + 2 * pad + 1);
+        if (scene) scene->error = true;
+        return scene;
     } catch (const std::bad_alloc&) {
         return nullptr;
     }

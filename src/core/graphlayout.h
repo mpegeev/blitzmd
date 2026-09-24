@@ -56,7 +56,8 @@ struct LayeredLayout {
 constexpr int kMaxLayoutNodes = 40000;
 
 // Lays out `g`; the work is bounded, so huge graphs still finish (with a
-// plainer layout) or give up (too_large).
-LayeredLayout LayoutLayered(const LayeredGraph& g);
+// plainer layout) or give up (too_large). `ranks_only`: only finds out
+// whether it would give up (the node sizes don't matter for that).
+LayeredLayout LayoutLayered(const LayeredGraph& g, bool ranks_only = false);
 
 }  // namespace mdv
