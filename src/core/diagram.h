@@ -40,7 +40,16 @@ enum DiagramRole : uint8_t {
     kDgCategory,        // + n: categorical colors (pie slices), blended over the page
     kDgCategorySolid = kDgCategory + 12,  // + n: the same, not blended (the pie's legend)
     kDgFillType = kDgCategorySolid + 12,  // + n: Mermaid's fillType0..7 (journey sections)
-    kDgRoleCount = kDgFillType + 8,
+    kDgScale = kDgFillType + 8,        // + n: Mermaid's cScale0..11 (timeline, mindmap sections)
+    kDgScaleText = kDgScale + 12,      // + n: text on them
+    kDgScaleInv = kDgScaleText + 12,   // + n: their inverse (the line under a box)
+    kDgGit = kDgScaleInv + 12,         // + n: git0..7 (the mindmap's root)
+    kDgGitText = kDgGit + 8,           // + n: text on them
+    kDgPlot = kDgGitText + 8,          // + n: xychart plot colors (10)
+    kDgQuadrant = kDgPlot + 10,        // + n: quadrant chart fills (4)
+    kDgQuadrantBorder = kDgQuadrant + 4,
+    kDgScaleBright,                    // + n: cScale at 120% brightness (timeline events)
+    kDgRoleCount = kDgScaleBright + 12,
 };
 
 struct DgColor {
@@ -82,9 +91,10 @@ struct DiagramScene {
     };
     struct Text {
         ComPtr<IDWriteTextLayout> layout;
-        D2D1_POINT_2F origin{};         // top left of the layout
-        float w = 0, h = 0;
+        D2D1_POINT_2F origin{};         // top left of the layout (of its box, turned)
+        float w = 0, h = 0;             // (the box's, turned)
         DgColor color;
+        bool up = false;                // turned to read upwards (a vertical axis's title)
         uint32_t src_start = 0, src_length = 0;  // its characters in the source
     };
     struct Item {
@@ -135,6 +145,9 @@ public:
     Measured Measure(const RichText& t, float wrap = 0, bool bold = false, float scale = 1.f, bool center = true);
     // Adds measured text with its top left at `origin`.
     void Text(Measured m, D2D1_POINT_2F origin, DgColor color, uint32_t src_start = 0, uint32_t src_length = 0);
+    // The same turned to read upwards, `origin` the top left of its box
+    // (m.h wide, m.w high).
+    void TextUp(Measured m, D2D1_POINT_2F origin, DgColor color, uint32_t src_start = 0, uint32_t src_length = 0);
     // Height of one line of text at `scale`.
     float LineHeight(float scale = 1.f) const { return size_ * 1.5f * scale; }
 
