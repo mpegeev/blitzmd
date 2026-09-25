@@ -1530,17 +1530,22 @@ int main(int argc, char** ansi_argv) {
             {L"timeline\ntitle T\n2002 : A : B\n     : C\nsection S : x\n2003 # a comment\n2004 : event: with colon", true, nullptr},
             {L"timeline TD\nsection A\n2002 : x\nsection B\n2003", true, nullptr},
             {L"timeline\n2002 :no space", false, L"Line 2"},
+            {L"timeline\n2000 : before\nsection Empty # not a comment\nsection S\n2002 : one", true, nullptr},
             {L"mindmap\n  root((Root))\n    A[Square]\n    ::icon(fa fa-book)\n    B\n      C{{Hex}}\n      D)Cloud(\n      E))Bang((\n      F(Round)\n    :::urgent\n    G[\"`**md**`\"]", true, nullptr},
             {L"mindmap\nRoot\n  A\n B", true, nullptr},
             {L"mindmap\n  Root\n  Second", false, L"Line 3"},
             {L"mindmap", false, nullptr},
+            {L"mindmap\n  root((\"two\n  lines\"))\n    [No id]\n\t\t\ttabbed", true, nullptr},
+            {L"mindmap\n  root\n\tchild", false, L"Line 3"},
             {L"quadrantChart\ntitle T\nx-axis L --> R\ny-axis \"B\" --> \"`**T**`\"\nquadrant-1 Q1\nA: [0.3, 0.6]\nB:::c: [1, 0] radius: 12, color: #f00\nclassDef c stroke-color: #00f, stroke-width: 3px", true, nullptr},
             {L"quadrantChart\nx-axis Only left\nquadrant-2 Q2", true, nullptr},
+            {L"quadrantChart\nX-AXIS Low --->\naccDescr {\n  a\n  b\n}\nQUADRANT-1 Q", true, nullptr},
             {L"quadrantChart\nA: [1.5, 0.5]", false, L"Line 2"},
             {L"quadrantChart\nA [0.5, 0.5]", false, L"Line 2"},
             {L"xychart-beta\ntitle \"S\"\nx-axis [a, \"b c\", d]\ny-axis \"V\" 0 --> 10\nbar [2, 5, 7]\nline [1, 2, 3]", true, nullptr},
             {L"xychart-beta horizontal\nx-axis \"Q\" [Q1, Q2]\ny-axis Units\nbar \"Sold\" [30, -5]\nline Target [25, 40]", true, nullptr},
             {L"xychart\nx-axis 0 --> 100\nline [3, 8, 2, 12]", true, nullptr},
+            {L"xychart-beta\nX-AXIS [a, b]\naccDescr {\n x\n}\nbar Q-1 2024 [1, 2, 999]\nline [1 \"low\", 2 \"high\"]", true, nullptr},
             {L"xychart-beta\nbar [1, x]", false, L"Line 2"},
             {L"xychart-beta\npie [1]", false, L"Line 2"},
             {L"gitGraph\ncommit", false, L"gitGraph"},
@@ -1711,6 +1716,8 @@ int main(int argc, char** ansi_argv) {
             L"xychart-beta\nx-axis [" + repeat(L"cat,", 1500) + L"last]\n" + repeat(L"bar [1, 2, 3]\n", 150),
             L"xychart-beta horizontal\nline [" + repeat(L"123456789012345,", 1990) + L"1]",
             L"xychart-beta\ny-axis 5 --> 5\nx-axis 3 --> 3\nbar [5]\nline []",
+            L"xychart-beta\nline [" + repeat(L"1 \"" + std::wstring(100, L'l') + L"\",", 500) + L"1]",
+            L"quadrantChart\nA: [0.5, 0.5] radius: 1e40, stroke-width: -1e40\nB: [0.1, 0.1] radius: nan, stroke-width: inf",
         };
         for (const std::wstring& h : hostile) {
             const double t0 = NowMs();
@@ -2049,7 +2056,9 @@ int main(int argc, char** ansi_argv) {
                 }
                 for (int pl = static_cast<int>(rnd() % 3); pl >= 0; --pl) {
                     src += std::wstring(rnd() & 1 ? L"bar" : L"line") + (rnd() & 1 ? L" \"named\"" : L"") + L" [";
-                    for (int k = 0; k < count; ++k) src += (k ? L", " : L"") + std::to_wstring(static_cast<int>(rnd() % 200) - 50);
+                    for (int k = 0; k < count; ++k) {
+                        src += (k ? L", " : L"") + std::to_wstring(static_cast<int>(rnd() % 200) - 50) + (rnd() % 4 == 0 ? L" \"l\"" : L"");
+                    }
                     src += L"]\n";
                 }
                 break;

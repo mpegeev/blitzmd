@@ -61,13 +61,13 @@ private:
     void Statement() {
         if (c_.EatKeyword(L"title")) {
             c_.SkipBlanks();
-            title = Label(c_.LineRest());
+            title = Label(c_.WholeLine());
             return;
         }
-        if (c_.EatStr(L"x-axis")) return Axis(&x_left, &x_right);
-        if (c_.EatStr(L"y-axis")) return Axis(&y_bottom, &y_top);
+        if (c_.EatKeyword(L"x-axis")) return Axis(&x_left, &x_right);
+        if (c_.EatKeyword(L"y-axis")) return Axis(&y_bottom, &y_top);
         for (int q = 0; q < 4; ++q) {
-            if (c_.EatStr(L"quadrant-" + std::to_wstring(q + 1))) {
+            if (c_.EatKeyword(L"quadrant-" + std::to_wstring(q + 1))) {
                 c_.SkipBlanks();
                 quadrants[q] = Label(c_.LineRest());
                 return;
@@ -82,11 +82,19 @@ private:
             classes[name].Merge(Styles(c_.LineRest()));
             return;
         }
-        for (const wchar_t* kw : {L"accTitle", L"accDescr"}) {
-            if (c_.EatKeyword(kw)) {
+        if (c_.EatKeyword(L"accDescr")) {
+            c_.SkipBlanks();
+            if (c_.Eat(L'{')) {
+                while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
+                c_.Eat(L'}');
+            } else {
                 c_.LineRest();
-                return;
             }
+            return;
+        }
+        if (c_.EatKeyword(L"accTitle")) {
+            c_.LineRest();
+            return;
         }
         // Name[:::class]: [x, y] [radius: 10, color: #f00, ...]
         Point p;
@@ -120,13 +128,28 @@ private:
         points.push_back(std::move(p));
     }
 
-    // x-axis Low --> High (or just Low)
+    // x-axis Low --> High (or just Low; Low --> with nothing after shows
+    // "Low ⟶", as in Mermaid)
     void Axis(Text* low, Text* high) {
         c_.SkipBlanks();
         const std::wstring_view rest = c_.LineRest();
-        const size_t arrow = rest.find(L"-->");
+        size_t arrow = std::wstring_view::npos, arrow_end = 0;
+        for (size_t k = 0; k < rest.size(); ++k) {
+            if (rest[k] != L'-') continue;
+            size_t e = k;
+            while (e < rest.size() && rest[e] == L'-') ++e;
+            if (e - k >= 2 && e < rest.size() && rest[e] == L'>') {
+                arrow = k;
+                arrow_end = e + 1;
+                break;
+            }
+            k = e;
+        }
         *low = Label(rest.substr(0, arrow));
-        if (arrow != std::wstring_view::npos) *high = Label(rest.substr(arrow + 3));
+        if (arrow != std::wstring_view::npos) {
+            *high = Label(rest.substr(arrow_end));
+            if (high->raw.empty()) low->raw += L" \u27F6";
+        }
     }
 
     // A value from 0 to 1 (Mermaid's lexer takes no other).
@@ -158,9 +181,11 @@ private:
             const std::wstring_view key = Trim(item.substr(0, colon)), value = Trim(item.substr(colon + 1));
             uint32_t argb = 0;
             if (key == L"radius") {
-                st.radius = std::clamp(static_cast<float>(std::wcstod(std::wstring(value).c_str(), nullptr)), 0.f, 200.f);
+                const double r = std::wcstod(std::wstring(value).c_str(), nullptr);
+                st.radius = static_cast<float>(r >= 0 && r <= 200 ? r : (r > 200 ? 200.0 : 0.0));
             } else if (key == L"stroke-width") {
-                st.stroke_width = std::clamp(static_cast<float>(std::wcstod(std::wstring(value).c_str(), nullptr)), 0.f, 100.f);
+                const double w = std::wcstod(std::wstring(value).c_str(), nullptr);
+                st.stroke_width = static_cast<float>(w >= 0 && w <= 100 ? w : (w > 100 ? 100.0 : 0.0));
             } else if (key == L"color" && ParseCssColor(value, &argb)) {
                 st.fill = Argb(argb);
             } else if (key == L"stroke-color" && ParseCssColor(value, &argb)) {

@@ -35,8 +35,7 @@ public:
             // The indent: from the line's start.
             size_t line = c_.pos();
             while (line > 0 && src_.text[line - 1] != L'\n') --line;
-            int indent = 0;
-            for (size_t k = line; k < c_.pos(); ++k) indent += src_.text[k] == L'\t' ? 4 : 1;
+            const int indent = static_cast<int>(c_.pos() - line);  // (a tab counts one, as in Mermaid)
             if (c_.EatStr(L"::icon(")) {  // an icon (not drawn)
                 c_.SkipToLineEnd();
                 continue;
@@ -70,9 +69,15 @@ private:
         while (k < text.size() && text[k] != L'\n' && text[k] != L'[' && text[k] != L'(' && text[k] != L')' && text[k] != L'{') ++k;
         bool shaped = false;
         for (const auto& s : kShapes) {
-            if (k >= text.size() || !text.substr(k).starts_with(s.open) || k == start) continue;
-            // The text up to the matching close at the line's end.
-            size_t e = k;
+            if (k >= text.size() || !text.substr(k).starts_with(s.open)) continue;
+            // The text up to the matching close at the line's end (a
+            // "quoted" one may go on over lines).
+            size_t e = k + std::wcslen(s.open);
+            while (e < text.size() && (text[e] == L' ' || text[e] == L'\t')) ++e;
+            if (e < text.size() && text[e] == L'"') {
+                const size_t q = text.find(L'"', e + 1);
+                if (q != std::wstring_view::npos) e = q;
+            }
             while (e < text.size() && text[e] != L'\n') ++e;
             const std::wstring_view line = Trim(text.substr(k, e - k));
             const std::wstring_view close = s.close;
@@ -147,7 +152,8 @@ public:
         depth_.assign(n, 0);
         for (size_t i = 0; i < n; ++i) {
             const Node& nd = p_.nodes[i];
-            text_[i] = b_.Measure(ParseLabel(nd.text, nd.markdown), kWrap, false, 1.f);
+            // (Every mindmap label is markdown in Mermaid 11.)
+            text_[i] = b_.Measure(ParseLabel(nd.text, true), kWrap, false, 1.f);
             const float tw = text_[i].w, th = text_[i].h;
             switch (nd.shape) {
             case Shape::Circle: w_[i] = h_[i] = std::max(tw, th) + 2 * kPadY + 8; break;
@@ -158,7 +164,7 @@ public:
             }
             if (nd.parent >= 0) {
                 depth_[i] = depth_[static_cast<size_t>(nd.parent)] + 1;
-                section_[i] = depth_[i] == 1 ? static_cast<int>(Child(i)) : section_[static_cast<size_t>(nd.parent)];
+                section_[i] = depth_[i] == 1 ? static_cast<int>(Child(i) % 11) : section_[static_cast<size_t>(nd.parent)];
             }
         }
         // Subtree heights, then the root's branches to the side with less.
@@ -203,7 +209,7 @@ public:
             b_.Begin(D2D1::Point2F(x_[par], y_[par]));
             const float mx = (x_[par] + x_[i]) / 2;
             b_.CubicTo(D2D1::Point2F(mx, y_[par]), D2D1::Point2F(mx, y_[i]), D2D1::Point2F(x_[i], y_[i]));
-            const float width = std::max(2.f, 17.f - 3.f * static_cast<float>(depth_[i] + 1));
+            const float width = std::max(3.f, 17.f - 3.f * static_cast<float>(depth_[i] + 1));
             b_.End(Role(kDgNone), Role(Scale(kDgScale, i)), width);
         }
         for (size_t i = 0; i < n; ++i) DrawNode(i);
