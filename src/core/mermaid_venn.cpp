@@ -295,9 +295,10 @@ public:
                 for (const auto& [key, at] : fill_at_) {
                     const auto& st = styles.at(key);
                     uint32_t argb = 0;
+                    const std::wstring& fill = st.at(L"fill");
                     const auto color = st.find(L"color");
-                    if (ParseCssColor(st.at(L"fill"), &argb) || (color != st.end() && ParseCssColor(color->second, &argb))) continue;
-                    if (std::none_of(subsets.begin(), subsets.end(), [&](const Subset& s) { return s.sets.size() == 1 && s.sets[0] == key; })) continue;
+                    if ((fill != L"none" && ParseCssColor(fill, &argb)) || (color != st.end() && !color->second.empty())) continue;
+                    if (std::none_of(subsets.begin(), subsets.end(), [&](const Subset& s) { return s.sets.size() == 1 && s.sets[0] == key && s.size != 0; })) continue;
                     Fail(at, Tr(L"Unsupported color format: ", L"Непонятный формат цвета: ") + st.at(L"fill"));
                 }
                 return;
@@ -390,6 +391,7 @@ public:
     Text title;
     std::vector<Subset> subsets;
     std::vector<size_t> drawn;  // subsets in the order declared, again when declared again
+    std::vector<std::pair<std::vector<std::wstring>, double>> earlier;  // unions declared again: their sizes before
 
 private:
     std::map<std::wstring, size_t> fill_at_;  // style keys with a fill: where it is set
@@ -458,6 +460,7 @@ private:
         for (size_t k = 0; k < subsets.size(); ++k) {
             Subset& old = subsets[k];
             if (old.sets == s.sets) {
+                if (old.sets.size() > 1) earlier.push_back({old.sets, old.size});
                 old.size = s.size;
                 if (!label.raw.empty()) old.label = label;
                 drawn.push_back(k);
@@ -1347,8 +1350,18 @@ private:
             work += a.sets.size() < 3 ? 1.0 : std::pow(static_cast<double>(a.sets.size()), 3);
             areas.push_back(std::move(a));
         }
+        // Laid out with the earlier sizes of unions declared again too.
+        std::vector<Area> fitted = areas;
+        for (const auto& [sets, size] : p_.earlier) {
+            if (!std::all_of(sets.begin(), sets.end(), [&](const std::wstring& n) { return index.contains(n); })) continue;
+            Area a;
+            for (const std::wstring& n : sets) a.sets.push_back(index.at(n));
+            a.size = size;
+            work += a.sets.size() < 3 ? 1.0 : std::pow(static_cast<double>(a.sets.size()), 3);
+            fitted.push_back(std::move(a));
+        }
         if (work > kMaxWork) TooLarge();
-        VennLayout venn(key_names, key_sizes, areas);
+        VennLayout venn(key_names, key_sizes, fitted);
         const std::vector<Circle> solution = Normalize(venn.Solve());
         // Drawn fitted with padding 15; text nodes placed by a layout with
         // Mermaid's padding (8).

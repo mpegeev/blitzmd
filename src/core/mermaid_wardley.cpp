@@ -160,7 +160,8 @@ private:
         for (const auto& [w, kind] : kWords) {
             if (Starts(w)) return Make(kind, std::wcslen(w));
         }
-        const bool title_next = Starts(L"title") && (At(5) == L' ' || At(5) == L'\t' || At(5) == L'\n' || At(5) == L'\r' || At(5) == L'\f' || At(5) == L'\v');
+        // (The end counts as a line end: Mermaid adds one to the source.)
+        const bool title_next = Starts(L"title") && (At(5) == L' ' || At(5) == L'\t' || At(5) == L'\n' || At(5) == L'\r' || At(5) == L'\f' || At(5) == L'\v' || At(5) == L'\0');
         if (Letter(c) && !title_next && !Starts(L"accTitle") && !Starts(L"accDescr")) {
             // Words, spaces between them; "-" not before ">".
             auto part = [&](size_t e) {
