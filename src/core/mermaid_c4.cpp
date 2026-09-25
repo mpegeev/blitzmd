@@ -38,6 +38,7 @@ struct Rel {
     int from = -1, to = -1;
     Text label, techn;
     bool both = false;
+    bool back = false;  // Rel_Back: the arrow at `from`
     uint32_t text_color = 0, line_color = 0;
     float dx = 0, dy = 0;
 };
@@ -56,6 +57,7 @@ public:
             c_.Fail(Tr(L"Expected C4Context, C4Container, C4Component, C4Dynamic or C4Deployment",
                        L"Ожидалось C4Context, C4Container, C4Component, C4Dynamic или C4Deployment"));
         }
+        dynamic = head == L"C4Dynamic";
         std::vector<std::pair<int, size_t>> open;
         for (;;) {
             c_.SkipStatementGap();
@@ -72,7 +74,17 @@ public:
                 title = Text{std::wstring(t), static_cast<uint32_t>(t.data() - src_.text.data()), static_cast<uint32_t>(t.size())};
                 continue;
             }
-            if (c_.EatKeyword(L"accTitle") || c_.EatKeyword(L"accDescr")) {
+            if (c_.EatKeyword(L"accDescr")) {
+                c_.SkipBlanks();
+                if (c_.Eat(L'{')) {
+                    while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
+                    c_.Eat(L'}');
+                } else {
+                    c_.LineRest();
+                }
+                continue;
+            }
+            if (c_.EatKeyword(L"accTitle")) {
                 c_.LineRest();
                 continue;
             }
@@ -98,6 +110,7 @@ public:
     }
 
     Text title;
+    bool dynamic = false;  // C4Dynamic: relations numbered
     std::vector<Element> elements;
     std::vector<Rel> rels;
     int shapes_in_row = 4, boundaries_in_row = 2;
@@ -151,43 +164,51 @@ private:
         if (std::find_if(std::begin(kRels), std::end(kRels), [&](const wchar_t* r) { return name == r; }) != std::end(kRels)) {
             const size_t o = name == L"RelIndex" ? 1 : 0;
             Rel r;
-            const bool back = name == L"Rel_Back";
-            r.from = Find(arg(back ? o + 1 : o, L"from").raw, at);
-            r.to = Find(arg(back ? o : o + 1, L"to").raw, at);
+            r.from = Find(arg(o, L"from").raw, at);
+            r.to = Find(arg(o + 1, L"to").raw, at);
             r.label = arg(o + 2, L"label");
             r.techn = arg(o + 3, L"techn");
             r.both = name == L"BiRel";
+            r.back = name == L"Rel_Back";
+            // (Another relation between the same two replaces it, as in Mermaid.)
+            auto same = std::find_if(rels.begin(), rels.end(), [&](const Rel& x) { return x.from == r.from && x.to == r.to; });
+            if (same != rels.end()) {
+                same->label = r.label;
+                same->techn = r.techn;
+                same->both = r.both;
+                same->back = r.back;
+                return;
+            }
             if (rels.size() >= kMaxEdges) Error(at, Tr(L"Too many relations", L"Слишком много связей"));
             rels.push_back(std::move(r));
             return;
         }
         if (name == L"UpdateElementStyle") {
-            if (a.empty()) return;
-            auto it = ids_.find(a[0].raw);
+            auto it = ids_.find(arg(0, L"elementName").raw);
             if (it == ids_.end()) return;
             Element& e = elements[static_cast<size_t>(it->second)];
-            auto color = [&](const wchar_t* key, uint32_t* out) {
-                if (auto n = named.find(key); n != named.end()) ParseCssColor(n->second.raw, out);
+            auto color = [&](size_t i, const wchar_t* key, uint32_t* out) {
+                if (const Text v = arg(i, key); !v.raw.empty()) ParseCssColor(v.raw, out);
             };
-            color(L"bgColor", &e.bg);
-            color(L"fontColor", &e.font);
-            color(L"borderColor", &e.border);
+            color(1, L"bgColor", &e.bg);
+            color(2, L"fontColor", &e.font);
+            color(3, L"borderColor", &e.border);
             return;
         }
         if (name == L"UpdateRelStyle") {
-            if (a.size() < 2) return;
+            const std::wstring from = arg(0, L"from").raw, to = arg(1, L"to").raw;
             for (Rel& r : rels) {
-                if (r.from < 0 || r.to < 0 || elements[static_cast<size_t>(r.from)].alias != a[0].raw || elements[static_cast<size_t>(r.to)].alias != a[1].raw) continue;
-                if (auto n = named.find(L"textColor"); n != named.end()) ParseCssColor(n->second.raw, &r.text_color);
-                if (auto n = named.find(L"lineColor"); n != named.end()) ParseCssColor(n->second.raw, &r.line_color);
-                if (auto n = named.find(L"offsetX"); n != named.end()) r.dx = static_cast<float>(std::wcstod(n->second.raw.c_str(), nullptr));
-                if (auto n = named.find(L"offsetY"); n != named.end()) r.dy = static_cast<float>(std::wcstod(n->second.raw.c_str(), nullptr));
+                if (r.from < 0 || r.to < 0 || elements[static_cast<size_t>(r.from)].alias != from || elements[static_cast<size_t>(r.to)].alias != to) continue;
+                if (const Text v = arg(2, L"textColor"); !v.raw.empty()) ParseCssColor(v.raw, &r.text_color);
+                if (const Text v = arg(3, L"lineColor"); !v.raw.empty()) ParseCssColor(v.raw, &r.line_color);
+                if (const Text v = arg(4, L"offsetX"); !v.raw.empty()) r.dx = ParseInt(v.raw);
+                if (const Text v = arg(5, L"offsetY"); !v.raw.empty()) r.dy = ParseInt(v.raw);
             }
             return;
         }
         if (name == L"UpdateLayoutConfig") {
-            if (auto n = named.find(L"c4ShapeInRow"); n != named.end()) shapes_in_row = std::clamp(static_cast<int>(std::wcstol(n->second.raw.c_str(), nullptr, 10)), 1, 20);
-            if (auto n = named.find(L"c4BoundaryInRow"); n != named.end()) boundaries_in_row = std::clamp(static_cast<int>(std::wcstol(n->second.raw.c_str(), nullptr, 10)), 1, 20);
+            if (const Text v = arg(0, L"c4ShapeInRow"); !v.raw.empty()) shapes_in_row = std::clamp(static_cast<int>(ParseInt(v.raw)), 1, 20);
+            if (const Text v = arg(1, L"c4BoundaryInRow"); !v.raw.empty()) boundaries_in_row = std::clamp(static_cast<int>(ParseInt(v.raw)), 1, 20);
             return;
         }
         if (name == L"UpdateBoundaryStyle" || name == L"AddElementTag" || name == L"AddRelTag") return;
@@ -230,22 +251,37 @@ private:
             }
             found = true;
         }
+        // Boundaries: their type as Mermaid gives it (the enterprise, system and
+        // container ones always theirs; a third argument is then tags).
         static const struct {
             const wchar_t* name;
             const wchar_t* type;
-        } kBoundaries[] = {{L"Boundary", L""}, {L"Enterprise_Boundary", L"ENTERPRISE"}, {L"System_Boundary", L"SYSTEM"},
-                           {L"Container_Boundary", L"CONTAINER"}, {L"Deployment_Node", L""}, {L"Node", L""}, {L"Node_L", L""}, {L"Node_R", L""}};
+            bool fixed;
+        } kBoundaries[] = {{L"Boundary", L"system", false}, {L"Enterprise_Boundary", L"ENTERPRISE", true}, {L"System_Boundary", L"SYSTEM", true},
+                           {L"Container_Boundary", L"CONTAINER", true}, {L"Deployment_Node", L"node", false}, {L"Node", L"node", false},
+                           {L"Node_L", L"node", false}, {L"Node_R", L"node", false}};
         for (const auto& bd : kBoundaries) {
             if (name != bd.name) continue;
             e.kind = name.starts_with(L"Node") || name == L"Deployment_Node" ? Kind::Node : Kind::Boundary;
             e.alias = arg(0, L"alias").raw;
             e.label = arg(1, L"label");
-            e.type = arg(2, L"type");
-            if (e.type.raw.empty()) e.type.raw = bd.type;
+            if (!bd.fixed) e.type = arg(2, L"type");
+            if (e.type.raw.empty()) e.type = Text{bd.type, 0, 0};
             if (e.kind == Kind::Node) e.descr = arg(3, L"descr");
             found = true;
         }
         if (!found) Error(at, Tr(L"Unknown C4 statement: ", L"Неизвестная команда C4: ") + name);
+        // (An alias declared again updates its element, as in Mermaid.)
+        if (auto old = ids_.find(e.alias); !e.alias.empty() && old != ids_.end() && !open) {
+            Element& x = elements[static_cast<size_t>(old->second)];
+            const bool was_boundary = x.kind == Kind::Boundary || x.kind == Kind::Node, is_boundary = e.kind == Kind::Boundary || e.kind == Kind::Node;
+            if (was_boundary == is_boundary) {
+                e.parent = x.parent;
+                e.children = std::move(x.children);
+                x = std::move(e);
+                return;
+            }
+        }
         if (elements.size() >= kMaxNodes) Error(at, Tr(L"Too many elements", L"Слишком много элементов"));
         const int index = static_cast<int>(elements.size());
         if (!e.alias.empty()) ids_[e.alias] = index;
@@ -264,6 +300,18 @@ public:
     std::vector<int> roots;
 
 private:
+    // As JavaScript's parseInt: a sign and digits at the start, else 0 (and
+    // within reason).
+    static float ParseInt(std::wstring_view s) {
+        s = Trim(s);
+        size_t k = 0;
+        const bool minus = k < s.size() && s[k] == L'-';
+        if (k < s.size() && (s[k] == L'-' || s[k] == L'+')) ++k;
+        double v = 0;
+        for (; k < s.size() && s[k] >= L'0' && s[k] <= L'9'; ++k) v = std::min(v * 10 + (s[k] - L'0'), 1e6);
+        return static_cast<float>(minus ? -v : v);
+    }
+
     int Find(const std::wstring& alias, size_t at) {
         auto it = ids_.find(alias);
         if (it == ids_.end()) Error(at, Tr(L"Unknown element: ", L"Неизвестный элемент: ") + alias);
@@ -302,20 +350,21 @@ Colors ColorsOf(const Element& e) {
     case Kind::Person: return e.external ? Colors{0xFF686868, 0xFF8A8A8A, 0xFFFFFFFF} : Colors{0xFF08427B, 0xFF073B6F, 0xFFFFFFFF};
     case Kind::System: return e.external ? Colors{0xFF999999, 0xFF8A8A8A, 0xFFFFFFFF} : Colors{0xFF1168BD, 0xFF3C7FC0, 0xFFFFFFFF};
     case Kind::Container: return e.external ? Colors{0xFFB3B3B3, 0xFFA6A6A6, 0xFFFFFFFF} : Colors{0xFF438DD5, 0xFF3C7FC0, 0xFFFFFFFF};
-    case Kind::Component: return e.external ? Colors{0xFFCCCCCC, 0xFFBFBFBF, 0xFF000000} : Colors{0xFF85BBF0, 0xFF78A8D8, 0xFF000000};
+    case Kind::Component: return e.external ? Colors{0xFFCCCCCC, 0xFFBFBFBF, 0xFFFFFFFF} : Colors{0xFF85BBF0, 0xFF78A8D8, 0xFFFFFFFF};
     default: return {0, 0xFF444444, 0};
     }
 }
 
 class Builder {
 public:
-    Builder(const Parser& p, SceneBuilder& b, const Source& src) : p_(p), b_(b), src_(src), n_(p.elements.size()) {}
+    Builder(const Parser& p, SceneBuilder& b) : p_(p), b_(b), n_(p.elements.size()) {}
 
     std::shared_ptr<DiagramScene> Build() {
         rect_.assign(n_, D2D1::RectF(0, 0, 0, 0));
         texts_.resize(n_);
         for (size_t i = 0; i < n_; ++i) MeasureElement(i);
-        const Text title = !p_.title.raw.empty() ? p_.title : Text{src_.title, src_.title_pos, src_.title_len};
+        // (Only the diagram's own title: Mermaid's C4 draws no front matter one.)
+        const Text& title = p_.title;
         float top = 0;
         if (!title.raw.empty()) {
             const M m = b_.Measure(ParseLabel(title.raw, false), 0, true, 1.f);
@@ -330,7 +379,7 @@ public:
         for (size_t i = 0; i < n_; ++i) {
             if (!IsBoundary(i)) DrawShape(i);
         }
-        for (const Rel& r : p_.rels) DrawRel(r);
+        for (size_t k = 0; k < p_.rels.size(); ++k) DrawRel(p_.rels[k], k + 1);
         return b_.FinishFitted(10);
     }
 
@@ -448,27 +497,25 @@ private:
             r.top += kHead * 1.5f;
             b_.Rect(r, 40, bg, border, 1.f);
         } else if (e.form == Form::Db) {
-            const float ry = 10;
-            b_.Rect(D2D1::RectF(r.left, r.top + ry, r.right, r.bottom - ry), 0, bg, Role(kDgNone));
-            b_.Ellipse(D2D1::RectF(r.left, r.bottom - 2 * ry, r.right, r.bottom), bg, border, 1.f);
-            b_.Rect(D2D1::RectF(r.left + 0.5f, r.bottom - 2 * ry, r.right - 0.5f, r.bottom - ry), 0, bg, Role(kDgNone));
-            b_.Begin(D2D1::Point2F(r.left, r.top + ry));
-            b_.LineTo(D2D1::Point2F(r.left, r.bottom - ry));
-            b_.MoveTo(D2D1::Point2F(r.right, r.top + ry));
-            b_.LineTo(D2D1::Point2F(r.right, r.bottom - ry));
-            b_.End(Role(kDgNone), border, 1.f);
+            // One body round the bottom's front (no seams), then the top.
+            const float ry = 10, k = 0.5523f, cx = (r.left + r.right) / 2, rx = (r.right - r.left) / 2, y = r.bottom - ry;
+            b_.Begin(D2D1::Point2F(r.right, r.top + ry));
+            b_.LineTo(D2D1::Point2F(r.right, y));
+            b_.CubicTo(D2D1::Point2F(r.right, y + ry * k), D2D1::Point2F(cx + rx * k, r.bottom), D2D1::Point2F(cx, r.bottom));
+            b_.CubicTo(D2D1::Point2F(cx - rx * k, r.bottom), D2D1::Point2F(r.left, y + ry * k), D2D1::Point2F(r.left, y));
+            b_.LineTo(D2D1::Point2F(r.left, r.top + ry));
+            b_.End(bg, border, 1.f);
             b_.Ellipse(D2D1::RectF(r.left, r.top, r.right, r.top + 2 * ry), bg, border, 1.f);
             r.top += ry;
         } else if (e.form == Form::Queue) {
-            const float rx = 10;
-            b_.Rect(D2D1::RectF(r.left + rx, r.top, r.right - rx, r.bottom), 0, bg, Role(kDgNone));
-            b_.Ellipse(D2D1::RectF(r.left, r.top, r.left + 2 * rx, r.bottom), bg, border, 1.f);
-            b_.Rect(D2D1::RectF(r.left + rx, r.top + 0.5f, r.left + 2 * rx, r.bottom - 0.5f), 0, bg, Role(kDgNone));
-            b_.Begin(D2D1::Point2F(r.left + rx, r.top));
-            b_.LineTo(D2D1::Point2F(r.right - rx, r.top));
-            b_.MoveTo(D2D1::Point2F(r.left + rx, r.bottom));
+            // The same lying down: the body round the left end, then the right.
+            const float rx = 10, k = 0.5523f, cy = (r.top + r.bottom) / 2, ry = (r.bottom - r.top) / 2, x = r.left + rx;
+            b_.Begin(D2D1::Point2F(r.right - rx, r.top));
+            b_.LineTo(D2D1::Point2F(x, r.top));
+            b_.CubicTo(D2D1::Point2F(x - rx * k, r.top), D2D1::Point2F(r.left, cy - ry * k), D2D1::Point2F(r.left, cy));
+            b_.CubicTo(D2D1::Point2F(r.left, cy + ry * k), D2D1::Point2F(x - rx * k, r.bottom), D2D1::Point2F(x, r.bottom));
             b_.LineTo(D2D1::Point2F(r.right - rx, r.bottom));
-            b_.End(Role(kDgNone), border, 1.f);
+            b_.End(bg, border, 1.f);
             b_.Ellipse(D2D1::RectF(r.right - 2 * rx, r.top, r.right, r.bottom), bg, border, 1.f);
         } else {
             b_.Rect(r, 10, bg, border, 1.f);
@@ -489,9 +536,11 @@ private:
         return ClipRect(D2D1::Point2F((r.left + r.right) / 2, (r.top + r.bottom) / 2), r.right - r.left, r.bottom - r.top, toward);
     }
 
-    void DrawRel(const Rel& rel) {
+    // A relation (Rel_Back's arrow at its first element); in C4Dynamic its
+    // label numbered.
+    void DrawRel(const Rel& rel, size_t number) {
         if (rel.from < 0 || rel.to < 0 || rel.from == rel.to) return;
-        const size_t a = static_cast<size_t>(rel.from), z = static_cast<size_t>(rel.to);
+        const size_t a = static_cast<size_t>(rel.back ? rel.to : rel.from), z = static_cast<size_t>(rel.back ? rel.from : rel.to);
         const D2D1_RECT_F& ra = rect_[a];
         const D2D1_RECT_F& rz = rect_[z];
         const D2D1_POINT_2F ca = D2D1::Point2F((ra.left + ra.right) / 2, (ra.top + ra.bottom) / 2), cz = D2D1::Point2F((rz.left + rz.right) / 2, (rz.top + rz.bottom) / 2);
@@ -510,8 +559,8 @@ private:
         const D2D1_POINT_2F mid = D2D1::Point2F((start.x + tip.x) / 2 + rel.dx, (start.y + tip.y) / 2 + rel.dy);
         const DgColor ink = rel.text_color ? Argb(rel.text_color) : Role(kDgText);
         float y = mid.y;
-        if (!rel.label.raw.empty()) {
-            const M m = b_.Measure(ParseLabel(rel.label.raw, false), 0, false, 12 / unit);
+        if (!rel.label.raw.empty() || p_.dynamic) {
+            const M m = b_.Measure(ParseLabel((p_.dynamic ? std::to_wstring(number) + L": " : L"") + rel.label.raw, false), 0, false, 12 / unit);
             y -= m.h / 2;
             b_.Text(m, D2D1::Point2F(mid.x - m.w / 2, y), ink, rel.label.pos, rel.label.len);
             y += m.h;
@@ -526,7 +575,6 @@ private:
 
     const Parser& p_;
     SceneBuilder& b_;
-    const Source& src_;
     size_t n_;
     std::vector<D2D1_RECT_F> rect_;
     std::vector<Texts> texts_;
@@ -538,7 +586,7 @@ std::shared_ptr<DiagramScene> C4Diagram(const Source& src, SceneBuilder* builder
     Parser p(src);
     p.Parse();
     if (!builder) return nullptr;
-    return Builder(p, *builder, src).Build();
+    return Builder(p, *builder).Build();
 }
 
 }  // namespace mdv::mermaid

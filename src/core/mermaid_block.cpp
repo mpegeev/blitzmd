@@ -177,7 +177,10 @@ private:
         b.pos = static_cast<uint32_t>(s);
         b.len = static_cast<uint32_t>(id.size());
         const bool shaped = Shaped(&b);
-        if (c_.Eat(L':') && !c_.Rest().starts_with(L"::")) b.span = static_cast<int>(std::clamp(Number(), 1.0, 100.0));
+        if (c_.Peek() == L':' && !c_.Rest().starts_with(L":::")) {
+            c_.Advance();
+            b.span = static_cast<int>(std::clamp(Number(), 1.0, 100.0));
+        }
         while (c_.EatStr(L":::")) {
             const size_t k = c_.pos();
             while (IsWordChar(c_.Peek()) || c_.Peek() == L'-') c_.Advance();
@@ -340,6 +343,7 @@ private:
 using M = SceneBuilder::Measured;
 
 constexpr float kPad = 16, kGap = 8, kGroupPad = 8;
+constexpr float kMaxSize = 100000;
 
 class Builder {
 public:
@@ -351,6 +355,8 @@ public:
         h_.assign(n_, 0);
         rect_.assign(n_, D2D1::RectF(0, 0, 0, 0));
         Measure(0);
+        // (Nested blocks double in size each level, as in Mermaid: past this, no.)
+        if (w_[0] > kMaxSize || h_[0] > kMaxSize) TooLarge();
         Place(0, 0, 0);
         for (size_t i = 1; i < n_; ++i) {
             if (p_.blocks[i].shape == Shape::Group) DrawBlock(i);
@@ -364,7 +370,9 @@ public:
     }
 
 private:
-    static bool Keeps(Shape s) { return s == Shape::Circle || s == Shape::DoubleCircle || s == Shape::Diamond || s == Shape::Arrow; }
+    static bool Keeps(Shape s) {
+        return s == Shape::Circle || s == Shape::DoubleCircle || s == Shape::Diamond || s == Shape::Arrow || s == Shape::Stadium;
+    }
 
     int Columns(const Block& g) const {
         if (g.columns > 0) return g.columns;
@@ -393,7 +401,21 @@ private:
         case Shape::DoubleCircle: w_[i] = h_[i] = std::max(tw, th) + kPad + (bl.shape == Shape::DoubleCircle ? 8.f : 0.f); break;
         case Shape::Diamond: w_[i] = h_[i] = tw + th + kPad; break;
         case Shape::Hexagon: w_[i] = tw + th + 2 * kPad; h_[i] = th + 2 * kPad; break;
-        case Shape::Arrow: h_[i] = th + 16; w_[i] = tw + h_[i] + 8; break;  // (Mermaid's, its padding 8)
+        case Shape::Arrow: {
+            // Mermaid's, its padding 8; a label of spaces measured as nothing
+            // and &nbsp; as its width, as the browser does.
+            float aw = tw, ah = th;
+            const RichText label = ParseLabel(bl.label, false);
+            if (std::all_of(label.text.begin(), label.text.end(), [](wchar_t ch) { return ch == L' '; })) {
+                aw = ah = 0;
+            } else if (text_[i].layout) {
+                DWRITE_TEXT_METRICS tm{};
+                if (SUCCEEDED(text_[i].layout->GetMetrics(&tm))) aw = tm.widthIncludingTrailingWhitespace;
+            }
+            h_[i] = ah + 16;
+            w_[i] = aw + h_[i] + 8;
+            break;
+        }
         default: w_[i] = tw + 2 * kPad + 8; h_[i] = th + 2 * kPad; break;
         }
     }
@@ -439,8 +461,6 @@ private:
             const float w = static_cast<float>(span) * cell_w_[g] + static_cast<float>(span - 1) * kGap, h = cell_h_[g];
             if (child.shape == Shape::Group) {
                 // Its grid stretched over its cells.
-                const float sw = std::max(w / std::max(w_[k], 1.f), 1.f);
-                (void)sw;
                 rect_[k] = D2D1::RectF(cx, cy, cx + w, cy + h);
                 const float extra_w = (w - w_[k]) / static_cast<float>(Columns(child));
                 const float extra_h = rows_[k] > 0 ? (h - h_[k]) / static_cast<float>(rows_[k]) : 0.f;

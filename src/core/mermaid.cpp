@@ -1,6 +1,7 @@
 #include "core/mermaid.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cwctype>
 #include <new>
@@ -93,6 +94,31 @@ Source Preprocess(std::wstring_view text) {
     }
     src.main_branch = ConfigValue(text, 0, L"mainBranchName");
     return src;
+}
+
+// A number as JavaScript writes it (3, 0.5, 1e+21).
+std::wstring JsNumber(double v) {
+    if (std::isnan(v)) return L"NaN";
+    if (std::isinf(v)) return v > 0 ? L"Infinity" : L"-Infinity";
+    if (v == 0) return L"0";
+    char buf[64];
+    const auto r = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::scientific);
+    const std::string sci(buf, r.ptr);
+    const size_t e = sci.find('e');
+    const bool neg = sci[0] == '-';
+    std::string digits = sci.substr(neg ? 1 : 0, e - (neg ? 1 : 0));
+    digits.erase(std::remove(digits.begin(), digits.end(), '.'), digits.end());
+    const int exp = std::atoi(sci.c_str() + e + 1);
+    std::string out;
+    if (exp >= -6 && exp < 21) {
+        const size_t n = static_cast<size_t>(std::max(exp, 0)) + 1;
+        if (exp >= 0) out = digits.size() > n ? digits.substr(0, n) + "." + digits.substr(n) : digits + std::string(n - digits.size(), '0');
+        else out = "0." + std::string(static_cast<size_t>(-exp - 1), '0') + digits;
+    } else {
+        out = digits.substr(0, 1) + (digits.size() > 1 ? "." + digits.substr(1) : "") + (exp < 0 ? "e-" : "e+") + std::to_string(std::abs(exp));
+    }
+    if (neg) out.insert(out.begin(), '-');
+    return std::wstring(out.begin(), out.end());
 }
 
 void Cursor::SkipBlanks() {

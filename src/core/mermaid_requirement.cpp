@@ -18,11 +18,16 @@ struct Text {
     uint32_t pos = 0, len = 0;
 };
 
+// Fields in the order Mermaid shows them.
+enum Field { kId, kText, kRisk, kVerify, kType, kDocRef, kFields };
+constexpr const wchar_t* kFieldNames[kFields] = {L"ID", L"Text", L"Risk", L"Verification", L"Type", L"Doc Ref"};
+
 struct Item {
     std::wstring id;
     Text name;
     std::wstring type;                             // shown: Requirement, Element...
-    std::vector<std::pair<std::wstring, Text>> fields;  // shown key, value
+    Text fields[kFields];                          // (empty: not given)
+    bool given[kFields] = {};
     std::vector<std::wstring> classes;
     Style style;
 };
@@ -99,7 +104,17 @@ private:
             }
             return;
         }
-        for (const wchar_t* kw : {L"accTitle", L"accDescr", L"title"}) {
+        if (c_.EatKeyword(L"accDescr")) {
+            c_.SkipBlanks();
+            if (c_.Eat(L'{')) {
+                while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
+                c_.Eat(L'}');
+            } else {
+                c_.LineRest();
+            }
+            return;
+        }
+        for (const wchar_t* kw : {L"accTitle", L"title"}) {
             if (c_.EatKeyword(kw)) {
                 c_.LineRest();
                 return;
@@ -117,9 +132,23 @@ private:
         for (const auto& [kw, shown] : kKinds) {
             if (c_.EatKeyword(kw)) return Declaration(shown);
         }
-        // a - rel -> b | b <- rel - a
+        // a - rel -> b | b <- rel - a | a[, b]:::class
         const size_t at = c_.pos();
         const Text a = Name();
+        if (c_.Peek() == L',' || c_.Rest().starts_with(L":::")) {
+            std::vector<int> targets{Index(a)};
+            while (c_.Eat(L',')) {
+                c_.SkipBlanks();
+                targets.push_back(Index(Name()));
+            }
+            if (!c_.EatStr(L":::")) c_.Fail(Tr(L"Expected \":::\"", L"Ожидалось «:::»"));
+            const std::vector<std::wstring> names = Names();
+            for (const int t : targets) {
+                std::vector<std::wstring>& cls = items[static_cast<size_t>(t)].classes;
+                cls.insert(cls.end(), names.begin(), names.end());
+            }
+            return;
+        }
         c_.SkipBlanks();
         const bool backwards = c_.EatStr(L"<-");
         if (!backwards && !c_.Eat(L'-')) {
@@ -183,21 +212,25 @@ private:
             if (value.size() >= 2 && value.front() == L'"' && value.back() == L'"') value = value.substr(1, value.size() - 2);
             if (value.size() > kMaxLabel) c_.Fail(Tr(L"Text too long", L"Слишком длинный текст"));
             Text t{std::wstring(value), static_cast<uint32_t>(value.data() - src_.text.data()), static_cast<uint32_t>(value.size())};
-            // Shown as Mermaid shows them: a known word capitalized.
+            // Shown as Mermaid shows them: a known word capitalized; the first
+            // of a field given twice.
             auto capital = [](std::wstring s) {
                 if (!s.empty()) s[0] = static_cast<wchar_t>(std::towupper(s[0]));
                 return s;
             };
-            std::wstring shown_key;
-            if (key == L"id") shown_key = L"ID";
-            else if (key == L"text") shown_key = L"Text";
-            else if (key == L"risk") shown_key = L"Risk", t.raw = capital(ToLower(t.raw));
-            else if (key == L"verifymethod") shown_key = L"Verification", t.raw = capital(ToLower(t.raw));
-            else if (key == L"type") shown_key = L"Type";
-            else if (key == L"docref") shown_key = L"Doc Ref";
+            Field f = kFields;
+            if (key == L"id") f = kId;
+            else if (key == L"text") f = kText;
+            else if (key == L"risk") f = kRisk, t.raw = capital(ToLower(t.raw));
+            else if (key == L"verifymethod") f = kVerify, t.raw = capital(ToLower(t.raw));
+            else if (key == L"type") f = kType;
+            else if (key == L"docref") f = kDocRef;
             else c_.Fail(Tr(L"Unknown field: ", L"Неизвестное поле: ") + key);
-            auto& fields = items[index].fields;
-            if (fields.size() < 16) fields.push_back({shown_key, t});
+            Item& it = items[index];
+            if (!it.given[f]) {
+                it.fields[f] = t;
+                it.given[f] = true;
+            }
         }
     }
 
@@ -279,12 +312,17 @@ public:
             RichText type;
             type.text = L"<<" + (it.type.empty() ? std::wstring(L"Element") : it.type) + L">>";
             bx.type = b_.Measure(type, 0, false, 0.875f);
-            bx.name = b_.Measure(ParseLabel(it.name.raw, false), kWrap, true, 1.f);
+            bx.name = b_.Measure(ParseLabel(it.name.raw, true), kWrap, true, 1.f);
             float w = std::max(bx.type.w, bx.name.w), h = bx.type.h + bx.name.h;
-            for (const auto& [key, value] : it.fields) {
-                RichText t;
-                t.text = key + L": " + value.raw;
-                bx.fields.push_back(b_.Measure(t, kWrap, false, 0.875f, false));
+            for (int f = 0; f < kFields; ++f) {
+                if (!it.given[f]) continue;
+                // "Key: value", the value's markdown kept.
+                RichText v = ParseLabel(it.fields[f].raw, true);
+                const std::wstring key = std::wstring(kFieldNames[f]) + L": ";
+                for (RichText::Span& s : v.spans) s.start += static_cast<uint32_t>(key.size());
+                v.text = key + v.text;
+                bx.fields.push_back(b_.Measure(v, kWrap, false, 0.875f, false));
+                bx.field_of.push_back(f);
                 w = std::max(w, bx.fields.back().w);
             }
             float fields_h = 0;
@@ -300,6 +338,15 @@ public:
             RichText t;
             t.text = L"<<" + r.kind + L">>";
             labels_.push_back(b_.Measure(t, 0, false, 0.875f));
+            if (r.from == r.to) {
+                // A loop: room beside its box for it and its label.
+                const size_t i = static_cast<size_t>(r.from);
+                const int nth = boxes_[i].loops++;
+                const bool across = p_.dir == RankDir::LR || p_.dir == RankDir::RL;
+                boxes_[i].loop_labels += (across ? labels_.back().h : labels_.back().w) + 4;
+                g.nodes[i].after = LoopReach(nth) * 0.75f + 6 + boxes_[i].loop_labels + 4;
+                continue;
+            }
             LayeredGraph::Edge e;
             e.from = r.from;
             e.to = r.to;
@@ -309,19 +356,27 @@ public:
         }
         layout_ = LayoutLayered(g);
         if (layout_.too_large) TooLarge();
-        const float width = layout_.width + 2 * kMargin, height = layout_.height + 2 * kMargin;
         auto at = [&](D2D1_POINT_2F q) { return D2D1::Point2F(q.x + kMargin, q.y + kMargin); };
         for (size_t i = 0; i < n; ++i) boxes_[i].center = at(layout_.centers[i]);
+        // (Edges index the graph's edges: loops aren't among them.)
+        std::vector<size_t> edge_of(p_.relations.size(), 0);
+        for (size_t k = 0, e = 0; k < p_.relations.size(); ++k) {
+            if (p_.relations[k].from != p_.relations[k].to) edge_of[k] = e++;
+        }
         // Relationships: dashed with an open arrow at the target; contains
         // solid with a circled plus at the container.
         const DgColor line = Role(kDgLine);
+        std::vector<int> loops_drawn(n, 0);
         for (size_t k = 0; k < p_.relations.size(); ++k) {
             const Relation& r = p_.relations[k];
-            if (r.from == r.to) continue;
+            if (r.from == r.to) {
+                DrawLoop(r, k, loops_drawn[static_cast<size_t>(r.from)]++);
+                continue;
+            }
             const Box& a = boxes_[static_cast<size_t>(r.from)];
             const Box& z = boxes_[static_cast<size_t>(r.to)];
             std::vector<D2D1_POINT_2F> pts{a.center};
-            for (const D2D1_POINT_2F& q : layout_.bends[k]) pts.push_back(at(q));
+            for (const D2D1_POINT_2F& q : layout_.bends[edge_of[k]]) pts.push_back(at(q));
             pts.push_back(z.center);
             pts.front() = ClipRect(a.center, a.w, a.h, pts[1]);
             pts.back() = ClipRect(z.center, z.w, z.h, pts[pts.size() - 2]);
@@ -349,12 +404,24 @@ public:
             const Relation& r = p_.relations[k];
             if (r.from == r.to) continue;
             const M& m = labels_[k];
-            const D2D1_POINT_2F c = at(layout_.labels[k]);
+            const D2D1_POINT_2F c = at(layout_.labels[edge_of[k]]);
             b_.Rect(D2D1::RectF(c.x - m.w / 2 - 2, c.y - m.h / 2, c.x + m.w / 2 + 2, c.y + m.h / 2), 0, Role(kDgLabelBg), Role(kDgNone));
             b_.Text(m, D2D1::Point2F(c.x - m.w / 2, c.y - m.h / 2), Role(kDgText), r.pos, r.len);
         }
         for (size_t i = 0; i < n; ++i) DrawBox(i);
-        return b_.Finish(width, height);
+        // The front matter's title, centred above (Mermaid's diagram title).
+        if (!src_.title.empty()) {
+            float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f;
+            for (const DiagramScene::Shape& sh : b_.scene().shapes) {
+                x0 = std::min(x0, sh.box.left);
+                x1 = std::max(x1, sh.box.right);
+                y0 = std::min(y0, sh.box.top);
+            }
+            if (x0 > x1) x0 = x1 = y0 = 0;
+            const M m = b_.Measure(ParseLabel(src_.title, false), 0, false, 18 / b_.size());
+            b_.Text(m, D2D1::Point2F((x0 + x1) / 2 - m.w / 2, y0 - m.h - 10), Role(kDgText), src_.title_pos, src_.title_len);
+        }
+        return b_.FinishFitted(kMargin);
     }
 
 private:
@@ -363,7 +430,52 @@ private:
         D2D1_POINT_2F center{};
         M type, name;
         std::vector<M> fields;
+        std::vector<int> field_of;  // the Field each is
+        int loops = 0;              // relations to itself
+        float loop_labels = 0;      // their labels' length, one after another
     };
+
+    static float LoopReach(int n) { return 36 * (1 + 0.6f * static_cast<float>(n)) + 16; }
+
+    // A relation of an item to itself: a loop beside its box (below it
+    // sideways), one inside another, the label past them.
+    void DrawLoop(const Relation& r, size_t k, int n) {
+        const Box& bx = boxes_[static_cast<size_t>(r.from)];
+        const bool below = p_.dir == RankDir::LR || p_.dir == RankDir::RL;
+        auto at = [&](float out, float side) {
+            return below ? D2D1::Point2F(bx.center.x + side, bx.center.y + out) : D2D1::Point2F(bx.center.x + out, bx.center.y + side);
+        };
+        const float edge = (below ? bx.h : bx.w) / 2, across = (below ? bx.w : bx.h) / 2;
+        const float s = std::min(std::min(across / 2, 12.f) + 20 * static_cast<float>(n), across - 2), reach = LoopReach(n);
+        const D2D1_POINT_2F a0 = at(edge, -s), a1 = at(edge, s), c1 = at(edge + reach, -s - 12), c2 = at(edge + reach, s + 12);
+        const DgColor line = Role(kDgLine);
+        const bool contains = r.kind == L"contains";
+        b_.Begin(a0);
+        b_.CubicTo(c1, c2, a1);
+        b_.End(Role(kDgNone), line, 1.f, contains ? 0 : 1);
+        if (contains) {
+            b_.Ellipse(D2D1::RectF(a0.x - 7, a0.y - 7, a0.x + 7, a0.y + 7), Role(kDgPage), line, 1.f);
+            b_.Begin(D2D1::Point2F(a0.x - 7, a0.y));
+            b_.LineTo(D2D1::Point2F(a0.x + 7, a0.y));
+            b_.MoveTo(D2D1::Point2F(a0.x, a0.y - 7));
+            b_.LineTo(D2D1::Point2F(a0.x, a0.y + 7));
+            b_.End(Role(kDgNone), line, 1.f);
+        } else {
+            AddMarker(b_, Marker::LineArrow, a1, c2, line, 1.f);
+        }
+        if (n != bx.loops - 1) return;  // (the labels once, past the outermost)
+        float offset = reach * 0.75f + 6;
+        for (size_t j = 0; j <= k; ++j) {
+            const Relation& o = p_.relations[j];
+            if (o.from != r.from || o.to != r.from) continue;
+            const M& m = labels_[j];
+            const float len = below ? m.h : m.w;
+            const D2D1_POINT_2F c = at(edge + offset + len / 2, 0);
+            b_.Rect(D2D1::RectF(c.x - m.w / 2 - 2, c.y - m.h / 2, c.x + m.w / 2 + 2, c.y + m.h / 2), 0, Role(kDgLabelBg), Role(kDgNone));
+            b_.Text(m, D2D1::Point2F(c.x - m.w / 2, c.y - m.h / 2), Role(kDgText), o.pos, o.len);
+            offset += len + 4;
+        }
+    }
 
     void DrawBox(size_t i) {
         const Item& it = p_.items[i];
@@ -390,7 +502,7 @@ private:
         b_.End(Role(kDgNone), stroke, 1.f);
         y += kPadY;
         for (size_t k = 0; k < bx.fields.size(); ++k) {
-            const Text& v = it.fields[k].second;
+            const Text& v = it.fields[bx.field_of[k]];
             b_.Text(bx.fields[k], D2D1::Point2F(r.left + kPadX, y), text, v.pos, v.len);
             y += bx.fields[k].h;
         }
@@ -412,7 +524,9 @@ void CheckBudget(const Parser& p) {
         n.w = n.h = 10;
         g.nodes.push_back(n);
     }
-    for (const Relation& r : p.relations) g.edges.push_back({r.from, r.to});
+    for (const Relation& r : p.relations) {
+        if (r.from != r.to) g.edges.push_back({r.from, r.to});
+    }
     if (LayoutLayered(g, true).too_large) TooLarge();
 }
 

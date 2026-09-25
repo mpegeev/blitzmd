@@ -77,6 +77,9 @@ private:
 
 bool IsWordChar(wchar_t c);
 
+// A number as JavaScript writes it (3, 0.5, 1e+21, Infinity).
+std::wstring JsNumber(double v);
+
 // "Line 3: message".
 std::wstring FormatError(std::wstring_view source, const ParseError& e);
 

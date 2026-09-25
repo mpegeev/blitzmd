@@ -16,7 +16,7 @@ struct SNode {
     uint32_t pos = 0, len = 0;          // first named
     std::vector<size_t> in, out;        // links
     double value = 0;
-    int depth = 0, height = 0, layer = 0;
+    int depth = 0, layer = 0;
     double x0 = 0, x1 = 0, y0 = 0, y1 = 0;
 };
 
@@ -45,12 +45,8 @@ public:
             if (!c_.Eat(L',')) c_.Fail(Tr(L"Expected source,target,value", L"Ожидалось источник,цель,значение"));
             const auto [b, b_pos] = Field();
             if (!c_.Eat(L',')) c_.Fail(Tr(L"Expected source,target,value", L"Ожидалось источник,цель,значение"));
-            const auto [v, v_pos] = Field();
-            (void)v_pos;
-            wchar_t* end = nullptr;
-            const std::wstring vs(Trim(v));
-            const double value = vs.empty() || vs.size() > 30 ? -1 : std::wcstod(vs.c_str(), &end);
-            if (!(value >= 0) || !std::isfinite(value) || (end && *end)) {
+            const double value = ParseFloat(Field().first);
+            if (!(value >= 0) || !std::isfinite(value)) {
                 c_.set_pos(row);
                 c_.Fail(Tr(L"Expected a number", L"Ожидалось число"));
             }
@@ -76,7 +72,34 @@ public:
     std::vector<SLink> links;
 
 private:
-    // A CSV field: text, or "quoted" with "" for a quote.
+    // As JavaScript's parseFloat: the number at the start (10.5kg: 10.5;
+    // 0x10: 0), else NaN.
+    static double ParseFloat(std::wstring_view s) {
+        s = Trim(s);
+        size_t k = 0;
+        if (k < s.size() && (s[k] == L'+' || s[k] == L'-')) ++k;
+        const size_t digits = k;
+        while (k < s.size() && s[k] >= L'0' && s[k] <= L'9') ++k;
+        bool any = k > digits;
+        if (k < s.size() && s[k] == L'.') {
+            const size_t f = ++k;
+            while (k < s.size() && s[k] >= L'0' && s[k] <= L'9') ++k;
+            any = any || k > f;
+        }
+        if (!any) return NAN;
+        if (k < s.size() && (s[k] == L'e' || s[k] == L'E')) {
+            size_t e = k + 1;
+            if (e < s.size() && (s[e] == L'+' || s[e] == L'-')) ++e;
+            const size_t d = e;
+            while (e < s.size() && s[e] >= L'0' && s[e] <= L'9') ++e;
+            if (e > d) k = e;
+        }
+        if (k > 400) return NAN;
+        return std::wcstod(std::wstring(s.substr(0, k)).c_str(), nullptr);
+    }
+
+    // A CSV field: text, or "quoted" with "" for a quote; trimmed, as
+    // Mermaid trims them.
     std::pair<std::wstring, size_t> Field() {
         while (c_.Peek() == L' ' || c_.Peek() == L'\t') c_.Advance();
         std::wstring out;
@@ -97,12 +120,14 @@ private:
                 out.push_back(c_.Peek());
                 c_.Advance();
             }
+            const std::wstring_view t = Trim(out);
+            start += static_cast<size_t>(t.data() - out.data());
+            out = std::wstring(t);
         } else {
             while (!c_.AtEnd() && c_.Peek() != L',' && c_.Peek() != L'\n' && c_.Peek() != L'\r') {
                 out.push_back(c_.Peek());
                 c_.Advance();
             }
-            // (Trimmed, as Mermaid does.)
             while (!out.empty() && (out.back() == L' ' || out.back() == L'\t')) out.pop_back();
         }
         if (out.size() > kMaxLabel) c_.Fail(Tr(L"Text too long", L"Слишком длинный текст"));
@@ -146,7 +171,7 @@ public:
             for (size_t k : n.out) out += links_[k].value;
             n.value = std::max(in, out);
         }
-        if (!Depths() || !Heights()) return false;
+        if (!Depths()) return false;
         Breadths();
         LinkBreadths();
         return true;
@@ -169,30 +194,6 @@ private:
                     if (!in_next[t]) {
                         in_next[t] = 1;
                         next.push_back(t);
-                    }
-                }
-            }
-            if (++x > static_cast<int>(nodes_.size())) return false;
-            current = std::move(next);
-        }
-        return true;
-    }
-
-    bool Heights() {
-        std::vector<size_t> current(nodes_.size());
-        for (size_t i = 0; i < current.size(); ++i) current[i] = i;
-        int x = 0;
-        std::vector<char> in_next(nodes_.size());
-        while (!current.empty()) {
-            std::vector<size_t> next;
-            std::fill(in_next.begin(), in_next.end(), static_cast<char>(0));
-            for (size_t i : current) {
-                nodes_[i].height = x;
-                for (size_t k : nodes_[i].in) {
-                    const size_t s = links_[k].source;
-                    if (!in_next[s]) {
-                        in_next[s] = 1;
-                        next.push_back(s);
                     }
                 }
             }
@@ -414,15 +415,8 @@ private:
 constexpr uint32_t kTableau[] = {0xFF4E79A7, 0xFFF28E2C, 0xFFE15759, 0xFF76B7B2, 0xFF59A14F,
                                  0xFFEDC949, 0xFFAF7AA1, 0xFFFF9DA7, 0xFF9C755F, 0xFFBAB0AB};
 
-std::wstring Value(double v) {
-    const double r = std::round(v * 100) / 100;
-    wchar_t buf[64];
-    std::swprintf(buf, 64, L"%.2f", r);
-    std::wstring s(buf);
-    while (!s.empty() && s.back() == L'0') s.pop_back();
-    if (!s.empty() && s.back() == L'.') s.pop_back();
-    return s;
-}
+// A value as Mermaid writes it: rounded to hundredths, as JavaScript prints.
+std::wstring Value(double v) { return JsNumber(std::round(v * 100) / 100); }
 
 constexpr float kW = 600, kH = 400;
 
@@ -465,7 +459,12 @@ std::shared_ptr<DiagramScene> Build(Parser& p, SceneBuilder& b) {
         RichText t;
         t.text = n.name + L" " + Value(n.value);
         const SceneBuilder::Measured m = b.Measure(t, 0, false, 0.875f, false);
-        const float cy = (r.top + r.bottom) / 2 - m.h / 2;
+        // (The text's baseline at the node's middle, as Mermaid's.)
+        float baseline = m.h * 0.75f;
+        DWRITE_LINE_METRICS lm{};
+        UINT32 lines = 0;
+        if (m.layout && SUCCEEDED(m.layout->GetLineMetrics(&lm, 1, &lines)) && lines > 0) baseline = lm.baseline;
+        const float cy = (r.top + r.bottom) / 2 - baseline;
         if (n.x0 < kW / 2) b.Text(m, D2D1::Point2F(r.right + 6, cy), Role(kDgText), n.pos, n.len);
         else b.Text(m, D2D1::Point2F(r.left - 6 - m.w, cy), Role(kDgText), n.pos, n.len);
     }

@@ -1607,6 +1607,11 @@ int main(int argc, char** ansi_argv) {
             {L"architecture-beta\n  service a(server)[]", false, L"Line 2"},
             {L"architecture-beta\n  group g\n  group e(cloud)[Empty] in g\n  service a \"x\" in g\n  accDescr {\n    multi\n  }\n  title T", true, nullptr},
             {L"architecture-beta\n  group g[G]\n  service a(server)[A]\n  a:R -- L:g", false, L"Line 4"},
+            {L"requirementDiagram\naccDescr {\n  multi line\n}\nrequirement \"**Bold** name\" {\nverifymethod: analysis\nid: 2\nid: 3\n}\nelement c {\n}\nc:::thick\n\"**Bold** name\" - traces -> \"**Bold** name\"", true, nullptr},
+            {L"C4Dynamic\naccDescr {\n multi\n}\nContainer(c1,\"C1\")\nContainer(c2,\"C2\")\nRelIndex(1, c1, c2, \"first\")\nRel_Back(c2, c1, \"back\")\nUpdateRelStyle(c2, c1, \"red\", \"blue\", \"1e40\", \"-0x20\")\nSystem(c1, \"Again\")\nBoundary(b,\"B\") {\n  Person(p, \"P\")\n}", true, nullptr},
+            {L"block-beta\ncolumns 3\na([\"Stadium\"]) e:::hot f:2\nclassDef hot fill:#f96\nx<[\" \"]>(y)", true, nullptr},
+            {L"sankey-beta\n\" padded \",B,10.5kg\npadded,C,0x10", true, nullptr},
+            {L"sankey-beta\nA,B,abc", false, L"Line 2"},
             {L"", false, nullptr},
             {L"not a diagram", false, nullptr},
         };
@@ -1831,6 +1836,15 @@ int main(int argc, char** ansi_argv) {
             L"sankey-beta\n" + repeat(L"a,b,1e308\nb,c,1e308\n", 400),
             L"sankey-beta\nA,B,1\nB,A,1",
             L"sankey-beta\na,b,0\nb,c,0\nc,d,1e-300",
+            L"sankey-beta\nA,B,1e300\nB,C,1.7e308",
+            [&] {  // blocks nested as deep as allowed: sizes double each level
+                std::wstring s = L"block-beta\n";
+                for (int i = 0; i < 20; ++i) s += L"block:b" + std::to_wstring(i) + L"\ncolumns 2\nx" + std::to_wstring(i) + L" y" + std::to_wstring(i) + L"\n";
+                for (int i = 0; i < 20; ++i) s += L"end\n";
+                return s;
+            }(),
+            L"C4Context\nSystem(a,\"A\")\nSystem(b,\"B\")\nRel(a,b,\"r\")\nUpdateRelStyle(a, b, $offsetX=\"1e40\", $offsetY=\"-99999999999\")",
+            L"architecture-beta\n" + repeat(L"service s \"" + std::wstring(3000, L'w') + L"\"[S]\n", 1),
             [&] {  // a wide, deep sankey
                 std::wstring s = L"sankey-beta\n";
                 for (int i = 0; i < 1000; ++i) s += L"n" + std::to_wstring(i % 97) + L",m" + std::to_wstring((i * 31) % 89) + L"," + std::to_wstring(1 + i % 7) + L"\n";

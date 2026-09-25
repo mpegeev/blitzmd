@@ -820,7 +820,9 @@ private:
         for (const Node& nd : nodes_) {
             const int g = GroupOf(nd);
             if (g < 0) continue;
-            D2D1_RECT_F box = D2D1::RectF(nd.x, nd.y, nd.x + kIcon, nd.y + kIcon);
+            // (An empty group's place: cytoscape's 30 wide node for it.)
+            const float in = nd.placeholder ? (kIcon - 30) / 2 : 0.f;
+            D2D1_RECT_F box = D2D1::RectF(nd.x + in, nd.y + in, nd.x + kIcon - in, nd.y + kIcon - in);
             if (nd.label.layout) grow(&box, D2D1::RectF(nd.x + kIcon / 2 - nd.label_w / 2, nd.y, nd.x + kIcon / 2 + nd.label_w / 2, nd.y + kIcon + kBoxLabel));
             grow(&rect_[static_cast<size_t>(g)], box);
         }
@@ -972,18 +974,27 @@ private:
 
     // Text in place of an icon: wrapped in it, at most four lines (then "…").
     M IconText(const std::wstring& raw) {
-        M m = b_.Measure(ParseLabel(raw, false), kIcon - 2, false, Scale());
-        RichText one;
-        one.text = L"X";
-        const float most = b_.Measure(one, 0, false, Scale()).h * 4 + 1;
+        // Lines as HTML sets them (1.2 of the 16px font), so four fit.
+        constexpr float kLine = 16 * 1.2f;
+        auto measure = [&](const std::wstring& s) {
+            M m = b_.Measure(ParseLabel(s, false), kIcon - 2, false, Scale());
+            if (m.layout) {
+                m.layout->SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, kLine, kLine * 0.8f);
+                DWRITE_TEXT_METRICS tm{};
+                if (SUCCEEDED(m.layout->GetMetrics(&tm))) m.h = tm.height;
+            }
+            return m;
+        };
+        const float most = kLine * 4 + 1;
+        M m = measure(raw);
         if (m.h <= most) return m;
         size_t lo = 0, hi = raw.size();
         while (lo + 1 < hi) {
             const size_t mid = (lo + hi) / 2;
-            if (b_.Measure(ParseLabel(raw.substr(0, mid) + L"…", false), kIcon - 2, false, Scale()).h <= most) lo = mid;
+            if (measure(raw.substr(0, mid) + L"\u2026").h <= most) lo = mid;
             else hi = mid;
         }
-        return b_.Measure(ParseLabel(raw.substr(0, lo) + L"…", false), kIcon - 2, false, Scale());
+        return measure(raw.substr(0, lo) + L"\u2026");
     }
 
     void DrawGroups() {
