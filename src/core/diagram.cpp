@@ -69,6 +69,8 @@ constexpr uint32_t kLight[kDgRoleCount] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0,
     // wardley: component fill, evolution
     0xFFFFFFFF, 0xFFDC3545,
+    // railroad: terminal stroke and text, special fill and stroke
+    0xFFEEEEBC, 0xFF000021, 0xFFF9FFEC, 0xFFE3F1C7,
 };
 constexpr uint32_t kDark[kDgRoleCount] = {
     0x00000000,  // none
@@ -130,6 +132,8 @@ constexpr uint32_t kDark[kDgRoleCount] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0,
     // wardley: component fill, evolution
     0xFF1F2020, 0xFFFF6B6B,
+    // railroad: terminal stroke and text, special fill and stroke
+    0xFF2F2F2F, 0xFFB8B6B6, 0xFF201F1F, 0xFF060606,
 };
 
 D2D1_COLOR_F ToColor(uint32_t argb) {

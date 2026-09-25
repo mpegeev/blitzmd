@@ -59,7 +59,8 @@ enum DiagramRole : uint8_t {
     kDgVennText = kDgVenn + 8,            // + n: text of them (30% darker; lighter in the dark theme)
     kDgShade = kDgVennText + 8,           // an explicit color 30% darker (lighter in the dark theme)
     kDgWardley = kDgShade + 1,            // + n: wardley maps' component fill, evolution
-    kDgRoleCount = kDgWardley + 2,
+    kDgRailroad = kDgWardley + 2,         // + n: railroad terminals' stroke and text, specials' fill and stroke
+    kDgRoleCount = kDgRailroad + 4,
 };
 
 struct DgColor {

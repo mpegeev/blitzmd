@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1643,6 +1644,18 @@ int main(int argc, char** ansi_argv) {
             {L"wardley-beta\ncomponent X [0.5, 0.5]\npipeline X {\n}", false, L"Line 4"},
             {L"wardley-beta\nnote bare [0.5, 0.5]", false, L"Line 2"},
             {L"Wardley-Beta\ncomponent A [0.5, 0.5]", false, L"Line 1"},
+            {L"railroad-beta\ntitle Expressions\nexpr = sequence(nonterminal(\"term\"), zeroOrMore(sequence(choice(terminal(\"+\"), terminal('-')), nonterminal(\"term\"))));\nterm = sequence(nonterminal(\"factor\"), optional(choice(terminal(\"*\"), special(\"div\"))));\nlist = oneOrMore(terminal(\"it\\\"em\")); /* c */ %% c", true, nullptr},
+            {L"railroad-beta\na = choice();", false, L"Line 2"},
+            {L"railroad-beta\na = terminal(\"x\")", false, L"Line 2"},
+            {L"railroad-beta\ntitles = terminal(\"x\");", true, nullptr},
+            {L"railroad-ebnf-beta\nvalue = object | array | \"true\" ;\nobject ::= \"{\" , [ member , { \",\" , member } ] , \"}\" ;\nletter = ? any letter ? - digit (* iso *) ;\nopt = term? c* d+ /* c */ ;", true, nullptr},
+            {L"railroad-ebnf-beta\na = ;", false, L"Line 2"},
+            {L"railroad-abnf-beta\nrulelist = 1*( rule / (*c-wsp c-nl) ) ;\ndigit = %x30-39 %d13.10 ;\nopt = [ \"a\" ] 2\"b\" 3*5\"c\" *1\"d\" ;\nx = y ; a comment\n ;", true, nullptr},
+            {L"railroad-abnf-beta\na = b ; comment\nc = d ;", false, L"Line 3"},
+            {L"railroad-peg-beta\n# a comment\nExpr <- Sum ;\nSum <- Product (('+' / \"-\") Product)* ;\nValue <- Number / \"(\" Expr \")\" / !\"x\" . / &Value \"y\"+ ;", true, nullptr},
+            {L"railroad-peg-beta\nValue <- [0-9]+ ;", false, L"Line 2"},
+            {L"railroad-beta", true, nullptr},
+            {L"Railroad-Beta\na = terminal(\"x\");", false, L"Line 1"},
             {L"requirementDiagram\naccDescr {\n  multi line\n}\nrequirement \"**Bold** name\" {\nverifymethod: analysis\nid: 2\nid: 3\n}\nelement c {\n}\nc:::thick\n\"**Bold** name\" - traces -> \"**Bold** name\"", true, nullptr},
             {L"C4Dynamic\naccDescr {\n multi\n}\nContainer(c1,\"C1\")\nContainer(c2,\"C2\")\nRelIndex(1, c1, c2, \"first\")\nRel_Back(c2, c1, \"back\")\nUpdateRelStyle(c2, c1, \"red\", \"blue\", \"1e40\", \"-0x20\")\nSystem(c1, \"Again\")\nBoundary(b,\"B\") {\n  Person(p, \"P\")\n}", true, nullptr},
             {L"block-beta\ncolumns 3\na([\"Stadium\"]) e:::hot f:2\nclassDef hot fill:#f96\nx<[\" \"]>(y)", true, nullptr},
@@ -1922,6 +1935,13 @@ int main(int argc, char** ansi_argv) {
             L"wardley-beta\n" + repeat(L"annotation 1, [0.5, 0.5] \"" + std::wstring(300, L'a') + L"\"\n", 1000) + L"annotations [0.5, 0.5]\n",
             L"wardley-beta\ncomponent p [0.5, 0.5]\n" + repeat(L"pipeline p {\n" + repeat(L"component q [0.3]\n", 50) + L"}\n", 30),
             L"wardley-beta\nevolution " + repeat(L"s@9999.9 -> ", 40) + L"s\n",
+            L"railroad-beta\na = " + repeat(L"optional(", 60) + L"terminal(\"x\")" + repeat(L")", 60) + L";",
+            L"railroad-ebnf-beta\na = b" + repeat(L"?", 3000) + L" ;",
+            L"railroad-ebnf-beta\na = b" + repeat(L" - c", 3000) + L" ;",
+            L"railroad-ebnf-beta\n" + repeat(L"r = ( a | b | \"" + std::wstring(300, L'x') + L"\" ) { c } [ d ] ;\n", 600),
+            L"railroad-abnf-beta\na = " + repeat(L"999999999*999999999 b / ", 2000) + L"c ;",
+            L"railroad-peg-beta\nA <- " + repeat(L"( ", 30) + L"B" + repeat(L" )", 30) + L" ;",
+            L"railroad-beta\na = choice(" + repeat(L"terminal(\"x\"), ", 4000) + L"terminal(\"y\"));",
             [&] {  // blocks nested as deep as allowed: sizes double each level
                 std::wstring s = L"block-beta\n";
                 for (int i = 0; i < 20; ++i) s += L"block:b" + std::to_wstring(i) + L"\ncolumns 2\nx" + std::to_wstring(i) + L" y" + std::to_wstring(i) + L"\n";
@@ -2544,6 +2564,69 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated wardley maps in %.0f ms\n", iterations / 4, NowMs() - wm0);
+        // Railroad diagrams: random grammars in the four notations.
+        const double rr0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            // A random expression in the dialect's own syntax.
+            const int dialect = it % 4;
+            std::function<std::wstring(int)> expr = [&](int depth) -> std::wstring {
+                const int pick = depth > 3 ? static_cast<int>(rnd() % 3) : static_cast<int>(rnd() % 7);
+                auto sub = [&] { return expr(depth + 1); };
+                switch (dialect) {
+                case 0:
+                    switch (pick) {
+                    case 0: return L"terminal(\"t" + std::to_wstring(rnd() % 9) + L"\")";
+                    case 1: return L"nonterminal(\"n\")";
+                    case 2: return L"special(\"s\")";
+                    case 3: return L"sequence(" + sub() + L", " + sub() + L")";
+                    case 4: return L"choice(" + sub() + L", " + sub() + L", " + sub() + L")";
+                    case 5: return L"optional(" + sub() + L")";
+                    default: return (rnd() % 2 ? L"oneOrMore(" : L"zeroOrMore(") + sub() + L")";
+                    }
+                case 1:
+                    switch (pick) {
+                    case 0: return L"\"t\"";
+                    case 1: return L"name";
+                    case 2: return L"? special ?";
+                    case 3: return sub() + L" , " + sub() + L"*";
+                    case 4: return L"( " + sub() + L" | " + sub() + L" )";
+                    case 5: return L"[ " + sub() + L" ]";
+                    default: return L"{ " + sub() + L" }" + (rnd() % 2 ? L" - x" : L"+");
+                    }
+                case 2:
+                    switch (pick) {
+                    case 0: return L"\"t\"";
+                    case 1: return L"name";
+                    case 2: return L"%x41-5A";
+                    case 3: return sub() + L" " + sub();
+                    case 4: return L"( " + sub() + L" / " + sub() + L" )";
+                    case 5: return L"[ " + sub() + L" ]";
+                    default: return std::wstring(rnd() % 2 ? L"1*" : L"2") + L"( " + sub() + L" )";
+                    }
+                default:
+                    switch (pick) {
+                    case 0: return L"'t'";
+                    case 1: return L"Name";
+                    case 2: return L".";
+                    case 3: return sub() + L" " + sub();
+                    case 4: return L"( " + sub() + L" / " + sub() + L" )";
+                    case 5: return std::wstring(rnd() % 2 ? L"&" : L"!") + L"Name";
+                    default: return L"( " + sub() + L" )" + (rnd() % 2 ? L"*" : L"+");
+                    }
+                }
+            };
+            static const wchar_t* kHead[] = {L"railroad-beta", L"railroad-ebnf-beta", L"railroad-abnf-beta", L"railroad-peg-beta"};
+            static const wchar_t* kDefine[] = {L" = ", L" = ", L" = ", L" <- "};
+            std::wstring src = std::wstring(kHead[dialect]) + L"\n";
+            for (int r = 0, rules = 1 + static_cast<int>(rnd() % 4); r < rules; ++r) src += L"rule" + std::to_wstring(r) + kDefine[dialect] + expr(0) + L" ;\n";
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 300)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated railroad diagrams in %.0f ms\n", iterations / 4, NowMs() - rr0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();

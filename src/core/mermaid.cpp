@@ -574,7 +574,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4, Architecture, TreeView, Info, Ishikawa, Cynefin, Venn, Wardley };
+enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4, Architecture, TreeView, Info, Ishikawa, Cynefin, Venn, Wardley, Railroad, Ebnf, Abnf, Peg };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -613,6 +613,10 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (*name == L"cynefin-beta") return Kind::Cynefin;
     if (*name == L"venn-beta") return Kind::Venn;
     if (EqualsNoCase(*name, L"wardley-beta")) return Kind::Wardley;  // (the parser wants it in lower case)
+    if (EqualsNoCase(*name, L"railroad-beta")) return Kind::Railroad;  // (the same)
+    if (EqualsNoCase(*name, L"railroad-ebnf-beta")) return Kind::Ebnf;
+    if (EqualsNoCase(*name, L"railroad-abnf-beta")) return Kind::Abnf;
+    if (EqualsNoCase(*name, L"railroad-peg-beta")) return Kind::Peg;
     return Kind::Unknown;
 }
 
@@ -672,6 +676,10 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         case Kind::Cynefin: CynefinDiagram(src, nullptr); return true;
         case Kind::Venn: VennDiagram(src, nullptr); return true;
         case Kind::Wardley: WardleyMap(src, nullptr); return true;
+        case Kind::Railroad: RailroadDiagram(src, nullptr); return true;
+        case Kind::Ebnf: EbnfDiagram(src, nullptr); return true;
+        case Kind::Abnf: AbnfDiagram(src, nullptr); return true;
+        case Kind::Peg: PegDiagram(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -714,6 +722,10 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         case Kind::Cynefin: return CynefinDiagram(src, &builder);
         case Kind::Venn: return VennDiagram(src, &builder);
         case Kind::Wardley: return WardleyMap(src, &builder);
+        case Kind::Railroad: return RailroadDiagram(src, &builder);
+        case Kind::Ebnf: return EbnfDiagram(src, &builder);
+        case Kind::Abnf: return AbnfDiagram(src, &builder);
+        case Kind::Peg: return PegDiagram(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;
