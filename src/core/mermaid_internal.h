@@ -42,6 +42,7 @@ struct Source {
     std::wstring title;       // front matter title
     uint32_t title_pos = 0, title_len = 0;
     std::wstring display_mode;  // front matter displayMode (Gantt charts), at any depth
+    std::wstring main_branch;   // mainBranchName (git graphs): front matter or %%{init}%%
 };
 Source Preprocess(std::wstring_view text);
 
@@ -138,5 +139,10 @@ std::shared_ptr<DiagramScene> Timeline(const Source& src, SceneBuilder* builder)
 std::shared_ptr<DiagramScene> Mindmap(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> QuadrantChart(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> XyChart(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> GitGraph(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> Kanban(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> Packet(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> RadarChart(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> Treemap(const Source& src, SceneBuilder* builder);
 
 }  // namespace mdv::mermaid

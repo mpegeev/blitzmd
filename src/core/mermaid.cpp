@@ -20,9 +20,34 @@ bool IsWordChar(wchar_t c) {
     return c == L'_' || std::iswalnum(c);
 }
 
+// A setting's value in the front matter or an init directive:
+// `name: value`, `"name": "value"` or `'name':'value'`.
+static std::wstring ConfigValue(std::wstring_view text, size_t front_end, std::wstring_view name) {
+    for (size_t at = text.find(name); at != std::wstring_view::npos; at = text.find(name, at + 1)) {
+        // In the front matter, or between %%{ and }%%.
+        const size_t open = text.rfind(L"%%{", at);
+        const bool directive = open != std::wstring_view::npos && text.find(L"}%%", open) > at;
+        if (at >= front_end && !directive) continue;
+        size_t k = at + name.size();
+        if (k < text.size() && (text[k] == L'"' || text[k] == L'\'')) ++k;
+        while (k < text.size() && (text[k] == L' ' || text[k] == L'\t')) ++k;
+        if (k >= text.size() || text[k] != L':') continue;
+        ++k;
+        while (k < text.size() && (text[k] == L' ' || text[k] == L'\t')) ++k;
+        const wchar_t quote = k < text.size() && (text[k] == L'"' || text[k] == L'\'') ? text[k] : 0;
+        if (quote) ++k;
+        const size_t start = k;
+        while (k < text.size() && text[k] != L'\n' && text[k] != L'\r' && (quote ? text[k] != quote : text[k] != L',' && text[k] != L'}')) ++k;
+        const std::wstring_view v = Trim(text.substr(start, k - start));
+        if (!v.empty() && v.size() <= 200) return std::wstring(v);
+    }
+    return {};
+}
+
 Source Preprocess(std::wstring_view text) {
     Source src;
     src.text = text;
+    // (The front matter's end isn't known yet: settings are looked up at the end.)
     // Front matter: a "---" line first, up to the next "---" line.
     size_t i = 0;
     while (i < text.size() && IsSpace(text[i])) ++i;
@@ -41,6 +66,7 @@ Source Preprocess(std::wstring_view text) {
             const std::wstring_view line = line_at(p, &after);
             if (line == L"---") {
                 src.body = after;
+                src.main_branch = ConfigValue(text, src.body, L"mainBranchName");
                 return src;
             }
             // Only a top-level title matters here (config is ignored).
@@ -65,6 +91,7 @@ Source Preprocess(std::wstring_view text) {
         src.title.clear();  // not closed: not front matter
         src.display_mode.clear();
     }
+    src.main_branch = ConfigValue(text, 0, L"mainBranchName");
     return src;
 }
 
@@ -521,7 +548,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart };
+enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -544,6 +571,11 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (EqualsNoCase(*name, L"mindmap")) return Kind::Mindmap;
     if (EqualsNoCase(*name, L"quadrantChart")) return Kind::Quadrant;
     if (EqualsNoCase(*name, L"xychart-beta") || EqualsNoCase(*name, L"xychart")) return Kind::XyChart;
+    if (EqualsNoCase(*name, L"gitGraph")) return Kind::GitGraph;
+    if (EqualsNoCase(*name, L"kanban")) return Kind::Kanban;
+    if (EqualsNoCase(*name, L"packet-beta") || EqualsNoCase(*name, L"packet")) return Kind::Packet;
+    if (EqualsNoCase(*name, L"radar-beta") || EqualsNoCase(*name, L"radar")) return Kind::Radar;
+    if (EqualsNoCase(*name, L"treemap-beta") || EqualsNoCase(*name, L"treemap")) return Kind::Treemap;
     return Kind::Unknown;
 }
 
@@ -587,6 +619,11 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         case Kind::Mindmap: Mindmap(src, nullptr); return true;
         case Kind::Quadrant: QuadrantChart(src, nullptr); return true;
         case Kind::XyChart: XyChart(src, nullptr); return true;
+        case Kind::GitGraph: GitGraph(src, nullptr); return true;
+        case Kind::Kanban: Kanban(src, nullptr); return true;
+        case Kind::Packet: Packet(src, nullptr); return true;
+        case Kind::Radar: RadarChart(src, nullptr); return true;
+        case Kind::Treemap: Treemap(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -613,6 +650,11 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         case Kind::Mindmap: return Mindmap(src, &builder);
         case Kind::Quadrant: return QuadrantChart(src, &builder);
         case Kind::XyChart: return XyChart(src, &builder);
+        case Kind::GitGraph: return GitGraph(src, &builder);
+        case Kind::Kanban: return Kanban(src, &builder);
+        case Kind::Packet: return Packet(src, &builder);
+        case Kind::Radar: return RadarChart(src, &builder);
+        case Kind::Treemap: return Treemap(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;

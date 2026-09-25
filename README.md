@@ -63,7 +63,13 @@ autolink `www.` / `https://` / e-mail), изображения, HTML-сущно�
     дерево в обе стороны от корня, а не «силовая», как у Mermaid);
   - quadrantChart: квадранты, точки со стилями и `classDef`, подписи осей;
   - xychart-beta: столбцы и линии по категориям или числовой оси, вертикально и горизонтально,
-    легенда для именованных рядов.
+    легенда для именованных рядов;
+  - gitGraph: ветки дорожками (слева направо или `TB` / `BT`), коммиты по порядку, слияния и
+    `cherry-pick`, типы коммитов, теги и id;
+  - kanban: колонки с карточками (тикет, исполнитель, приоритет цветной кромкой);
+  - packet-beta: поля пакета по 32 бита в строке с номерами битов;
+  - radar-beta: оси, шкала кругами или многоугольниками, сглаженные кривые, легенда;
+  - treemap-beta: вложенные разделы и листья, раскладка «squarified», как у d3.
   Диаграммы масштабируются и открываются на всё окно, как картинки; копирование даёт исходный
   текст, поиск подсвечивает подписи. Неподдержанный тип или ошибка — блок кода с пометкой о причине.
   Темы Mermaid (`%%{init: {theme: ...}}%%`, `themeVariables`) не применяются: цвета всегда
@@ -238,6 +244,7 @@ out\build\x64-release\emoji_test.exe          # таблица эмодзи-ко
 & $t mermaid samples\gfm\24-mermaid-er.md         # и для ER-диаграмм
 & $t mermaid samples\gfm\25-mermaid-charts.md     # и для pie, journey, gantt
 & $t mermaid samples\gfm\26-mermaid-more.md       # и для timeline, mindmap, quadrantChart, xychart
+& $t mermaid samples\gfm\27-mermaid-git-kanban.md # и для gitGraph, kanban, packet, radar, treemap
 & $t mmd diagram.mmd out.png [--dark]          # одна диаграмма Mermaid в PNG
 & $t tex "\frac{a}{b}"                        # дерево разобранной формулы
 ```

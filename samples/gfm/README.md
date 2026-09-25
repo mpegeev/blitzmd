@@ -32,6 +32,7 @@ This folder is a corpus of Markdown documents for checking the native (Direct2D/
 | [24-mermaid-er.md](24-mermaid-er.md) | UTF-8, LF | 1.6 KB | Mermaid entity relationship diagrams drawn natively: every cardinality (symbols and words), identifying and non-identifying relationships, attributes with types (`string(99)`, `string[]`), keys (`PK, FK`, `UK`) and comments, entity aliases (`p[Person]`, quoted), a relationship to itself, `direction LR`, subgraphs (and a relationship between two of them) and a front matter title. |
 | [25-mermaid-charts.md](25-mermaid-charts.md) | UTF-8, LF | 2.9 KB | Mermaid charts drawn natively: pie charts (`showData`, a front matter title), a user journey (sections, actors, scores as faces), Gantt charts (done, active, critical tasks and milestones, `after`/`until`, excluded weekends and holidays, other date and axis formats, hours with `tickInterval`, compact rows, a `vert` marker, the axis on top). |
 | [26-mermaid-more.md](26-mermaid-more.md) | UTF-8, LF | 3.2 KB | More Mermaid diagrams drawn natively: timelines (with sections, top to bottom), mindmaps (every node shape, markdown text), quadrant charts (styled points, `classDef`) and XY charts (bars and lines, horizontal, a legend). |
+| [27-mermaid-git-kanban.md](27-mermaid-git-kanban.md) | UTF-8, LF | 1.9 KB | Still more Mermaid diagrams drawn natively: git graphs (branches, merges, a cherry-pick, commit types, tags; top to bottom), a kanban board (tickets, assignees, priorities), a packet, a radar chart and a treemap. |
 
 ## Images (`img/`)
 

@@ -1551,7 +1551,36 @@ int main(int argc, char** ansi_argv) {
             {L"xychart-beta\nX-AXIS [a, b]\naccDescr {\n x\n}\nbar Q-1 2024 [1, 2, 999]\nline [1 \"low\", 2 \"high\"]", true, nullptr},
             {L"xychart-beta\nbar [1, x]", false, L"Line 2"},
             {L"xychart-beta\npie [1]", false, L"Line 2"},
-            {L"gitGraph\ncommit", false, L"gitGraph"},
+            {L"gitGraph\ncommit id: \"A\" tag: \"t1\" tag: \"t2\" type: REVERSE\nbranch dev order: 3\ncommit\nbranch feat/x order: 1\nswitch feat/x\ncommit type: HIGHLIGHT\ncheckout main\nmerge dev tag: \"m\"\ncherry-pick id: \"A\"", false, L"Line 10"},
+            {L"gitGraph LR:\ncommit\nbranch b\ncommit id: \"x\"\ncheckout main\ncherry-pick id: \"x\"\nmerge b id: \"M\" type: HIGHLIGHT", true, nullptr},
+            {L"gitGraph BT:\ncommit\nbranch b\ncommit\ncheckout main\ncommit\nmerge b", true, nullptr},
+            {L"gitGraph\ncommit\nmerge main", false, L"Line 3"},
+            {L"gitGraph\ncommit\nbranch dev\ncheckout main\nmerge dev", false, L"Line 5"},
+            {L"gitGraph\ncheckout nope", false, L"Line 2"},
+            {L"gitGraph\nbranch main", false, L"Line 2"},
+            {L"gitGraph\ncommit id: x", false, L"Line 2"},
+            {L"kanban\n  Todo\n    [Task]\n    t1[Task one]@{ priority: 'Low', assigned: x, ticket: T-1 }\n  col2[Done]\n    Plain task", true, nullptr},
+            {L"kanban\n  Todo\n    t[x]@{ priority: 'High'", false, L"Line 3"},
+            {L"packet-beta\ntitle P\n0-7: \"A\"\n8: \"B\"\n+23: \"C\"\n32-80: \"Long\"", true, nullptr},
+            {L"packet-beta\n0-7: \"A\"\n9-10: \"gap\"", false, L"Line 3"},
+            {L"packet-beta\n0-7: A", false, L"Line 2"},
+            {L"radar-beta\ntitle R\naxis a[\"A\"], b, c\ncurve x[\"X\"]{1, 2, 3}\ncurve y{c: 5, a: 1, b: 2}\nmax 10\nmin 0\nticks 4\ngraticule polygon\nshowLegend false", true, nullptr},
+            {L"radar-beta\ncurve x{1, 2", false, L"Line 2"},
+            {L"treemap-beta\n\"S1\"\n  \"L1\": 12\n  \"S2\"\n    \"L2\": 1,000.5\n\"S3\"\n  \"L3\": 20", true, nullptr},
+            {L"treemap-beta\n\"S\"\n  \"L\": x", false, L"Line 3"},
+            {L"gitGraph\ncommit", true, nullptr},
+            {L"gitGraph:\ncommit id: 'A' tag: 'v\\'1'\ncommit \"a message\"\nbranch dev\ncommit id: \"B\"\ncheckout main\nmerge dev id: \"M\" type: NORMAL\nbranch x\ncherry-pick id: \"M\" parent: \"B\" tag: \"\"", true, nullptr},
+            {L"gitGraph\ncommit id: \"A\"\nbranch dev\ncommit\ncheckout main\nmerge dev id: \"A\"", false, L"Line 6"},
+            {L"gitGraph\ncommit id: \"A\"\nbranch dev\ncommit id: \"B\"\ncheckout main\nmerge dev id: \"M\"\nbranch x\ncherry-pick id: \"M\"", false, L"Line 8"},
+            {L"gitGraph\ncommit id: \"A\"\nbranch dev\ncommit id: \"B\"\ncheckout main\ncherry-pick id: \"B\" parent: \"Z\"", false, L"Line 6"},
+            {L"---\nconfig:\n  gitGraph:\n    mainBranchName: trunk\n---\ngitGraph\ncommit\nbranch dev\ncheckout trunk\ncommit\naccDescr {\n  two\n  lines\n}", true, nullptr},
+            {L"packet-beta\n0-7: 'single'\n8-15: \"esc \\\" quote\"\naccDescr {\n x\n}", true, nullptr},
+            {L"packet-beta\n0-1234567890: \"x\"", false, L"Line 2"},
+            {L"radar-beta:\naxis a['Alpha'], b, c\ncurve x{\n  a 1,\n  b: 2,\n  c 3\n}\nmax 5, min 1, ticks 40\ngraticule polygon", true, nullptr},
+            {L"radar-beta\naxis a, b\ncurve x{a: 1}", false, nullptr},
+            {L"radar-beta\naxis a, b, c, d\ncurve y{1, 2}", true, nullptr},
+            {L"treemap-beta\ntitle My treemap\n'Root'\n\t\"Sub\"\n\t\t\"A\", 10\n\t\t\"B\": 5:::big\n\"Main\":::big\nclassDef big fill:#f96,stroke:#333,stroke-width:4px", true, nullptr},
+            {L"kanban\n\tTodo\n\t\tt1(Round task)@{\n\t\t  ticket: MC-1\n\t\t  label: 'New text'\n\t\t}\n\t\tt2{{Hex}}\n\t\tt3((Circle))\n\tDone\n\t\t[**Bold** task]", true, nullptr},
             {L"", false, nullptr},
             {L"not a diagram", false, nullptr},
         };
@@ -1721,6 +1750,24 @@ int main(int argc, char** ansi_argv) {
             L"xychart-beta\ny-axis 5 --> 5\nx-axis 3 --> 3\nbar [5]\nline []",
             L"xychart-beta\nline [" + repeat(L"1 \"" + std::wstring(100, L'l') + L"\",", 500) + L"1]",
             L"quadrantChart\nA: [0.5, 0.5] radius: 1e40, stroke-width: -1e40\nB: [0.1, 0.1] radius: nan, stroke-width: inf",
+            L"gitGraph\n" + repeat(L"commit tag: \"t\"\n", 1990),
+            [&] {  // many branches merged back and forth
+                std::wstring s = L"gitGraph\ncommit\n";
+                for (int i = 0; i < 60; ++i) {
+                    s += L"branch b" + std::to_wstring(i) + L"\ncommit\ncheckout main\ncommit\nmerge b" + std::to_wstring(i) + L"\n";
+                    if (i > 0) s += L"checkout b" + std::to_wstring(i - 1) + L"\nmerge main\ncheckout main\n";
+                }
+                return s;
+            }(),
+            L"kanban\n" + repeat(L"  Col\n" + repeat(L"    [" + std::wstring(150, L'c') + L"]\n", 20), 60),
+            L"packet-beta\n" + repeat(L"+31: \"" + std::wstring(40, L'f') + L"\"\n", 1000),
+            L"radar-beta\naxis " + repeat(L"a, ", 400) + L"z\n" + repeat(L"curve c{" + repeat(L"1, ", 400) + L"2}\n", 20),
+            [&] {  // a deep treemap
+                std::wstring s = L"treemap-beta\n";
+                for (int i = 0; i < 200; ++i) s += std::wstring(static_cast<size_t>(i), L' ') + L"\"S" + std::to_wstring(i) + L"\"\n" + std::wstring(static_cast<size_t>(i) + 1, L' ') + L"\"L\": 1\n";
+                return s;
+            }(),
+            L"treemap-beta\n\"Root\"\n" + repeat(L"  \"leaf\": 1\n  \"zero\": 0\n", 900),
         };
         for (const std::wstring& h : hostile) {
             const double t0 = NowMs();
@@ -2074,6 +2121,65 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated timelines, mindmaps, quadrant and XY charts in %.0f ms\n", iterations / 4, NowMs() - m0);
+        // Well-formed random git graphs, kanban boards, packets, radar charts and treemaps.
+        const double gg0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            std::wstring src;
+            const int count = 1 + static_cast<int>(rnd() % 12);
+            switch (it % 5) {
+            case 0: {
+                static const wchar_t* kGitDirs[] = {L"", L" LR:", L" TB:", L" BT:"};
+                src = std::wstring(L"gitGraph") + kGitDirs[rnd() % 4] + L"\ncommit\n";
+                int branches = 1;
+                for (int k = 0; k < count * 2; ++k) {
+                    switch (rnd() % 5) {
+                    case 0:
+                        if (branches < 6) src += L"branch b" + std::to_wstring(branches++) + L"\n";
+                        break;
+                    case 1: src += L"checkout " + std::wstring(rnd() % branches ? L"b" + std::to_wstring(1 + rnd() % static_cast<uint32_t>(std::max(branches - 1, 1))) : L"main") + L"\n"; break;
+                    default: src += std::wstring(L"commit") + (rnd() % 4 == 0 ? L" tag: \"t\"" : L"") + (rnd() % 5 == 0 ? L" type: HIGHLIGHT" : L"") + L"\n"; break;
+                    }
+                }
+                break;
+            }
+            case 1:
+                src = L"kanban\n";
+                for (int k = 0; k < count; ++k) {
+                    src += L"  c" + std::to_wstring(k) + L"[Column " + std::to_wstring(k) + L"]\n";
+                    for (int j = static_cast<int>(rnd() % 4); j > 0; --j) src += L"    [Card " + std::to_wstring(j) + L"]" + (rnd() & 1 ? L"@{ priority: 'High', assigned: me }" : L"") + L"\n";
+                }
+                break;
+            case 2: {
+                src = L"packet-beta\n";
+                for (int k = 0; k < count; ++k) src += L"+" + std::to_wstring(1 + rnd() % 40) + L": \"field " + std::to_wstring(k) + L"\"\n";
+                break;
+            }
+            case 3:
+                src = L"radar-beta\naxis ";
+                for (int k = 0; k < count + 2; ++k) src += (k ? L", a" : L"a") + std::to_wstring(k);
+                src += L"\n";
+                for (int c = static_cast<int>(rnd() % 3); c >= 0; --c) {
+                    src += L"curve c" + std::to_wstring(c) + L"{";
+                    for (int k = 0; k < count + 2; ++k) src += (k ? L", " : L"") + std::to_wstring(rnd() % 100);
+                    src += L"}\n";
+                }
+                break;
+            default:
+                src = L"treemap-beta\n";
+                for (int k = 0; k < count; ++k) {
+                    src += L"\"S" + std::to_wstring(k) + L"\"\n";
+                    for (int j = 1 + static_cast<int>(rnd() % 4); j > 0; --j) src += L"  \"L" + std::to_wstring(j) + L"\": " + std::to_wstring(rnd() % 50) + L"\n";
+                }
+                break;
+            }
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 200)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated git graphs, kanban boards, packets, radar charts and treemaps in %.0f ms\n", iterations / 4, NowMs() - gg0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();

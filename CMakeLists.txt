@@ -82,6 +82,11 @@ add_library(mdview_core STATIC
     src/core/mermaid_mindmap.cpp
     src/core/mermaid_quadrant.cpp
     src/core/mermaid_xychart.cpp
+    src/core/mermaid_gitgraph.cpp
+    src/core/mermaid_kanban.cpp
+    src/core/mermaid_packet.cpp
+    src/core/mermaid_radar.cpp
+    src/core/mermaid_treemap.cpp
     src/core/render.cpp
     src/core/icons.cpp
     src/core/zoom.cpp
