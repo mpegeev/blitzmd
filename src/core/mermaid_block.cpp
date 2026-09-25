@@ -364,7 +364,7 @@ public:
     }
 
 private:
-    static bool Keeps(Shape s) { return s == Shape::Circle || s == Shape::DoubleCircle || s == Shape::Diamond; }
+    static bool Keeps(Shape s) { return s == Shape::Circle || s == Shape::DoubleCircle || s == Shape::Diamond || s == Shape::Arrow; }
 
     int Columns(const Block& g) const {
         if (g.columns > 0) return g.columns;
@@ -393,7 +393,7 @@ private:
         case Shape::DoubleCircle: w_[i] = h_[i] = std::max(tw, th) + kPad + (bl.shape == Shape::DoubleCircle ? 8.f : 0.f); break;
         case Shape::Diamond: w_[i] = h_[i] = tw + th + kPad; break;
         case Shape::Hexagon: w_[i] = tw + th + 2 * kPad; h_[i] = th + 2 * kPad; break;
-        case Shape::Arrow: w_[i] = tw + 3 * kPad; h_[i] = th + 3 * kPad; break;
+        case Shape::Arrow: h_[i] = th + 16; w_[i] = tw + h_[i] + 8; break;  // (Mermaid's, its padding 8)
         default: w_[i] = tw + 2 * kPad + 8; h_[i] = th + 2 * kPad; break;
         }
     }
@@ -448,7 +448,9 @@ private:
                 cell_h_[k] += std::max(extra_h, 0.f);
                 Place(k, cx, cy);
             } else if (Keeps(child.shape)) {
-                rect_[k] = D2D1::RectF(cx + w / 2 - w_[k] / 2, cy + h / 2 - h_[k] / 2, cx + w / 2 + w_[k] / 2, cy + h / 2 + h_[k] / 2);
+                // (A block arrow over columns takes their width, as in Mermaid.)
+                const float bw = child.shape == Shape::Arrow && span > 1 ? std::max(w, w_[k]) : w_[k];
+                rect_[k] = D2D1::RectF(cx + w / 2 - bw / 2, cy + h / 2 - h_[k] / 2, cx + w / 2 + bw / 2, cy + h / 2 + h_[k] / 2);
             } else {
                 rect_[k] = D2D1::RectF(cx, cy, cx + w, cy + h);
             }
@@ -516,15 +518,15 @@ private:
             break;
         }
         case Shape::Cylinder: {
-            const float e = std::min(h / 6, 12.f);
-            b_.Rect(D2D1::RectF(r.left, r.top + e / 2, r.right, r.bottom - e / 2), 0, fill, Role(kDgNone));
-            b_.Ellipse(D2D1::RectF(r.left, r.bottom - e, r.right, r.bottom), fill, stroke, sw, dash);
-            b_.Begin(D2D1::Point2F(r.left, r.top + e / 2));
-            b_.LineTo(D2D1::Point2F(r.left, r.bottom - e / 2));
-            b_.MoveTo(D2D1::Point2F(r.right, r.top + e / 2));
-            b_.LineTo(D2D1::Point2F(r.right, r.bottom - e / 2));
-            b_.End(Role(kDgNone), stroke, sw, dash);
-            b_.Rect(D2D1::RectF(r.left + 0.5f, r.bottom - e, r.right - 0.5f, r.bottom - e / 2), 0, fill, Role(kDgNone));
+            // The body down its sides and round the bottom's front half (the
+            // top edge left open), then the top.
+            const float e = std::min(h / 6, 12.f), k = 0.5523f, rx = w / 2, ry = e / 2, y = r.bottom - ry;
+            b_.Begin(D2D1::Point2F(r.right, r.top + ry));
+            b_.LineTo(D2D1::Point2F(r.right, y));
+            b_.CubicTo(D2D1::Point2F(r.right, y + ry * k), D2D1::Point2F(cx + rx * k, r.bottom), D2D1::Point2F(cx, r.bottom));
+            b_.CubicTo(D2D1::Point2F(cx - rx * k, r.bottom), D2D1::Point2F(r.left, y + ry * k), D2D1::Point2F(r.left, y));
+            b_.LineTo(D2D1::Point2F(r.left, r.top + ry));
+            b_.End(fill, stroke, sw, dash);
             b_.Ellipse(D2D1::RectF(r.left, r.top, r.right, r.top + e), fill, stroke, sw, dash);
             break;
         }
@@ -536,22 +538,66 @@ private:
             b_.LineTo(D2D1::Point2F(r.right - 8, r.bottom));
             b_.End(Role(kDgNone), stroke, sw);
             break;
-        case Shape::Arrow: {
-            // A block arrow pointing its way (right by default).
-            const std::wstring& d = bl.arrow;
-            const float a = std::min(w, h) / 3;
-            std::vector<D2D1_POINT_2F> pts;
-            if (d == L"left") pts = {{r.left, cy}, {r.left + a, r.top}, {r.left + a, cy - h / 4}, {r.right, cy - h / 4}, {r.right, cy + h / 4}, {r.left + a, cy + h / 4}, {r.left + a, r.bottom}};
-            else if (d == L"up") pts = {{cx, r.top}, {r.right, r.top + a}, {cx + w / 4, r.top + a}, {cx + w / 4, r.bottom}, {cx - w / 4, r.bottom}, {cx - w / 4, r.top + a}, {r.left, r.top + a}};
-            else if (d == L"down") pts = {{cx, r.bottom}, {r.left, r.bottom - a}, {cx - w / 4, r.bottom - a}, {cx - w / 4, r.top}, {cx + w / 4, r.top}, {cx + w / 4, r.bottom - a}, {r.right, r.bottom - a}};
-            else pts = {{r.right, cy}, {r.right - a, r.bottom}, {r.right - a, cy + h / 4}, {r.left, cy + h / 4}, {r.left, cy - h / 4}, {r.right - a, cy - h / 4}, {r.right - a, r.top}};
-            b_.Polygon(pts, fill, stroke, sw, dash);
-            break;
-        }
+        case Shape::Arrow: b_.Polygon(ArrowPoints(bl.arrow, r), fill, stroke, sw, dash); break;
         default: b_.Rect(r, 0, fill, stroke, sw, dash); break;
         }
         const M& m = text_[i];
         b_.Text(m, D2D1::Point2F(cx - m.w / 2, cy - m.h / 2), st.color.role != kDgNone ? st.color : Role(kDgText), bl.pos, bl.len);
+    }
+
+    // Mermaid's block arrow for its directions (right, left, up, down; x
+    // both across, y both up and down), in its box.
+    static std::vector<D2D1_POINT_2F> ArrowPoints(std::wstring_view dirs, const D2D1_RECT_F& r) {
+        bool right = false, left = false, up = false, down = false;
+        size_t i = 0;
+        while (i < dirs.size()) {
+            size_t e = i;
+            while (e < dirs.size() && dirs[e] != L',' && dirs[e] != L' ') ++e;
+            const std::wstring_view d = dirs.substr(i, e - i);
+            if (d == L"right" || d == L"x") right = true;
+            if (d == L"left" || d == L"x") left = true;
+            if (d == L"up" || d == L"y") up = true;
+            if (d == L"down" || d == L"y") down = true;
+            i = e + 1;
+        }
+        if (!right && !left && !up && !down) right = true;
+        const float W = r.right - r.left, H = r.bottom - r.top, m = H / 2, p = 4;
+        std::vector<D2D1_POINT_2F> q;  // from the bottom left, up negative
+        if (right && left && up && down) {
+            q = {{0, 0}, {m, 0}, {W / 2, 2 * p}, {W - m, 0}, {W, 0}, {W, -H / 3}, {W + 2 * p, -H / 2}, {W, -2 * H / 3},
+                 {W, -H}, {W - m, -H}, {W / 2, -H - 2 * p}, {m, -H}, {0, -H}, {0, -2 * H / 3}, {-2 * p, -H / 2}, {0, -H / 3}};
+        } else if (right && left && up) {
+            q = {{m, 0}, {W - m, 0}, {W, -H / 2}, {W - m, -H}, {m, -H}, {0, -H / 2}};
+        } else if (right && left && down) {
+            q = {{0, 0}, {m, -H}, {W - m, -H}, {W, 0}};
+        } else if (right && up && down) {
+            q = {{0, 0}, {W, -m}, {W, -H + m}, {0, -H}};
+        } else if (left && up && down) {
+            q = {{W, 0}, {0, -m}, {0, -H + m}, {W, -H}};
+        } else if (right && left) {
+            q = {{m, 0}, {m, -p}, {W - m, -p}, {W - m, 0}, {W, -H / 2}, {W - m, -H}, {W - m, -H + p}, {m, -H + p}, {m, -H}, {0, -H / 2}};
+        } else if (up && down) {
+            q = {{W / 2, 0}, {0, -p}, {m, -p}, {m, -H + p}, {0, -H + p}, {W / 2, -H}, {W, -H + p}, {W - m, -H + p}, {W - m, -p}, {W, -p}};
+        } else if (right && up) {
+            q = {{0, 0}, {W, -m}, {0, -H}};
+        } else if (right && down) {
+            q = {{0, 0}, {W, 0}, {0, -H}};
+        } else if (left && up) {
+            q = {{W, 0}, {0, -m}, {W, -H}};
+        } else if (left && down) {
+            q = {{W, 0}, {0, 0}, {W, -H}};
+        } else if (right) {
+            q = {{m, -p}, {W - m, -p}, {W - m, 0}, {W, -H / 2}, {W - m, -H}, {W - m, -H + p}, {m, -H + p}};
+        } else if (left) {
+            q = {{m, 0}, {m, -p}, {W - m, -p}, {W - m, -H + p}, {m, -H + p}, {m, -H}, {0, -H / 2}};
+        } else if (up) {
+            q = {{m, -p}, {m, -H + p}, {0, -H + p}, {W / 2, -H}, {W, -H + p}, {W - m, -H + p}, {W - m, -p}};
+        } else {
+            q = {{W / 2, 0}, {0, -p}, {m, -p}, {m, -H + p}, {W - m, -H + p}, {W - m, -p}, {W, -p}};
+        }
+        std::vector<D2D1_POINT_2F> pts;
+        for (const D2D1_POINT_2F& o : q) pts.push_back(D2D1::Point2F(r.left + o.x, r.bottom + o.y));
+        return pts;
     }
 
     D2D1_POINT_2F Center(int i) const {

@@ -147,5 +147,6 @@ std::shared_ptr<DiagramScene> RequirementDiagram(const Source& src, SceneBuilder
 std::shared_ptr<DiagramScene> SankeyDiagram(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> BlockDiagram(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> C4Diagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> ArchitectureDiagram(const Source& src, SceneBuilder* builder);
 
 }  // namespace mdv::mermaid

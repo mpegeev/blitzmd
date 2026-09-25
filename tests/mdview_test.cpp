@@ -1566,6 +1566,32 @@ int main(int argc, char** ansi_argv) {
             {L"treemap-beta\n\"S1\"\n  \"L1\": 12\n  \"S2\"\n    \"L2\": 1,000.5\n\"S3\"\n  \"L3\": 20", true, nullptr},
             {L"treemap-beta\n\"S\"\n  \"L\": x", false, L"Line 3"},
             {L"gitGraph\ncommit", true, nullptr},
+            {L"requirementDiagram\nrequirement test_req {\nid: 1\ntext: the test text.\nrisk: high\nverifymethod: test\n}\nfunctionalRequirement f {\n}\nelement test_entity {\ntype: simulation\ndocref: reqs/test_entity\n}\ntest_entity - satisfies -> test_req\ntest_req <- contains - f\nclassDef hot fill:#f96\nclass f hot", true, nullptr},
+            {L"requirementDiagram\nrequirement a {\n}\nelement b {\n}\nb - owns -> a", false, L"Line 6"},
+            {L"requirementDiagram\nrequirement a {\nfoo: 1\n}", false, L"Line 3"},
+            {L"requirementDiagram\nrequirement a {\nid: 1", false, L"Line 2"},
+            {L"sankey-beta\n\nA,B,10\nB,C,5\n\"quoted, name\",C,2.5\n\"with \"\"quotes\"\"\",A,1", true, nullptr},
+            {L"sankey-beta\nA,B", false, L"Line 2"},
+            {L"sankey-beta\nA,B,x", false, L"Line 2"},
+            {L"block-beta\ncolumns 3\na[\"A\"] b:2 c\nspace d((\"D\"))\nblock:grp\n  e f\nend\na --> b\nc -- \"lbl\" --> d\nstyle a fill:#f9f", true, nullptr},
+            {L"block-beta\nblock:x\na", false, nullptr},
+            {L"C4Context\ntitle T\nPerson(u, \"User\", \"desc\")\nSystem(s, \"Sys\")\nSystem_Ext(e, \"Ext\")\nSystemDb(db, \"DB\")\nBoundary(b1, \"B\") {\n  System(s2, \"S2\")\n}\nRel(u, s, \"Uses\", \"HTTPS\")\nBiRel(s, e, \"x\")", true, nullptr},
+            {L"C4Container\nContainer(c, \"C\", \"tech\", \"desc\")\nContainerDb(d, \"D\")\nContainerQueue(q, \"Q\")\nRel(c, d, \"reads\")", true, nullptr},
+            {L"architecture-beta\n  group api(cloud)[API]\n  service db(database)[Database] in api\n  service disk1(disk)[Storage] in api\n  service server(server)[Server] in api\n  db:L -- R:server\n  disk1:T -- B:server", true, nullptr},
+            {L"architecture-beta\n  service a(server)[A] in g\n  group g[G]\n  junction j in g\n  service b(logos:aws-s3)[\"B, quoted\"]\n  service c \"icon text\"['C']\n  a:R <-[HTTP]-> L:b\n  b:B -[bend]- L:j\n  j{group}:R --> T:c", true, nullptr},
+            {L"architecture-beta\n  group a[A] in b\n  group b[B]", false, L"Line 2"},
+            {L"architecture-beta\n  service a(server)[A]\n  service a(disk)[B]", false, L"Line 3"},
+            {L"architecture-beta\n  service a(server)[A]\n  a:R -- L:nope", false, L"Line 3"},
+            {L"architecture\n  service a(server)[A]", false, L"Line 1"},
+            {L"architecture-beta\n  Service a(server)[A]", false, L"Line 2"},
+            {L"architecture-beta\n  service a(server)[A]\n  service b(server)[B]\n  a:X -- L:b", false, L"Line 4"},
+            {L"architecture-beta\n  group g[G]\n  service a(server)[A] in g\n  service b(server)[B] in g\n  a{group}:R -- L:b", false, L"Line 5"},
+            {L"architecture-beta\n  service a(server)[A]\n  align row a", false, L"Line 3"},
+            {L"architecture-beta\n  junction j\n  service a(server)[A]\n  service b(server)[B]\n  align column a b j\n  a:B -[\"lbl\"]-> T:b", true, nullptr},
+            {L"architecture-beta\n  service a(server)[A]\n  service b(server)[B]\n  a:R -- L:b:R", false, L"Line 4"},
+            {L"architecture-beta\n  service a(server)[]", false, L"Line 2"},
+            {L"architecture-beta\n  group g\n  group e(cloud)[Empty] in g\n  service a \"x\" in g\n  accDescr {\n    multi\n  }\n  title T", true, nullptr},
+            {L"architecture-beta\n  group g[G]\n  service a(server)[A]\n  a:R -- L:g", false, L"Line 4"},
             {L"", false, nullptr},
             {L"not a diagram", false, nullptr},
         };
@@ -1753,6 +1779,63 @@ int main(int argc, char** ansi_argv) {
                 return s;
             }(),
             L"treemap-beta\n\"Root\"\n" + repeat(L"  \"leaf\": 1\n  \"zero\": 0\n", 900),
+            [&] {  // a long chain of services, then as many alone
+                std::wstring s = L"architecture-beta\n";
+                for (int i = 0; i < 900; ++i) s += L"service s" + std::to_wstring(i) + L"(server)[S" + std::to_wstring(i) + L"]\n";
+                for (int i = 0; i + 1 < 450; ++i) s += L"s" + std::to_wstring(i) + L":R -- L:s" + std::to_wstring(i + 1) + L"\n";
+                return s;
+            }(),
+            [&] {  // edges on random sides: services wanting one place
+                std::wstring s = L"architecture-beta\n";
+                for (int i = 0; i < 300; ++i) s += L"service s" + std::to_wstring(i) + L"(disk)\n";
+                uint32_t r = 5;
+                for (int i = 0; i < 1500; ++i) {
+                    r = r * 1103515245u + 12345u;
+                    static const wchar_t* kSides = L"LRTB";
+                    s += L"s" + std::to_wstring((r >> 8) % 300) + L":" + kSides[(r >> 4) % 4] + L" -- " + kSides[(r >> 20) % 4] + L":s" + std::to_wstring((r >> 12) % 300) + L"\n";
+                }
+                return s;
+            }(),
+            [&] {  // groups as deep as allowed, and one deeper
+                std::wstring s = L"architecture-beta\ngroup g0[G]\n";
+                for (int i = 1; i <= 25; ++i) s += L"group g" + std::to_wstring(i) + L"(cloud)[G] in g" + std::to_wstring(i - 1) + L"\nservice s" + std::to_wstring(i) + L"(server)[S] in g" + std::to_wstring(i) + L"\n";
+                return s;
+            }(),
+            [&] {
+                std::wstring s = L"architecture-beta\ngroup g0[G]\n";
+                for (int i = 1; i <= 24; ++i) s += L"group g" + std::to_wstring(i) + L"(cloud)[G] in g" + std::to_wstring(i - 1) + L"\nservice s" + std::to_wstring(i) + L"(server)[S] in g" + std::to_wstring(i) + L"\n";
+                return s;
+            }(),
+            L"architecture-beta\n" + repeat(L"service t" + std::wstring(1, L'a') + L" \"" + std::wstring(3000, L'w') + L" " + std::wstring(900, L'x') + L"\"[" + std::wstring(3000, L'y') + L"]\n", 1) +
+                repeat(L"junction j\n", 1),
+            [&] {
+                std::wstring s = L"architecture-beta\n";
+                for (int i = 0; i < 1500; ++i) s += L"service s" + std::to_wstring(i) + L"(internet)[n]\n";
+                return s;
+            }(),
+            L"sankey-beta\n" + repeat(L"a,b,1e308\nb,c,1e308\n", 400),
+            L"sankey-beta\nA,B,1\nB,A,1",
+            L"sankey-beta\na,b,0\nb,c,0\nc,d,1e-300",
+            [&] {  // a wide, deep sankey
+                std::wstring s = L"sankey-beta\n";
+                for (int i = 0; i < 1000; ++i) s += L"n" + std::to_wstring(i % 97) + L",m" + std::to_wstring((i * 31) % 89) + L"," + std::to_wstring(1 + i % 7) + L"\n";
+                return s;
+            }(),
+            L"block-beta\ncolumns 2000\n" + repeat(L"a b c space:3 d:5\n", 300),
+            [&] {  // nested blocks
+                std::wstring s = L"block-beta\n";
+                for (int i = 0; i < 30; ++i) s += L"block:b" + std::to_wstring(i) + L"\ncolumns 2\nx" + std::to_wstring(i) + L"\n";
+                for (int i = 0; i < 30; ++i) s += L"end\n";
+                return s;
+            }(),
+            L"requirementDiagram\n" + repeat(L"requirement r {\nid: 1\n}\nr - traces -> r\n", 500),
+            [&] {
+                std::wstring s = L"C4Context\n";
+                for (int i = 0; i < 30; ++i) s += L"Boundary(b" + std::to_wstring(i) + L", \"B\") {\n";
+                for (int i = 0; i < 30; ++i) s += L"Person(p" + std::to_wstring(i) + L", \"P\")\n}\n";
+                for (int i = 0; i < 400; ++i) s += L"Rel(p" + std::to_wstring(i % 30) + L", p" + std::to_wstring((i * 7) % 30) + L", \"r\")\n";
+                return s;
+            }(),
         };
         for (const std::wstring& h : hostile) {
             const double t0 = NowMs();
@@ -2165,6 +2248,78 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated git graphs, kanban boards, packets, radar charts and treemaps in %.0f ms\n", iterations / 4, NowMs() - gg0);
+        // Well-formed random architecture diagrams, sankeys, block diagrams,
+        // requirement and C4 diagrams.
+        const double ar0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            std::wstring src;
+            const int count = 1 + static_cast<int>(rnd() % 12);
+            static const wchar_t* kSides = L"LRTB";
+            switch (it % 5) {
+            case 0: {
+                static const wchar_t* kIcons[] = {L"(server)", L"(disk)", L"(database)", L"(internet)", L"(cloud)", L"(logos:x)", L" \"txt\"", L""};
+                src = L"architecture-beta\n";
+                const int groups = static_cast<int>(rnd() % 4);
+                for (int g = 0; g < groups; ++g) src += L"group g" + std::to_wstring(g) + L"(cloud)[Group " + std::to_wstring(g) + L"]" + (g > 0 && rnd() % 2 ? L" in g" + std::to_wstring(rnd() % static_cast<uint32_t>(g)) : L"") + L"\n";
+                std::vector<int> group_of;
+                for (int k = 0; k < count; ++k) {
+                    const int g = groups > 0 && rnd() % 3 ? static_cast<int>(rnd() % static_cast<uint32_t>(groups)) : -1;
+                    group_of.push_back(g);
+                    const bool junction = rnd() % 6 == 0;
+                    src += std::wstring(junction ? L"junction" : L"service") + L" s" + std::to_wstring(k) + (junction ? L"" : std::wstring(kIcons[rnd() % 8]) + L"[S " + std::to_wstring(k) + L"]") +
+                           (g >= 0 ? L" in g" + std::to_wstring(g) : L"") + L"\n";
+                }
+                for (int e = static_cast<int>(rnd() % static_cast<uint32_t>(count * 2)); e > 0; --e) {
+                    const int a = static_cast<int>(rnd() % static_cast<uint32_t>(count)), b = static_cast<int>(rnd() % static_cast<uint32_t>(count));
+                    const bool cross = group_of[static_cast<size_t>(a)] != group_of[static_cast<size_t>(b)] || group_of[static_cast<size_t>(a)] < 0;
+                    src += L"s" + std::to_wstring(a) + (cross && rnd() % 4 == 0 ? L"{group}" : L"") + L":" + kSides[rnd() % 4] + (rnd() % 3 == 0 ? L" <" : L" ") +
+                           (rnd() % 3 == 0 ? L"-[lbl]-" : L"--") + (rnd() % 3 == 0 ? L"> " : L" ") + kSides[rnd() % 4] + L":s" + std::to_wstring(b) + L"\n";
+                }
+                if (count > 2 && rnd() % 3 == 0) src += L"align row s0 s1 s2\n";
+                break;
+            }
+            case 1:
+                src = L"sankey-beta\n";
+                for (int k = 0; k < count * 2; ++k) {
+                    const int a = static_cast<int>(rnd() % 8), b = a + 1 + static_cast<int>(rnd() % 4);
+                    src += L"n" + std::to_wstring(a) + L",n" + std::to_wstring(b) + L"," + std::to_wstring(1 + rnd() % 50) + L"\n";
+                }
+                break;
+            case 2:
+                src = L"block-beta\ncolumns " + std::to_wstring(1 + rnd() % 5) + L"\n";
+                for (int k = 0; k < count; ++k) {
+                    static const wchar_t* kBlockForms[] = {L"[\"B\"]", L"((\"C\"))", L"(\"R\")", L"{\"D\"}", L":2", L""};
+                    src += (rnd() % 5 == 0 ? L"space " : L"") + std::wstring(L"b") + std::to_wstring(k) + kBlockForms[rnd() % 6] + L"\n";
+                }
+                for (int e = static_cast<int>(rnd() % static_cast<uint32_t>(count)); e > 0; --e) src += L"b" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + L" --> b" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + L"\n";
+                break;
+            case 3:
+                src = L"requirementDiagram\n";
+                for (int k = 0; k < count; ++k) src += std::wstring(rnd() % 3 ? L"requirement" : L"element") + L" r" + std::to_wstring(k) + L" {\n}\n";
+                for (int e = static_cast<int>(rnd() % static_cast<uint32_t>(count * 2)); e > 0; --e) {
+                    static const wchar_t* kRels[] = {L"contains", L"copies", L"derives", L"satisfies", L"verifies", L"refines", L"traces"};
+                    src += L"r" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + L" - " + kRels[rnd() % 7] + L" -> r" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + L"\n";
+                }
+                break;
+            default:
+                src = L"C4Context\n";
+                for (int k = 0; k < count; ++k) {
+                    static const wchar_t* kC4Shapes[] = {L"Person", L"System", L"System_Ext", L"SystemDb", L"Container", L"ContainerQueue"};
+                    if (rnd() % 5 == 0) src += L"Boundary(b" + std::to_wstring(k) + L", \"B\") {\n";
+                    src += std::wstring(kC4Shapes[rnd() % 6]) + L"(e" + std::to_wstring(k) + L", \"E " + std::to_wstring(k) + L"\", \"d\")\n";
+                    if (src.find(L"Boundary(b" + std::to_wstring(k)) != std::wstring::npos) src += L"}\n";
+                }
+                for (int e = static_cast<int>(rnd() % static_cast<uint32_t>(count)); e > 0; --e) src += L"Rel(e" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + L", e" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + L", \"uses\")\n";
+                break;
+            }
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 300)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated architecture, sankey, block, requirement and C4 diagrams in %.0f ms\n", iterations / 4, NowMs() - ar0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();
