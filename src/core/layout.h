@@ -215,6 +215,10 @@ private:
     Margins BlockMargins(const Block* b) const;
     float CollapsedMargin(const Block* b, bool top) const;
     void Translate(Block* b, float dx, float dy);
+    // A hidden block and everything in it sit at (x, y) with no height, so
+    // blocks and leaves stay sorted by position (drawing and hit tests
+    // search them by binary search).
+    void Park(Block* b, float x, float y, float w);
 
     LeafStyle ResolveStyle(const Block* b, const Ctx& ctx) const;
     float MeasureLeaf(Block* b, float width, bool exact);

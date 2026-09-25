@@ -1324,6 +1324,146 @@ int main(int argc, char** ansi_argv) {
         std::printf(failures ? "math FAILED\n" : "math OK\n");
         return failures ? 1 : 0;
     }
+    if (cmd == "details") {
+        // details <file.md>...: blocks stay in order around collapsed
+        // <details> (drawing and hit tests find them by binary search, #22):
+        // each block's children, and the leaves outside tables, by top and
+        // bottom, laid out exactly and estimated, with every <details> of the
+        // documents toggled. And a collapsed summary at the end of a long
+        // document is drawn when the view is scrolled down.
+        int failures = 0;
+        ComPtr<IDWriteFactory> dw;
+        DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(dw.GetAddressOf()));
+        if (!dw) return 1;
+        std::string filler;
+        for (int i = 1; i <= 30; ++i) {
+            filler += "Filler paragraph " + std::to_string(i) + ". Lorem ipsum dolor sit amet, consectetur.\n\n";
+        }
+        const std::string summary_md = "<details>\n<summary>Click me</summary>\n\nHidden text.\n</details>\n";
+        std::vector<std::pair<std::string, std::string>> docs = {
+            {"summary at the end", filler + summary_md},
+            {"nested", "Intro\n\n<details>\n<summary>Outer</summary>\n\n- item\n  - nested item\n\n> quote\n\n"
+                       "```\ncode\n```\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n<details open>\n<summary>Inner</summary>\n\n"
+                       "Inner text.\n</details>\n\nAfter inner.\n</details>\n\nBetween.\n\n" + summary_md + "\nEnd.\n"},
+            {"in a list", "- one\n- <details><summary>In an item</summary>\n\n  Hidden in an item.\n  </details>\n- three\n\n" + filler},
+            {"in a table", "<table><tr><td>a</td><td><details><summary>In a cell</summary>\n\nHidden in a cell.\n"
+                           "</details></td></tr><tr><td>x</td></tr></table>\n\n" + filler},
+            {"no summary", filler + "<details>\n\nHidden without a summary.\n</details>\n\nLast.\n"},
+        };
+        for (int i = 2; i < argc; ++i) {
+            std::string md;
+            if (LoadMarkdown(argv[i], md)) docs.emplace_back(argv[i], md);
+        }
+        size_t checked = 0;
+        for (const auto& [name, md] : docs) {
+            auto doc = ParseMarkdown(md, FullPath("samples/gfm/x.md"));
+            Palette palette;
+            ImageStore images;
+            images.Attach(doc.get(), nullptr, false, false);
+            LayoutEngine le;
+            le.Init(dw.Get(), &palette, &images);
+            le.SetConfig(LayoutConfig{});
+            le.SetDocument(doc.get());
+            std::vector<Block*> details;
+            std::vector<Block*> todo{doc->root};
+            while (!todo.empty()) {
+                Block* b = todo.back();
+                todo.pop_back();
+                if (b->type == BlockType::Details) details.push_back(b);
+                for (Block* c : b->children) todo.push_back(c);
+            }
+            std::string first_error;
+            auto check = [&](const char* when) {
+                auto fail = [&](const Block* b, const char* what) {
+                    if (first_error.empty()) {
+                        first_error = std::string(when) + ": " + what + " at y " + std::to_string(b->y) + " (type " +
+                                      std::to_string(static_cast<int>(b->type)) + ")";
+                    }
+                };
+                std::vector<const Block*> stack{doc->root};
+                while (!stack.empty()) {
+                    const Block* b = stack.back();
+                    stack.pop_back();
+                    for (size_t k = 0; k < b->children.size(); ++k) {
+                        const Block* c = b->children[k];
+                        stack.push_back(c);
+                        if (k == 0 || b->type == BlockType::Table) continue;
+                        const Block* p = b->children[k - 1];
+                        if (c->y < p->y - 0.01f) fail(c, "a block above the one before it");
+                        if (c->y + c->h < p->y + p->h - 0.01f) fail(c, "a block ending above the one before it");
+                    }
+                }
+                float bottom = 0;
+                for (const Block* leaf : doc->leaves) {
+                    bool in_table = false;
+                    for (const Block* p = leaf->parent; p && !in_table; p = p->parent) in_table = p->type == BlockType::Table;
+                    if (in_table) continue;
+                    if (leaf->y + leaf->h < bottom - 0.01f) fail(leaf, "a leaf ending above the one before it");
+                    bottom = std::max(bottom, leaf->y + leaf->h);
+                }
+                ++checked;
+            };
+            for (float w : {320.f, 900.f}) {
+                // Exact everywhere, then estimated above a view at the end.
+                le.Layout(w, 0, 1e6f);
+                check("exact");
+                le.InvalidateMeasurements();
+                le.Layout(w, 1e6f, 1e6f + 800.f);
+                check("estimated");
+                for (Block* d : details) {
+                    for (int t = 0; t < 2; ++t) {
+                        d->open = !d->open;
+                        LayoutEngine::UpdateVisibility(doc->root, true);
+                        le.Layout(w, 0, 1e6f);
+                        check(d->open ? "opened" : "closed");
+                    }
+                }
+            }
+            if (!first_error.empty()) {
+                std::printf("FAIL: %s: %s\n", name.c_str(), first_error.c_str());
+                ++failures;
+            }
+        }
+        // Scrolled down to the middle (the text above estimated, as in the
+        // viewer), the document with a collapsed summary at the end has ink
+        // below the last filler paragraph; without the summary it doesn't.
+        float scroll = 0;
+        {
+            auto doc = ParseMarkdown(filler, FullPath("samples/gfm/x.md"));
+            OffscreenStats stats;
+            RenderToBitmap(*doc, OffscreenOptions{}, &stats);
+            scroll = std::floor(stats.doc_height * 0.5f);
+        }
+        auto ink_bottom = [&](const std::string& md) -> int {
+            auto doc = ParseMarkdown(md, FullPath("samples/gfm/x.md"));
+            OffscreenOptions o;
+            o.width = 900.f;
+            o.scroll_y = scroll;
+            ComPtr<IWICBitmap> bmp = RenderToBitmap(*doc, o);
+            UINT w = 0, h = 0;
+            if (!bmp || FAILED(bmp->GetSize(&w, &h)) || !w || !h) return -1;
+            std::vector<uint32_t> px(static_cast<size_t>(w) * h);
+            if (FAILED(bmp->CopyPixels(nullptr, w * 4, static_cast<UINT>(px.size() * 4), reinterpret_cast<BYTE*>(px.data())))) {
+                return -1;
+            }
+            const uint32_t bg = px[0];
+            for (UINT y = h; y-- > 0;) {
+                for (UINT x = 0; x < w; ++x) {
+                    if (px[static_cast<size_t>(y) * w + x] != bg) return static_cast<int>(y);
+                }
+            }
+            return 0;
+        };
+        const int with_summary = ink_bottom(filler + summary_md);
+        const int without = ink_bottom(filler);
+        if (with_summary < 0 || without < 0 || with_summary < without + 10) {
+            std::printf("FAIL: the collapsed summary isn't drawn when scrolled down (ink ends at %d, %d without it)\n",
+                        with_summary, without);
+            ++failures;
+        }
+        std::printf("details: %zu layouts checked, %d failure(s)\n", checked, failures);
+        return failures ? 1 : 0;
+    }
     if (cmd == "text") {
         // text <file.md>: the plain text "Select all + Copy" puts on the clipboard.
         std::string md;

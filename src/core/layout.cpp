@@ -1070,6 +1070,21 @@ void LayoutEngine::Translate(Block* b, float dx, float dy) {
     for (Block* c : b->children) Translate(c, dx, dy);
 }
 
+void LayoutEngine::Park(Block* b, float x, float y, float w) {
+    b->x = x;
+    b->y = y;
+    b->w = w;
+    b->h = 0;
+    b->marker_y = y;
+    if (b->IsLeaf()) {
+        if (LeafState* s = State(b)) {
+            s->tx = x;
+            s->ty = y;
+        }
+    }
+    for (Block* c : b->children) Park(c, x, y, w);
+}
+
 void LayoutEngine::Layout(float viewport_w, float exact_y0, float exact_y1) {
     if (!doc_) return;
     viewport_w_ = std::max(viewport_w, 1.f);
@@ -1107,10 +1122,7 @@ float LayoutEngine::LayoutChildren(Block* parent, float x, float y, float w, con
     for (size_t i = first; i < parent->children.size(); ++i) {
         Block* c = parent->children[i];
         if (!c->visible) {
-            c->x = x;
-            c->y = cursor;
-            c->w = w;
-            c->h = 0;
+            Park(c, x, cursor, w);
             continue;
         }
         const Margins m = BlockMargins(c);
@@ -1266,8 +1278,7 @@ float LayoutEngine::LayoutList(Block* b, float x, float y, float w, const Ctx& c
     bool first = true;
     for (Block* item : b->children) {
         if (!item->visible) {
-            item->y = cursor;
-            item->h = 0;
+            Park(item, item_x, cursor, std::max(w - indent, 20.f));
             continue;
         }
         if (!first) cursor += gap;
@@ -1299,6 +1310,8 @@ float LayoutEngine::LayoutDetails(Block* b, float x, float y, float w, const Ctx
     if (b->open) {
         const float body = LayoutChildren(b, x, y + h + m_.em * 0.5f, w, ctx, first);
         if (body > 0) h += m_.em * 0.5f + body;
+    } else {
+        for (size_t i = first; i < b->children.size(); ++i) Park(b->children[i], x, y + h, w);
     }
     return h;
 }

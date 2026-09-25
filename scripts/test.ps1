@@ -41,6 +41,9 @@ foreach ($s in 'spec-tables', 'spec-strikethrough', 'spec-permissive-autolinks')
 Step 'syntax highlighter' { & (Join-Path $bin 'highlight_test.exe') -q | Select-Object -Last 1 }
 Step 'emoji table' { & (Join-Path $bin 'emoji_test.exe') | Select-Object -Last 1 }
 Step 'flag emoji' { & $t flags samples/gfm/17-flags.md | Select-Object -Last 1 }
+Step 'collapsed details' {
+    & $t details (Get-ChildItem samples/gfm/*.md | ForEach-Object FullName) | Where-Object { $_ -match 'FAIL|details' }
+}
 Step 'math' { & $t math samples/gfm/18-math.md | Where-Object { $_ -match 'FAIL|math' } }
 Step 'mermaid' { & $t mermaid samples/gfm/20-mermaid-flowchart.md | Where-Object { $_ -match 'FAIL|mermaid' } }
 Step 'mermaid sequence' { & $t mermaid samples/gfm/21-mermaid-sequence.md | Where-Object { $_ -match 'FAIL|mermaid' } }
