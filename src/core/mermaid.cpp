@@ -20,9 +20,34 @@ bool IsWordChar(wchar_t c) {
     return c == L'_' || std::iswalnum(c);
 }
 
+// A setting's value in the front matter or an init directive:
+// `name: value`, `"name": "value"` or `'name':'value'`.
+static std::wstring ConfigValue(std::wstring_view text, size_t front_end, std::wstring_view name) {
+    for (size_t at = text.find(name); at != std::wstring_view::npos; at = text.find(name, at + 1)) {
+        // In the front matter, or between %%{ and }%%.
+        const size_t open = text.rfind(L"%%{", at);
+        const bool directive = open != std::wstring_view::npos && text.find(L"}%%", open) > at;
+        if (at >= front_end && !directive) continue;
+        size_t k = at + name.size();
+        if (k < text.size() && (text[k] == L'"' || text[k] == L'\'')) ++k;
+        while (k < text.size() && (text[k] == L' ' || text[k] == L'\t')) ++k;
+        if (k >= text.size() || text[k] != L':') continue;
+        ++k;
+        while (k < text.size() && (text[k] == L' ' || text[k] == L'\t')) ++k;
+        const wchar_t quote = k < text.size() && (text[k] == L'"' || text[k] == L'\'') ? text[k] : 0;
+        if (quote) ++k;
+        const size_t start = k;
+        while (k < text.size() && text[k] != L'\n' && text[k] != L'\r' && (quote ? text[k] != quote : text[k] != L',' && text[k] != L'}')) ++k;
+        const std::wstring_view v = Trim(text.substr(start, k - start));
+        if (!v.empty() && v.size() <= 200) return std::wstring(v);
+    }
+    return {};
+}
+
 Source Preprocess(std::wstring_view text) {
     Source src;
     src.text = text;
+    // (The front matter's end isn't known yet: settings are looked up at the end.)
     // Front matter: a "---" line first, up to the next "---" line.
     size_t i = 0;
     while (i < text.size() && IsSpace(text[i])) ++i;
@@ -41,6 +66,7 @@ Source Preprocess(std::wstring_view text) {
             const std::wstring_view line = line_at(p, &after);
             if (line == L"---") {
                 src.body = after;
+                src.main_branch = ConfigValue(text, src.body, L"mainBranchName");
                 return src;
             }
             // Only a top-level title matters here (config is ignored).
@@ -65,6 +91,7 @@ Source Preprocess(std::wstring_view text) {
         src.title.clear();  // not closed: not front matter
         src.display_mode.clear();
     }
+    src.main_branch = ConfigValue(text, 0, L"mainBranchName");
     return src;
 }
 

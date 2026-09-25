@@ -48,9 +48,12 @@ enum DiagramRole : uint8_t {
     kDgPlot = kDgGitText + 8,          // + n: xychart plot colors (10)
     kDgQuadrant = kDgPlot + 10,        // + n: quadrant chart fills (4)
     kDgQuadrantBorder = kDgQuadrant + 4,
+    kDgPrimaryBorder = kDgQuadrantBorder,  // (the same: Mermaid's primaryBorderColor)
     kDgScaleBright,                    // + n: cScale at 120% brightness (timeline events)
     kDgGitInv = kDgScaleBright + 12,   // + n: gitInv0..7 (a highlighted commit)
-    kDgRoleCount = kDgGitInv + 8,
+    kDgScalePeer = kDgGitInv + 8,      // + n: cScalePeer0..11 (treemap sections' borders)
+    kDgScaleLighter = kDgScalePeer + 12,  // + n: cScale 10% lighter (kanban columns)
+    kDgRoleCount = kDgScaleLighter + 12,
 };
 
 struct DgColor {
@@ -60,8 +63,8 @@ struct DgColor {
 inline DgColor Role(uint8_t role) { return DgColor{role, 0}; }
 inline DgColor Argb(uint32_t argb) { return DgColor{kDgArgb, argb}; }
 inline DgColor Tint(uint32_t argb) { return DgColor{kDgTint, argb}; }
-// A role at an opacity (0 to 255).
-inline DgColor RoleAt(uint8_t role, uint8_t alpha) { return DgColor{role, static_cast<uint32_t>(alpha) << 24}; }
+// A role at an opacity (0 to 255; 0: not painted).
+inline DgColor RoleAt(uint8_t role, uint8_t alpha) { return alpha ? DgColor{role, static_cast<uint32_t>(alpha) << 24} : DgColor{}; }
 
 // Text of a label with its bold/italic spans (<b>, <i>, **markdown**...).
 struct RichText {

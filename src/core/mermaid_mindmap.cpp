@@ -75,8 +75,11 @@ private:
             size_t e = k + std::wcslen(s.open);
             while (e < text.size() && (text[e] == L' ' || text[e] == L'\t')) ++e;
             if (e < text.size() && text[e] == L'"') {
+                // (Only a quote closed right before the shape's end.)
                 const size_t q = text.find(L'"', e + 1);
-                if (q != std::wstring_view::npos) e = q;
+                size_t after = q == std::wstring_view::npos ? q : q + 1;
+                while (after < text.size() && (text[after] == L' ' || text[after] == L'\t')) ++after;
+                if (after < text.size() && text.substr(after).starts_with(s.close)) e = q;
             }
             while (e < text.size() && text[e] != L'\n') ++e;
             const std::wstring_view line = Trim(text.substr(k, e - k));

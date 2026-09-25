@@ -324,18 +324,21 @@ public:
         }
         const float title_h = title_m.layout ? title_m.h + 20 : 0.f;
         const bool vertical = !p_.horizontal;
-        // (A legend taking too much of the width is left out, as Mermaid does.)
-        if (legend_w > kW / 3) {
+        // The category (x) axis's depth and the value axis's, then the plot.
+        // As in Mermaid, the plot keeps half of each dimension; labels (and
+        // a legend) that don't fit into the rest are left out.
+        auto depth = [&](float label, bool has_title, const M& t) { return kLine + kTick + label + 2 * kPad + (has_title ? t.h + 2 * kPad : 0.f); };
+        const float room_w = kW - std::floor(kW / 2), room_h = kH - std::floor(kH / 2) - title_h;
+        show_x_ = (vertical ? xl_h : xl_w) + 2 * kPad <= (vertical ? room_h : room_w) - kLine;
+        show_v_ = (vertical ? vl_w : vl_h) + 2 * kPad <= (vertical ? room_w : room_h) - kLine;
+        const float x_depth = depth(show_x_ ? (vertical ? xl_h : xl_w) : 0.f, xt.layout != nullptr, xt);
+        const float v_depth = depth(show_v_ ? (vertical ? vl_w : vl_h) : 0.f, vt.layout != nullptr, vt);
+        const size_t named = static_cast<size_t>(std::count_if(names.begin(), names.end(), [](const M& m) { return m.layout != nullptr; }));
+        const float legend_h = named > 0 ? 20 + 14 * static_cast<float>(named) + 7 * static_cast<float>(named - 1) : 0.f;
+        if (legend_w > room_w - (vertical ? v_depth : x_depth) || legend_h > kH / 2) {
             legend_w = 0;
             for (M& m : names) m = M{};
         }
-        // The category (x) axis's depth and the value axis's, then the plot;
-        // labels too big to leave room for it left out, as Mermaid does.
-        auto depth = [&](float label, bool has_title, const M& t) { return kLine + kTick + label + 2 * kPad + (has_title ? t.h + 2 * kPad : 0.f); };
-        show_x_ = (vertical ? xl_h : xl_w) <= (vertical ? kH : kW) * 0.3f;
-        show_v_ = (vertical ? vl_w : vl_h) <= (vertical ? kW : kH) * 0.3f;
-        const float x_depth = depth(show_x_ ? (vertical ? xl_h : xl_w) : 0.f, xt.layout != nullptr, xt);
-        const float v_depth = depth(show_v_ ? (vertical ? vl_w : vl_h) : 0.f, vt.layout != nullptr, vt);
         D2D1_RECT_F plot;
         if (vertical) plot = D2D1::RectF(v_depth, title_h, kW - legend_w, kH - x_depth);
         else plot = D2D1::RectF(x_depth, title_h + v_depth, kW - legend_w, kH);
@@ -395,7 +398,7 @@ public:
                     if (pl.labels[i].raw.empty()) continue;
                     const M m = b_.Measure(ParseLabel(pl.labels[i].raw, false), 0, false, 12 / unit);
                     const D2D1_POINT_2F q = point(a_of(i), val_at(pl.values[i]));
-                    const D2D1_POINT_2F at = vertical ? D2D1::Point2F(q.x - m.w / 2, q.y - 10 - m.h) : D2D1::Point2F(q.x + 10, q.y - m.h / 2);
+                    const D2D1_POINT_2F at = vertical ? D2D1::Point2F(q.x - m.w / 2, q.y - 10 - m.h / 2) : D2D1::Point2F(q.x + 10, q.y - m.h / 2);
                     b_.Text(m, at, color, pl.labels[i].pos, pl.labels[i].len);
                 }
             }

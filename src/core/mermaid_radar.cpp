@@ -34,6 +34,8 @@ public:
     void Parse() {
         c_.SkipStatementGap();
         if (!c_.EatKeyword(L"radar-beta") && !c_.EatKeyword(L"radar")) c_.Fail(Tr(L"Expected \"radar-beta\"", L"Ожидалось «radar-beta»"));
+        c_.SkipBlanks();
+        c_.Eat(L':');
         for (;;) {
             c_.SkipStatementGap();
             if (c_.AtEnd()) break;
@@ -41,14 +43,14 @@ public:
             c_.SkipBlanks();
             if (!c_.AtStatementEnd()) c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
         }
-        // Values named by axis: in the axes' order (missing: 0).
+        // Values named by axis: in the axes' order, each axis's needed.
         for (Curve& c : curves) {
             if (c.named.empty()) continue;
-            c.values.assign(axes.size(), 0);
-            for (const auto& [id, v] : c.named) {
-                for (size_t k = 0; k < axes.size(); ++k) {
-                    if (axes[k].id == id) c.values[k] = v;
-                }
+            c.values.clear();
+            for (const Axis& a : axes) {
+                const auto v = std::find_if(c.named.begin(), c.named.end(), [&](const auto& e) { return e.first == a.id; });
+                if (v == c.named.end()) Fail(kNoLine, Tr(L"A curve has no value for the axis ", L"У кривой нет значения для оси ") + a.label.raw);
+                c.values.push_back(v->second);
             }
         }
     }
@@ -65,6 +67,20 @@ private:
         if (c_.EatKeyword(L"title")) {
             c_.SkipBlanks();
             title = Here(c_.LineRest());
+            return;
+        }
+        if (c_.EatKeyword(L"accDescr")) {
+            c_.SkipBlanks();
+            if (c_.Eat(L'{')) {
+                while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
+                c_.Eat(L'}');
+            } else {
+                c_.LineRest();
+            }
+            return;
+        }
+        if (c_.EatKeyword(L"accTitle")) {
+            c_.LineRest();
             return;
         }
         if (c_.EatKeyword(L"axis")) {
@@ -86,16 +102,23 @@ private:
                 cv.label = Id(&id);
                 c_.SkipBlanks();
                 if (!c_.Eat(L'{')) c_.Fail(Tr(L"Expected '{'", L"Ожидалась «{»"));
+                // Entries (over lines too): values, or axis[:] value.
+                auto gap = [&] {
+                    while (c_.Peek() == L' ' || c_.Peek() == L'\t' || c_.Peek() == L'\r' || c_.Peek() == L'\n') c_.Advance();
+                };
                 for (;;) {
-                    c_.SkipBlanks();
+                    gap();
                     if (c_.Eat(L'}')) break;
+                    if (c_.AtEnd()) c_.Fail(Tr(L"'{' without '}'", L"«{» без «}»"));
                     if ((!cv.values.empty() || !cv.named.empty()) && !c_.Eat(L',')) c_.Fail(Tr(L"Expected ',' or '}'", L"Ожидалась «,» или «}»"));
-                    c_.SkipBlanks();
+                    gap();
                     if (IsWordChar(c_.Peek()) && !(c_.Peek() >= L'0' && c_.Peek() <= L'9')) {
                         std::wstring axis;
-                        Id(&axis);
+                        const size_t k = c_.pos();
+                        while (IsWordChar(c_.Peek()) || c_.Peek() == L'-') c_.Advance();
+                        axis = std::wstring(src_.text.substr(k, c_.pos() - k));
                         c_.SkipBlanks();
-                        if (!c_.Eat(L':')) c_.Fail(Tr(L"Expected ':'", L"Ожидалось «:»"));
+                        c_.Eat(L':');
                         c_.SkipBlanks();
                         cv.named.push_back({axis, Number()});
                     } else {
@@ -109,42 +132,51 @@ private:
                 if (!c_.Eat(L',')) return;
             }
         }
+        // Options, several to a line with commas: max 5, min 1.
+        for (bool first = true;; first = false) {
+            c_.SkipBlanks();
+            if (!Option()) {
+                if (first) c_.Fail(Tr(L"Expected axis, curve, max, min, ticks, graticule or showLegend", L"Ожидалось axis, curve, max, min, ticks, graticule или showLegend"));
+                c_.Fail(Tr(L"Expected an option", L"Ожидался параметр"));
+            }
+            c_.SkipBlanks();
+            if (!c_.Eat(L',')) return;
+        }
+    }
+
+    bool Option() {
         if (c_.EatKeyword(L"max")) {
             c_.SkipBlanks();
             max = Number();
             has_max = true;
-            return;
+            return true;
         }
         if (c_.EatKeyword(L"min")) {
             c_.SkipBlanks();
             min = Number();
             has_min = true;
-            return;
+            return true;
         }
         if (c_.EatKeyword(L"ticks")) {
             c_.SkipBlanks();
-            ticks = static_cast<int>(std::clamp(Number(), 1.0, 50.0));
-            return;
+            ticks = static_cast<int>(std::clamp(Number(), 0.0, 32.0));  // (Mermaid's most: 32)
+            return true;
         }
         if (c_.EatKeyword(L"graticule")) {
             c_.SkipBlanks();
             if (c_.EatKeyword(L"polygon")) polygon = true;
-            else if (!c_.EatKeyword(L"circle")) c_.Fail(Tr(L"Expected circle or polygon", L"Ожидалось circle или polygon"));
-            return;
+            else if (c_.EatKeyword(L"circle")) polygon = false;
+            else c_.Fail(Tr(L"Expected circle or polygon", L"Ожидалось circle или polygon"));
+            return true;
         }
         if (c_.EatKeyword(L"showLegend")) {
             c_.SkipBlanks();
             if (c_.EatKeyword(L"false")) legend = false;
-            else if (!c_.EatKeyword(L"true")) c_.Fail(Tr(L"Expected true or false", L"Ожидалось true или false"));
-            return;
+            else if (c_.EatKeyword(L"true")) legend = true;
+            else c_.Fail(Tr(L"Expected true or false", L"Ожидалось true или false"));
+            return true;
         }
-        for (const wchar_t* kw : {L"accTitle", L"accDescr"}) {
-            if (c_.EatKeyword(kw)) {
-                c_.LineRest();
-                return;
-            }
-        }
-        c_.Fail(Tr(L"Expected axis, curve, max, min, ticks, graticule or showLegend", L"Ожидалось axis, curve, max, min, ticks, graticule или showLegend"));
+        return false;
     }
 
     // id, id["Label"] (the label: the id itself when there is none).
@@ -157,11 +189,20 @@ private:
         if (!c_.Eat(L'[')) return name;
         c_.SkipBlanks();
         Text label;
-        if (c_.Eat(L'"')) {
+        if (c_.Peek() == L'"' || c_.Peek() == L'\'') {
+            // "label" or 'label', with \ escapes.
+            const wchar_t quote = c_.Peek();
+            c_.Advance();
             const size_t s = c_.pos();
-            while (!c_.AtEnd() && c_.Peek() != L'"' && c_.Peek() != L'\n') c_.Advance();
-            if (!c_.Eat(L'"')) c_.Fail(Tr(L"Unclosed quote", L"Не закрыта кавычка"));
-            label = Here(src_.text.substr(s, c_.pos() - 1 - s));
+            while (!c_.AtEnd() && c_.Peek() != quote && c_.Peek() != L'\n') {
+                if (c_.Peek() == L'\\' && c_.Peek(1) != L'\0' && c_.Peek(1) != L'\n') c_.Advance();
+                label.raw.push_back(c_.Peek());
+                c_.Advance();
+            }
+            if (label.raw.size() > kMaxLabel) c_.Fail(Tr(L"Text too long", L"Слишком длинный текст"));
+            label.pos = static_cast<uint32_t>(s);
+            label.len = static_cast<uint32_t>(c_.pos() - s);
+            if (!c_.Eat(quote)) c_.Fail(Tr(L"Unclosed quote", L"Не закрыта кавычка"));
         } else {
             const size_t s = c_.pos();
             while (!c_.AtStatementEnd() && c_.Peek() != L']') c_.Advance();
@@ -237,17 +278,23 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
         const float x = std::abs(ca) < 0.1f ? q.x - m.w / 2 : ca > 0 ? q.x : q.x - m.w;
         b.Text(m, D2D1::Point2F(x, q.y - m.h / 2), Role(kDgText), p.axes[k].label.pos, p.axes[k].label.len);
     }
-    // Curves: closed cardinal splines (d3's, tension 0.17), see-through.
+    // Curves (not one with more or fewer values than axes, as in Mermaid):
+    // Mermaid's closed round curve (tension 0.17), or straight with the
+    // polygon scale; see-through.
     for (size_t i = 0; i < p.curves.size() && n > 0; ++i) {
         const Curve& cv = p.curves[i];
+        if (cv.values.size() != n) continue;
         std::vector<D2D1_POINT_2F> pts;
         for (size_t k = 0; k < n; ++k) {
-            const double v = k < cv.values.size() ? cv.values[k] : 0;
-            const float r = radius * static_cast<float>(std::clamp((v - min) / (max - min), 0.0, 1.0));
+            const float r = radius * static_cast<float>(std::clamp((cv.values[k] - min) / (max - min), 0.0, 1.0));
             pts.push_back(at(k, r));
         }
-        const DgColor color = Role(static_cast<uint8_t>(kDgScale + i % 12));
-        const float k = (1 - 0.17f) / 6;
+        const DgColor color = Role(static_cast<uint8_t>(kDgScale + i % 12)), fill = RoleAt(static_cast<uint8_t>(kDgScale + i % 12), 128);
+        if (p.polygon) {
+            b.Polygon(pts, fill, color, 2.f);
+            continue;
+        }
+        const float k = 0.17f;
         const size_t m = pts.size();
         b.Begin(pts[0]);
         for (size_t j = 0; j < m; ++j) {
@@ -256,7 +303,7 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
                       p2);
         }
         b.Close();
-        b.End(RoleAt(static_cast<uint8_t>(kDgScale + i % 12), 128), color, 2.f);
+        b.End(fill, color, 2.f);
     }
     // The legend, top right.
     if (p.legend) {

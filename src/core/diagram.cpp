@@ -57,6 +57,11 @@ constexpr uint32_t kLight[kDgRoleCount] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     // gitInv0..7
     0xFF131300, 0xFF0000A1, 0xFF310093, 0xFF934900, 0xFF930000, 0xFF930049, 0xFF009300, 0xFF009393,
+    // cScalePeer0..11
+    0xFF3939FF, 0xFFF7F700, 0xFFB5FF20, 0xFF9C39FF, 0xFFFF39FF, 0xFFFF399C,
+    0xFFFF3939, 0xFFFF9C39, 0xFF9CFF39, 0xFF39FF9C, 0xFF39FFFF, 0xFF399CFF,
+    // cScale lighter (computed)
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 };
 constexpr uint32_t kDark[kDgRoleCount] = {
     0x00000000,  // none
@@ -106,6 +111,11 @@ constexpr uint32_t kDark[kDgRoleCount] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     // gitInv0..7
     0xFF868282, 0xFF5EDD8C, 0xFF95766C, 0xFF64A3CA, 0xFF34EDED, 0xFF9AFF84, 0xFF3387FE, 0xFFCE5AF1,
+    // cScalePeer0..11
+    0xFF383A3A, 0xFF3E0000, 0xFF771955, 0xFF546E76, 0xFF754628, 0xFF9D0E0E,
+    0xFF65007B, 0xFFCC7801, 0xFF23760A, 0xFF2A2C41, 0xFF003CA2, 0xFF0182CF,
+    // cScale lighter (computed)
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 };
 
 D2D1_COLOR_F ToColor(uint32_t argb) {
@@ -118,6 +128,38 @@ bool Painted(const DgColor& c) {
 }
 
 uint32_t ResolveRole(const DgColor& c, bool dark);
+
+// khroma's lighten: the HSL lightness raised by `amount` (0 to 1).
+uint32_t Lighten(uint32_t argb, float amount) {
+    const float r = ((argb >> 16) & 0xFF) / 255.f, g = ((argb >> 8) & 0xFF) / 255.f, b = (argb & 0xFF) / 255.f;
+    const float hi = std::max({r, g, b}), lo = std::min({r, g, b}), l = (hi + lo) / 2, d = hi - lo;
+    float h = 0, s = 0;
+    if (d > 0) {
+        s = l > 0.5f ? d / (2 - hi - lo) : d / (hi + lo);
+        if (hi == r) h = (g - b) / d + (g < b ? 6.f : 0.f);
+        else if (hi == g) h = (b - r) / d + 2;
+        else h = (r - g) / d + 4;
+        h /= 6;
+    }
+    const float l2 = std::min(l + amount, 1.f);
+    auto hue = [](float p, float q, float t) {
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1.f / 6) return p + (q - p) * 6 * t;
+        if (t < 0.5f) return q;
+        if (t < 2.f / 3) return p + (q - p) * (2.f / 3 - t) * 6;
+        return p;
+    };
+    float r2 = l2, g2 = l2, b2 = l2;
+    if (s > 0) {
+        const float q = l2 < 0.5f ? l2 * (1 + s) : l2 + s - l2 * s, p = 2 * l2 - q;
+        r2 = hue(p, q, h + 1.f / 3);
+        g2 = hue(p, q, h);
+        b2 = hue(p, q, h - 1.f / 3);
+    }
+    auto byte = [](float v) { return static_cast<uint32_t>(std::clamp(v, 0.f, 1.f) * 255 + 0.5f); };
+    return (argb & 0xFF000000) | (byte(r2) << 16) | (byte(g2) << 8) | byte(b2);
+}
 
 // A theme role at an opacity (RoleAt: its argb's alpha), or as it is.
 uint32_t Resolve(const DgColor& c, bool dark) {
@@ -140,6 +182,7 @@ uint32_t ResolveRole(const DgColor& c, bool dark) {
         for (int shift = 0; shift <= 16; shift += 8) out |= std::min(((v >> shift) & 0xFF) * 6 / 5, 255u) << shift;
         return out;
     }
+    if (c.role >= kDgScaleLighter) return Lighten(table[kDgScale + c.role - kDgScaleLighter], 0.1f);
     if (c.role < kDgCategory || c.role >= kDgCategorySolid) return table[c.role];
     // Categories as Mermaid paints pie slices: at 70% over the page.
     const uint32_t v = table[c.role], page = table[kDgPage];
@@ -611,9 +654,16 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
                     }
                 }
                 if (kind >= 0 && highlight_brushes[kind]) {
-                    const bool up = t.angle <= -80 && t.angle >= -100;
-                    rt->FillRectangle(up ? D2D1::RectF(box.left, box.top - 3, box.right, box.bottom + 3) : D2D1::RectF(box.left - 3, box.top, box.right + 3, box.bottom),
-                                      highlight_brushes[kind]);
+                    if (t.angle != 0) {
+                        // Along the turned text, padded at its ends.
+                        DWRITE_TEXT_METRICS tm{};
+                        t.layout->GetMetrics(&tm);
+                        rt->SetTransform(D2D1::Matrix3x2F::Rotation(t.angle) * D2D1::Matrix3x2F::Translation(t.anchor.x, t.anchor.y) * place * world);
+                        rt->FillRectangle(D2D1::RectF(tm.left - 3, tm.top, tm.left + tm.width + 3, tm.top + tm.height), highlight_brushes[kind]);
+                        rt->SetTransform(place * world);
+                    } else {
+                        rt->FillRectangle(D2D1::RectF(box.left - 3, box.top, box.right + 3, box.bottom), highlight_brushes[kind]);
+                    }
                 }
             }
             if (t.angle != 0) {

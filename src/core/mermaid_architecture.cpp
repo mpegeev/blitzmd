@@ -965,7 +965,7 @@ private:
                 b_.CubicTo(D2D1::Point2F(nd.x + kIcon - 1.67f, nd.y), D2D1::Point2F(nd.x + kIcon, nd.y + 1.67f), D2D1::Point2F(nd.x + kIcon, nd.y + 5));
                 b_.LineTo(D2D1::Point2F(nd.x + kIcon, nd.y + kIcon));
                 b_.Close();
-                b_.End(Role(kDgNone), Role(kDgQuadrantBorder), 2.f, 1);
+                b_.End(Role(kDgNone), Role(kDgPrimaryBorder), 2.f, 1);
             }
         }
     }
@@ -993,7 +993,7 @@ private:
             if (it.kind != Item::Kind::Group) continue;
             const D2D1_RECT_F& r = rect_[g];
             if (r.left > r.right) continue;
-            b_.Rect(r, 0, Role(kDgNone), Role(kDgQuadrantBorder), 2.f, 1);
+            b_.Rect(r, 0, Role(kDgNone), Role(kDgPrimaryBorder), 2.f, 1);
             // Its icon in the corner, its title beside.
             const bool icon = !it.icon.empty();
             if (icon) DrawIcon(b_, it.icon, r.left + 1, r.top + 1, 0.75f * 40);

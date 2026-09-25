@@ -36,7 +36,7 @@ public:
         for (;;) {
             Skip();
             if (c_.AtEnd()) break;
-            if (c_.EatKeyword(L"title")) {
+            if (TitleAhead()) {
                 c_.SkipBlanks();
                 title = Here(c_.WholeLine());
             } else if (c_.EatKeyword(L"accTitle")) {
@@ -78,6 +78,15 @@ public:
     std::vector<Period> periods;
 
 private:
+    // "title" then a blank and text (else "title: x" is a period, as in
+    // Mermaid's lexer).
+    bool TitleAhead() {
+        const size_t at = c_.pos();
+        if (c_.EatKeyword(L"title") && (c_.Peek() == L' ' || c_.Peek() == L'\t') && c_.Peek(1) != L'\n' && c_.Peek(1) != L'\0') return true;
+        c_.set_pos(at);
+        return false;
+    }
+
     // Blanks, line ends, %% and # comments.
     void Skip() {
         for (;;) {

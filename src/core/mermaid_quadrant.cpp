@@ -135,6 +135,12 @@ private:
         const std::wstring_view rest = c_.LineRest();
         size_t arrow = std::wstring_view::npos, arrow_end = 0;
         for (size_t k = 0; k < rest.size(); ++k) {
+            if (rest[k] == L'"') {  // (not in quoted text)
+                const size_t q = rest.find(L'"', k + 1);
+                if (q == std::wstring_view::npos) break;
+                k = q;
+                continue;
+            }
             if (rest[k] != L'-') continue;
             size_t e = k;
             while (e < rest.size() && rest[e] == L'-') ++e;
