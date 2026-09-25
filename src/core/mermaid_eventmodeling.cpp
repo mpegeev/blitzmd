@@ -71,12 +71,9 @@ private:
                 continue;
             }
             if (Starts(L"%%")) {
-                if (Starts(L"%%{")) {
-                    const size_t e = s_.find(L"}%%", p_ + 3);
-                    if (e != std::wstring_view::npos) {
-                        p_ = e + 3;
-                        continue;
-                    }
+                if (const size_t n = DirectiveLength(s_, p_)) {
+                    p_ += n;
+                    continue;
                 }
                 while (p_ < s_.size() && s_[p_] != L'\n' && s_[p_] != L'\r') ++p_;
                 continue;
@@ -608,7 +605,7 @@ private:
         auto named = names_.find(name_text);
         if (named == names_.end()) {
             RichText name;
-            name.text = name_text;
+            name.text = DecodeEntities(name_text);
             name.spans.push_back({0, static_cast<uint32_t>(name.text.size()), true, false});
             M m = b_.Measure(name, 0, true, kFont / b_.size());
             LineHeight(m, kFont * 1.15f);
@@ -620,7 +617,7 @@ private:
             auto coded = codes_.find(box.code);
             if (coded == codes_.end()) {
                 RichText code;
-                code.text = box.code;
+                code.text = DecodeEntities(box.code);
                 RichText::Span s{0, static_cast<uint32_t>(code.text.size())};
                 s.mono = true;
                 code.spans.push_back(s);

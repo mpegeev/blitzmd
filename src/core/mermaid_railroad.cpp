@@ -133,12 +133,9 @@ private:
             return true;
         }
         if (c == L'%' && At(1) == L'%') {
-            if (At(2) == L'{') {
-                const size_t e = s_.find(L"}%%", p_ + 3);
-                if (e != std::wstring_view::npos) {
-                    p_ = e + 3;
-                    return true;
-                }
+            if (const size_t n = DirectiveLength(s_, p_)) {
+                p_ += n;
+                return true;
             }
             while (p_ < s_.size() && s_[p_] != L'\n' && s_[p_] != L'\r') ++p_;
             return true;
@@ -694,7 +691,7 @@ private:
     // The text as SVG shows it: line ends and tabs as spaces, runs of them
     // one, none at the ends.
     static std::wstring Shown(const Node& n) {
-        const std::wstring raw = n.kind == Node::Special ? L"? " + n.text.raw + L" ?" : n.text.raw;
+        const std::wstring raw = DecodeEntities(n.kind == Node::Special ? L"? " + n.text.raw + L" ?" : n.text.raw);
         std::wstring out;
         for (const wchar_t c : raw) {
             const bool blank = c == L' ' || c == L'\t' || c == L'\n' || c == L'\r';

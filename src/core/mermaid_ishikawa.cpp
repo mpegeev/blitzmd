@@ -153,7 +153,7 @@ private:
     // Text as Mermaid's writes it: lines 1.05 of the size apart, aligned.
     M Lines(const std::wstring& raw, bool bold, float px, DWRITE_TEXT_ALIGNMENT align) {
         RichText t;
-        t.text = raw;
+        t.text = DecodeEntities(raw);
         for (const wchar_t* br : {L"<br/>", L"<br />", L"<br>"}) {
             for (size_t k = t.text.find(br); k != std::wstring::npos; k = t.text.find(br, k)) t.text.replace(k, std::wcslen(br), L"\n");
         }

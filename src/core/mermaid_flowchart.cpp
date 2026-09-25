@@ -1098,16 +1098,28 @@ private:
             const float after = flip(layer_mid[static_cast<size_t>(la)] + layer_h[static_cast<size_t>(la)] / 2 + kLayerGap / 2);
             const float before = flip(layer_mid[static_cast<size_t>(lz)] - layer_h[static_cast<size_t>(lz)] / 2 - kLayerGap / 2);
             // Beside everything between the two (right, or left going back).
-            auto beside = [&](bool right) {
+            auto side = [&](bool right) {
                 const int lo = std::min(la, lz), hi = std::max(la, lz);
                 float out = right ? std::max(ca.x + across_size(a) / 2, cz.x + across_size(z) / 2) : std::min(ca.x - across_size(a) / 2, cz.x - across_size(z) / 2);
-                const float x0 = std::min(ca.x, cz.x), x1 = std::max(ca.x, cz.x);
                 for (size_t i = 0; i < n; ++i) {
-                    if (layer[i] <= lo || layer[i] >= hi || canon[i].x + across_size(i) / 2 < x0 - 1 || canon[i].x - across_size(i) / 2 > x1 + 1) continue;
+                    if (layer[i] <= lo || layer[i] >= hi) continue;
                     out = right ? std::max(out, canon[i].x + across_size(i) / 2) : std::min(out, canon[i].x - across_size(i) / 2);
                 }
-                out += right ? kInset : -kInset;
+                return out + (right ? kInset : -kInset);
+            };
+            // Out of an end sideways, along past the ranks between, back in.
+            auto around = [&](bool right) {
+                const float out = side(right);
                 return Route{ca, D2D1::Point2F(out, ca.y), D2D1::Point2F(out, cz.y), cz};
+            };
+            // Through the gaps next to each end (no nodes there), beside
+            // every node of the ranks between.
+            auto beside = [&](bool right) {
+                const float out = side(right);
+                const size_t sa = static_cast<size_t>(la), sz = static_cast<size_t>(lz);
+                const float g1 = flip(la < lz ? layer_mid[sa] + layer_h[sa] / 2 + kLayerGap / 2 : layer_mid[sa] - layer_h[sa] / 2 - kLayerGap / 2);
+                const float g2 = flip(la < lz ? layer_mid[sz] - layer_h[sz] / 2 - kLayerGap / 2 : layer_mid[sz] + layer_h[sz] / 2 + kLayerGap / 2);
+                return Route{ca, D2D1::Point2F(ca.x, g1), D2D1::Point2F(out, g1), D2D1::Point2F(out, g2), D2D1::Point2F(cz.x, g2), cz};
             };
             std::vector<Route> routes;
             if (la < lz) {
@@ -1125,11 +1137,15 @@ private:
                 }
                 routes.push_back(via(after));
                 routes.push_back(beside(true));
+                routes.push_back(beside(false));
             } else if (la == lz) {
                 routes.push_back({ca, cz});
                 routes.push_back(via(after));
+                routes.push_back(via(flip(layer_mid[static_cast<size_t>(la)] - layer_h[static_cast<size_t>(la)] / 2 - kLayerGap / 2)));
             } else {
+                routes.push_back(around(false));
                 routes.push_back(beside(false));
+                routes.push_back(beside(true));
             }
             const Route* chosen = &routes.back();
             for (const Route& r : routes) {

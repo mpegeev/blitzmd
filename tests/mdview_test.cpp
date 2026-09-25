@@ -1632,6 +1632,8 @@ int main(int argc, char** ansi_argv) {
             {L"venn-beta\n  set A: 0\n  set B\n  style A fill:#12345", true, nullptr},
             {L"venn-beta\n  set A: 5\n  set B: 5\n  union A,B: 3\n  union A,B: 5", true, nullptr},
             {L"wardley-beta\ncomponent A [0.5, 0.5]\ntitle", true, nullptr},
+            {L"railroad-beta\na = terminal(\"x\");%%{ x }%%foo\nb = terminal(\"#quot;y#quot;\");", true, nullptr},
+            {L"swimlane-beta TD\nsubgraph A\na --> b --> c\na --> c\np\nend", true, nullptr},
             {L"cynefin-beta\n  title T\n  complex\n    \"a\"\n    'b'\n  confusion\n    \"1\"\n    \"2\"\n    \"3\"\n    \"4\"\n  chaotic --> complex : \"stabilize\"\n  clear --> clear", true, nullptr},
             {L"cynefin-beta\n  \"orphan\"", false, L"Line 2"},
             {L"cynefin-beta\n  complex --> nowhere", false, L"Line 2"},

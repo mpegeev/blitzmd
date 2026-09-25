@@ -221,7 +221,7 @@ public:
                 const bool more = k == shown;
                 if (more && shown == items.size()) break;
                 RichText t;
-                t.text = more ? L"+" + std::to_wstring(items.size() - shown) + L" more" : items[k].raw;
+                t.text = more ? L"+" + std::to_wstring(items.size() - shown) + L" more" : DecodeEntities(items[k].raw);
                 const M m = b_.Measure(t, 0, false, 12 / unit);
                 const float w = m.w + 2 * kItemPadX, y = start + static_cast<float>(k) * (kItemH + 4);
                 b_.Rect(Move(D2D1::RectF(c.x - w / 2, y, c.x + w / 2, y + kItemH)), 4, RoleAt(bg(d), more ? 153 : 242), Role(kDgLine), 1.f, more ? 1 : 0);
@@ -242,7 +242,7 @@ public:
             AddMarker(b_, Marker::Arrow, P(z.x, z.y), P(c2.x, c2.y), Role(kDgLine), 2.f);
             if (!t.label.raw.empty()) {
                 RichText lt;
-                lt.text = t.label.raw;
+                lt.text = DecodeEntities(t.label.raw);
                 const M m = b_.Measure(lt, 0, false, 11 / unit);
                 b_.Text(m, P(cp.x - m.w / 2, cp.y - 6 - m.h * 0.8f), Role(kDgText), t.label.pos, t.label.len);
             }
@@ -259,7 +259,7 @@ private:
     // Text centred on (x, y).
     void Plain(const std::wstring& raw, float px, bool bold, bool italic, float x, float y, uint32_t pos = 0, uint32_t len = 0) {
         RichText t;
-        t.text = raw;
+        t.text = DecodeEntities(raw);
         if (italic) t.spans.push_back({0, static_cast<uint32_t>(t.text.size()), false, true});
         const M m = b_.Measure(t, 0, bold, px / b_.size());
         b_.Text(m, P(x - m.w / 2, y - m.h / 2), Role(kDgText), pos, len);

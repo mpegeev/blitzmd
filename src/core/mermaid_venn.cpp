@@ -1524,7 +1524,7 @@ private:
                 s = e + 1;
             }
         }
-        t.text = raw;
+        t.text = DecodeEntities(raw);
         M m = b_.Measure(t, wrap, false, px / b_.size());
         if (wrap > 0 && m.layout) {
             const float lh = px * 1.15f;

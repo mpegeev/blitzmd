@@ -313,7 +313,7 @@ public:
             const TreeNode& nd = p_.nodes[i];
             Row& r = rows_[i];
             RichText t;
-            t.text = nd.name;
+            t.text = DecodeEntities(nd.name);
             r.label = b_.Measure(t, 0, nd.directory, 16 / unit, false);
             r.icon = Icon(nd);
             r.icon_name = nd.icon;
@@ -341,7 +341,7 @@ public:
             const TreeNode& nd = p_.nodes[i];
             if (nd.description.empty()) continue;
             RichText d;
-            d.text = nd.description;
+            d.text = DecodeEntities(nd.description);
             d.spans.push_back({0, static_cast<uint32_t>(d.text.size()), false, true});
             descs[i] = b_.Measure(d, 0, false, 16 / unit, false);
             width = std::max(width, desc_x + descs[i].w + kPadX);

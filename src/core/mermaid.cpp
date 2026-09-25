@@ -96,7 +96,6 @@ Source Preprocess(std::wstring_view text) {
     return src;
 }
 
-// A number as JavaScript writes it (3, 0.5, 1e+21).
 // ---[\t ]*\r?\n(?:[\S\s]*?\r?\n)?---(?:\r?\n|(?!\S))
 size_t YamlBlockLength(std::wstring_view s, size_t pos) {
     if (s.substr(pos, 3) != L"---") return 0;
@@ -120,6 +119,44 @@ size_t YamlBlockLength(std::wstring_view s, size_t pos) {
     return 0;
 }
 
+// %%{[\S\s]*?}%%(?:\r?\n|(?!\S)): the first }%% then a line end, a blank
+// or the end.
+size_t DirectiveLength(std::wstring_view s, size_t pos) {
+    if (s.substr(pos, 3) != L"%%{") return 0;
+    for (size_t e = s.find(L"}%%", pos + 3); e != std::wstring_view::npos; e = s.find(L"}%%", e + 1)) {
+        const size_t k = e + 3;
+        if (k >= s.size()) return k - pos;
+        if (s[k] == L'\n') return k + 1 - pos;
+        if (s[k] == L'\r' && k + 1 < s.size() && s[k + 1] == L'\n') return k + 2 - pos;
+        if (std::iswspace(s[k])) return k - pos;
+    }
+    return 0;
+}
+
+// Mermaid's #name; and #123; entities (it decodes them in all text).
+std::wstring DecodeEntities(std::wstring_view s) {
+    std::wstring out;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == L'#') {
+            size_t e = i + 1;
+            while (e < s.size() && e - i <= 32 && ((s[e] >= L'a' && s[e] <= L'z') || (s[e] >= L'A' && s[e] <= L'Z') || (s[e] >= L'0' && s[e] <= L'9') || s[e] == L'_')) ++e;
+            if (e > i + 1 && e < s.size() && s[e] == L';') {
+                const std::wstring_view inner = s.substr(i + 1, e - i - 1);
+                const bool number = std::all_of(inner.begin(), inner.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; });
+                std::wstring decoded;
+                if (AppendEntity(decoded, (number ? L"&#" : L"&") + std::wstring(inner) + L";")) {
+                    out += decoded;
+                    i = e;
+                    continue;
+                }
+            }
+        }
+        out.push_back(s[i]);
+    }
+    return out;
+}
+
+// A number as JavaScript writes it (3, 0.5, 1e+21).
 std::wstring JsNumber(double v) {
     if (std::isnan(v)) return L"NaN";
     if (std::isinf(v)) return v > 0 ? L"Infinity" : L"-Infinity";

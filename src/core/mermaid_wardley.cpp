@@ -100,12 +100,9 @@ private:
                 continue;
             }
             if (c == L'%' && At(1) == L'%') {
-                if (At(2) == L'{') {
-                    const size_t e = s_.find(L"}%%", p_ + 3);
-                    if (e != std::wstring_view::npos) {
-                        p_ = e + 3;
-                        continue;
-                    }
+                if (const size_t n = DirectiveLength(s_, p_)) {
+                    p_ += n;
+                    continue;
                 }
                 while (p_ < s_.size() && s_[p_] != L'\n' && s_[p_] != L'\r') ++p_;
                 continue;
@@ -748,7 +745,7 @@ private:
     // SVG text at (x, y): its anchor and baseline as Mermaid sets them.
     M Label(const Text& t, float px, bool bold, float x, float y, Anchor anchor, Base base, DgColor color, float angle = 0) {
         RichText r;
-        r.text = t.raw;
+        r.text = DecodeEntities(t.raw);
         const M m = b_.Measure(r, 0, bold, px / b_.size());
         const float baseline_shift = base == Base::Alphabetic ? 0.f : base == Base::Middle ? 0.3f * px : 0.34f * px;
         const float dx = anchor == Anchor::Middle ? -m.w / 2 : 0.f, dy = baseline_shift - 1.17f * px;
@@ -907,7 +904,7 @@ private:
         std::vector<M> measured;
         for (const auto* a : listed) {
             RichText r;
-            r.text = JsNumber(a->first) + L". " + a->second.text.raw;
+            r.text = JsNumber(a->first) + L". " + DecodeEntities(a->second.text.raw);
             measured.push_back(b_.Measure(r, 0, false, font / b_.size()));
             widest = std::max(widest, measured.back().w);
         }
