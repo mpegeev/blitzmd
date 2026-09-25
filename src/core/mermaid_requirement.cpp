@@ -136,16 +136,19 @@ private:
         const size_t at = c_.pos();
         const Text a = Name();
         if (c_.Peek() == L',' || c_.Rest().starts_with(L":::")) {
-            std::vector<int> targets{Index(a)};
+            // (Names not declared are left alone, as in Mermaid.)
+            std::vector<std::wstring> targets{a.raw};
             while (c_.Eat(L',')) {
                 c_.SkipBlanks();
-                targets.push_back(Index(Name()));
+                targets.push_back(Name().raw);
             }
             if (!c_.EatStr(L":::")) c_.Fail(Tr(L"Expected \":::\"", L"Ожидалось «:::»"));
             const std::vector<std::wstring> names = Names();
-            for (const int t : targets) {
-                std::vector<std::wstring>& cls = items[static_cast<size_t>(t)].classes;
-                cls.insert(cls.end(), names.begin(), names.end());
+            for (const std::wstring& t : targets) {
+                if (auto it = ids_.find(t); it != ids_.end()) {
+                    std::vector<std::wstring>& cls = items[static_cast<size_t>(it->second)].classes;
+                    cls.insert(cls.end(), names.begin(), names.end());
+                }
             }
             return;
         }
@@ -173,7 +176,7 @@ private:
         const Text b = Name();
         r.from = Index(backwards ? b : a);
         r.to = Index(backwards ? a : b);
-        if (relations.size() >= kMaxNodes) c_.Fail(Tr(L"Too many relationships", L"Слишком много связей"));
+        if (relations.size() >= kMaxEdges) c_.Fail(Tr(L"Too many relationships", L"Слишком много связей"));
         relations.push_back(std::move(r));
     }
 
@@ -435,7 +438,7 @@ private:
         float loop_labels = 0;      // their labels' length, one after another
     };
 
-    static float LoopReach(int n) { return 36 * (1 + 0.6f * static_cast<float>(n)) + 16; }
+    static float LoopReach(int n) { return 36 * (1 + 0.6f * static_cast<float>(std::min(n, 12))) + 16; }
 
     // A relation of an item to itself: a loop beside its box (below it
     // sideways), one inside another, the label past them.
@@ -447,18 +450,20 @@ private:
         };
         const float edge = (below ? bx.h : bx.w) / 2, across = (below ? bx.w : bx.h) / 2;
         const float s = std::min(std::min(across / 2, 12.f) + 20 * static_cast<float>(n), across - 2), reach = LoopReach(n);
-        const D2D1_POINT_2F a0 = at(edge, -s), a1 = at(edge, s), c1 = at(edge + reach, -s - 12), c2 = at(edge + reach, s + 12);
-        const DgColor line = Role(kDgLine);
         const bool contains = r.kind == L"contains";
+        // (contains: its circled plus outside the box, the loop from it.)
+        const D2D1_POINT_2F a0 = at(edge + (contains ? 14.f : 0.f), -s), a1 = at(edge, s), c1 = at(edge + reach, -s - 12), c2 = at(edge + reach, s + 12);
+        const DgColor line = Role(kDgLine);
         b_.Begin(a0);
         b_.CubicTo(c1, c2, a1);
         b_.End(Role(kDgNone), line, 1.f, contains ? 0 : 1);
         if (contains) {
-            b_.Ellipse(D2D1::RectF(a0.x - 7, a0.y - 7, a0.x + 7, a0.y + 7), Role(kDgPage), line, 1.f);
-            b_.Begin(D2D1::Point2F(a0.x - 7, a0.y));
-            b_.LineTo(D2D1::Point2F(a0.x + 7, a0.y));
-            b_.MoveTo(D2D1::Point2F(a0.x, a0.y - 7));
-            b_.LineTo(D2D1::Point2F(a0.x, a0.y + 7));
+            const D2D1_POINT_2F c = at(edge + 7, -s);
+            b_.Ellipse(D2D1::RectF(c.x - 7, c.y - 7, c.x + 7, c.y + 7), Role(kDgPage), line, 1.f);
+            b_.Begin(D2D1::Point2F(c.x - 7, c.y));
+            b_.LineTo(D2D1::Point2F(c.x + 7, c.y));
+            b_.MoveTo(D2D1::Point2F(c.x, c.y - 7));
+            b_.LineTo(D2D1::Point2F(c.x, c.y + 7));
             b_.End(Role(kDgNone), line, 1.f);
         } else {
             AddMarker(b_, Marker::LineArrow, a1, c2, line, 1.f);
