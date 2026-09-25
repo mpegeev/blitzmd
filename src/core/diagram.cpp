@@ -545,6 +545,11 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
         rt->SetTransform(world);
         return;
     }
+    // Nothing outside the scene's box (values past an axis, a long legend...).
+    rt->SetTransform(world);
+    rt->PushAxisAlignedClip(D2D1::RectF(dest.left - 2, dest.top - 2, dest.left + s.width * k + 2, dest.top + s.height * k + 2),
+                            D2D1_ANTIALIAS_MODE_ALIASED);
+    rt->SetTransform(place * world);
     struct Stroke {
         uint8_t dash;
         float width;
@@ -594,7 +599,9 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
                     }
                 }
                 if (kind >= 0 && highlight_brushes[kind]) {
-                    rt->FillRectangle(D2D1::RectF(box.left - 3, box.top, box.right + 3, box.bottom), highlight_brushes[kind]);
+                    const bool up = t.angle <= -80 && t.angle >= -100;
+                    rt->FillRectangle(up ? D2D1::RectF(box.left, box.top - 3, box.right, box.bottom + 3) : D2D1::RectF(box.left - 3, box.top, box.right + 3, box.bottom),
+                                      highlight_brushes[kind]);
                 }
             }
             if (t.angle != 0) {
@@ -671,6 +678,7 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
         }
         }
     }
+    rt->PopAxisAlignedClip();
     rt->SetTransform(world);
 }
 

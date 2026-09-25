@@ -52,7 +52,7 @@ public:
             } else if (c_.EatKeyword(L"section")) {
                 c_.SkipBlanks();
                 if (sections.size() >= kMaxNodes) c_.Fail(Tr(L"Too many sections", L"Слишком много разделов"));
-                sections.push_back(Here(Until(false)));
+                sections.push_back(Here(Until(false, true)));
             } else if (c_.Peek() == L':') {
                 c_.Advance();
                 if (!IsSpace(c_.Peek()) && !c_.AtEnd()) c_.Fail(Tr(L"Expected a space after ':'", L"Ожидался пробел после «:»"));
@@ -87,12 +87,13 @@ private:
         }
     }
 
-    // Up to the line's end or ':' (an event: ':' then a space; else up to '#' too).
-    std::wstring_view Until(bool event) {
+    // Up to the line's end or ':' (an event: ':' then a space; a period up
+    // to '#' too).
+    std::wstring_view Until(bool event, bool section = false) {
         const size_t start = c_.pos();
         while (!c_.AtEnd() && c_.Peek() != L'\n') {
             if (c_.Peek() == L':' && (!event || IsSpace(c_.Peek(1)))) break;
-            if (!event && c_.Peek() == L'#') break;
+            if (!event && !section && c_.Peek() == L'#') break;
             c_.Advance();
         }
         return Trim(src_.text.substr(start, c_.pos() - start));
@@ -150,10 +151,40 @@ public:
             colors_.push_back(s >= 0 ? s : static_cast<int>(i));
         }
         top_ = kMargin + (title_.layout ? title_.h + 20 : 0.f);
+        Place();
         return p_.vertical ? Vertical() : Horizontal();
     }
 
 private:
+    // The order things go in: with sections, each one and its periods (an
+    // empty one taking a period's place; periods before the first section
+    // left out), as Mermaid does; else the periods.
+    void Place() {
+        const size_t n = p_.periods.size();
+        slot_.assign(n, -1);
+        int next = 0;
+        size_t i = 0;
+        if (p_.sections.empty()) {
+            for (; i < n; ++i) {
+                slot_[i] = next++;
+                order_.push_back(static_cast<int>(i));
+            }
+        } else {
+            while (i < n && p_.periods[i].section < 0) ++i;
+            for (size_t s = 0; s < p_.sections.size(); ++s) {
+                const int first = next;
+                order_.push_back(-1 - static_cast<int>(s));
+                for (; i < n && p_.periods[i].section == static_cast<int>(s); ++i) {
+                    slot_[i] = next++;
+                    order_.push_back(static_cast<int>(i));
+                }
+                next = std::max(next, first + 1);
+                spans_.push_back({first, next - first});
+            }
+        }
+        slots_ = next;
+    }
+
     M Measure(const Text& t, float wrap = kWrap) { return b_.Measure(ParseLabel(t.raw, false), wrap, false, kScale); }
 
     void Box(const D2D1_RECT_F& r, int color, bool event, const M& m, const Text& t, bool top_text) {
@@ -178,14 +209,17 @@ private:
         std::vector<M> period_text, section_text;
         std::vector<std::vector<M>> event_text;
         float period_h = 0, section_h = 0;
-        for (const Period& p : p_.periods) {
-            period_text.push_back(Measure(p.text));
-            period_h = std::max(period_h, period_text.back().h);
+        for (size_t i = 0; i < p_.periods.size(); ++i) {
+            period_text.emplace_back();
             event_text.emplace_back();
+            if (slot_[i] < 0) continue;
+            const Period& p = p_.periods[i];
+            period_text.back() = Measure(p.text);
+            period_h = std::max(period_h, period_text.back().h);
             for (const Text& e : p.events) event_text.back().push_back(Measure(e));
         }
-        for (const Text& s : p_.sections) {
-            section_text.push_back(Measure(s, 0));
+        for (size_t s = 0; s < p_.sections.size(); ++s) {
+            section_text.push_back(Measure(p_.sections[s], kStep * static_cast<float>(spans_[s].second) - 50));
             section_h = std::max(section_h, section_text.back().h);
         }
         period_h += 47;
@@ -200,21 +234,16 @@ private:
             events_bottom = std::max(events_bottom, y - kEventGap);
         }
         const float dash_end = events_bottom + 66;
-        const float right = x0 + static_cast<float>(std::max<size_t>(p_.periods.size(), 1)) * kStep - (kStep - kW);
+        const float right = x0 + static_cast<float>(std::max(slots_, 1)) * kStep - (kStep - kW);
         const float width = std::max(right + 60 + kMargin, title_.w + 2 * kMargin);
         const float height = dash_end + 10 + kMargin;
         Title(width);
         // Sections over their periods.
-        for (size_t k = 0; k < p_.periods.size();) {
-            const int s = p_.periods[k].section;
-            size_t e = k;
-            while (e < p_.periods.size() && p_.periods[e].section == s) ++e;
-            if (s >= 0) {
-                const D2D1_RECT_F r = D2D1::RectF(x0 + static_cast<float>(k) * kStep, section_y, x0 + static_cast<float>(e - 1) * kStep + kW,
-                                                  section_y + section_h);
-                Box(r, s, false, section_text[static_cast<size_t>(s)], p_.sections[static_cast<size_t>(s)], true);
-            }
-            k = e;
+        for (size_t s = 0; s < spans_.size(); ++s) {
+            const auto [first, count] = spans_[s];
+            const D2D1_RECT_F r = D2D1::RectF(x0 + static_cast<float>(first) * kStep, section_y,
+                                              x0 + static_cast<float>(first + count - 1) * kStep + kW, section_y + section_h);
+            Box(r, static_cast<int>(s), false, section_text[s], p_.sections[s], true);
         }
         // The arrow along the time.
         const DgColor line = Role(kDgLine);
@@ -223,8 +252,9 @@ private:
         b_.End(Role(kDgNone), line, 4.f);
         AddMarker(b_, Marker::Arrow, D2D1::Point2F(right + 60, line_y), D2D1::Point2F(kMargin, line_y), line, 2.f);
         for (size_t i = 0; i < p_.periods.size(); ++i) {
+            if (slot_[i] < 0) continue;
             const Period& p = p_.periods[i];
-            const float x = x0 + static_cast<float>(i) * kStep, cx = x + kW / 2;
+            const float x = x0 + static_cast<float>(slot_[i]) * kStep, cx = x + kW / 2;
             // The dashed line down, with an arrowhead at its end.
             b_.Begin(D2D1::Point2F(cx, period_y + period_h));
             b_.LineTo(D2D1::Point2F(cx, dash_end - 6));
@@ -249,23 +279,22 @@ private:
         const float right = events_x + kEventW;
         const DgColor line = Role(kDgLine);
         float y = top_ + 10;
-        int section = -2;
         struct Row {
             float y, h;
         };
         std::vector<std::pair<size_t, Row>> rows;
         // First where everything goes, then the arrow under it all, then the boxes.
         std::vector<std::pair<D2D1_RECT_F, int>> section_boxes;
-        for (size_t i = 0; i < p_.periods.size(); ++i) {
-            const Period& p = p_.periods[i];
-            if (p.section != section) {
-                section = p.section;
-                if (section >= 0) {
-                    const M m = Measure(p_.sections[static_cast<size_t>(section)], 0);
-                    section_boxes.push_back({D2D1::RectF(left, y, right, y + m.h + 20), section});
-                    y += m.h + 20 + 24;
-                }
+        for (const int item : order_) {
+            if (item < 0) {
+                const int section = -1 - item;
+                const M m = Measure(p_.sections[static_cast<size_t>(section)], 0);
+                section_boxes.push_back({D2D1::RectF(left, y, right, y + m.h + 20), section});
+                y += m.h + 20 + 24;
+                continue;
             }
+            const size_t i = static_cast<size_t>(item);
+            const Period& p = p_.periods[i];
             float events_h = 0;
             for (const Text& e : p.events) events_h += Measure(e, kEventW - 40).h + 20 + 8;
             const float h = std::max(Measure(p.text, kPeriodW - 40).h + 20, events_h - 8);
@@ -305,6 +334,10 @@ private:
     const Source& src_;
     M title_;
     std::vector<int> colors_;  // per period
+    std::vector<int> slot_;    // per period: its place in the row, or -1 if not drawn
+    std::vector<int> order_;   // periods (>= 0) and sections (-1 - index) in order
+    std::vector<std::pair<int, int>> spans_;  // per section: its first place and how many
+    int slots_ = 0;
     float top_ = 0;
 };
 
