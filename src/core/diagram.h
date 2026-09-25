@@ -58,7 +58,8 @@ enum DiagramRole : uint8_t {
     kDgVenn = kDgCynefin + 6,             // + n: venn1..8
     kDgVennText = kDgVenn + 8,            // + n: text of them (30% darker; lighter in the dark theme)
     kDgShade = kDgVennText + 8,           // an explicit color 30% darker (lighter in the dark theme)
-    kDgRoleCount = kDgShade + 1,
+    kDgWardley = kDgShade + 1,            // + n: wardley maps' component fill, evolution
+    kDgRoleCount = kDgWardley + 2,
 };
 
 struct DgColor {

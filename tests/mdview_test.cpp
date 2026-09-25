@@ -1632,6 +1632,17 @@ int main(int argc, char** ansi_argv) {
             {L"venn-beta\n  set A[\"open", false, L"Line 2"},
             {L"venn-beta\n  set text", false, L"Line 2"},
             {L"venn\n  set A", false, nullptr},
+            {L"wardley-beta\ntitle Tea\nsize [800, 500]\nevolution Genesis@0.2 / Concept -> Custom -> Product -> Commodity\nanchor Business [0.95, 0.63]\ncomponent Cup of Tea [0.79, 0.61] label [19, -4]\ncomponent Kettle [0.43, 0.35] (buy) inertia\ncomponent 'Power' [0.10, 0.7] (outsource)\ncomponent M [0.5, 0.5] (market) (inertia)\nBusiness -> Cup of Tea\nCup of Tea -> Kettle; limited by\nKettle +> 'Power'\nKettle +'x'<> M\nM -.-> Kettle\nevolve Kettle 0.62\nevolve Nope 150.0\nnote \"a note\" [0.30, 0.49]\nannotations [0.9, 0.1]\nannotation 1, [0.3, 0.3] \"first\"\naccelerator Fast [0.5, 0.5]\ndeaccelerator Slow [0.6, 0.6]\n%% a comment", true, nullptr},
+            {L"wardley-beta\ncomponent X [0.5, 0.5]\npipeline X {\n  component Y [0.2]\n  component Z [0.8] label [-10, 5]\n}\nY -> X\nX +< Y", true, nullptr},
+            {L"wardley-beta\ncomponent A [0.5, 0.5]\ncomponent B [0.4, 0.4]\nA B", false, L"Line 4"},
+            {L"wardley-beta\ncomponent anchor thing [0.1, 0.1]", false, L"Line 2"},
+            {L"wardley-beta\ncomponent A [50, 30]", false, L"Line 2"},
+            {L"wardley-beta\ncomponent A [0.5, 150.0]", false, L"Line 2"},
+            {L"wardley-beta\ncomponent A [0.5, 0.5]\nevolve A 150.0", false, L"Line 3"},
+            {L"wardley-beta\npipeline Missing {\n  component Y [0.2]\n}", false, L"Line 2"},
+            {L"wardley-beta\ncomponent X [0.5, 0.5]\npipeline X {\n}", false, L"Line 4"},
+            {L"wardley-beta\nnote bare [0.5, 0.5]", false, L"Line 2"},
+            {L"Wardley-Beta\ncomponent A [0.5, 0.5]", false, L"Line 1"},
             {L"requirementDiagram\naccDescr {\n  multi line\n}\nrequirement \"**Bold** name\" {\nverifymethod: analysis\nid: 2\nid: 3\n}\nelement c {\n}\nc:::thick\n\"**Bold** name\" - traces -> \"**Bold** name\"", true, nullptr},
             {L"C4Dynamic\naccDescr {\n multi\n}\nContainer(c1,\"C1\")\nContainer(c2,\"C2\")\nRelIndex(1, c1, c2, \"first\")\nRel_Back(c2, c1, \"back\")\nUpdateRelStyle(c2, c1, \"red\", \"blue\", \"1e40\", \"-0x20\")\nSystem(c1, \"Again\")\nBoundary(b,\"B\") {\n  Person(p, \"P\")\n}", true, nullptr},
             {L"block-beta\ncolumns 3\na([\"Stadium\"]) e:::hot f:2\nclassDef hot fill:#f96\nx<[\" \"]>(y)", true, nullptr},
@@ -1906,6 +1917,11 @@ int main(int argc, char** ansi_argv) {
             L"venn-beta\nset a: 1000000000000000000000000000000\nset b: 0.000000000000000000000000000001\nunion a,b: 0.0000000000000000000000000000001\n",
             L"venn-beta\nset a\nset b\nunion a,b\n" + repeat(L"  text \"" + std::wstring(300, L'x') + L" y\"\n", 2000),
             L"venn-beta\n" + repeat(L"set a[\"" + std::wstring(3000, L'w') + L"\"]\nstyle a fill:#123, stroke-width: 1e300, fill-opacity: 900\n", 50),
+            L"wardley-beta\n" + repeat(L"component c [0.5, 0.5] label [-99999, 99999] (market) inertia\nc +'" + std::wstring(300, L'l') + L"'<> c\n", 900),
+            L"wardley-beta\nsize [999999999, 1]\n" + repeat(L"component " + std::wstring(3000, L'n') + L" [0.1, 0.9]\n", 10),
+            L"wardley-beta\n" + repeat(L"annotation 1, [0.5, 0.5] \"" + std::wstring(300, L'a') + L"\"\n", 1000) + L"annotations [0.5, 0.5]\n",
+            L"wardley-beta\ncomponent p [0.5, 0.5]\n" + repeat(L"pipeline p {\n" + repeat(L"component q [0.3]\n", 50) + L"}\n", 30),
+            L"wardley-beta\nevolution " + repeat(L"s@9999.9 -> ", 40) + L"s\n",
             [&] {  // blocks nested as deep as allowed: sizes double each level
                 std::wstring s = L"block-beta\n";
                 for (int i = 0; i < 20; ++i) s += L"block:b" + std::to_wstring(i) + L"\ncolumns 2\nx" + std::to_wstring(i) + L" y" + std::to_wstring(i) + L"\n";
@@ -2491,6 +2507,43 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated venn diagrams in %.0f ms\n", iterations / 8, NowMs() - vn0);
+        // Wardley maps: components, links of every kind, pipelines, trends,
+        // notes, annotations.
+        const double wm0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            auto coord = [&] { return std::to_wstring(rnd() % 10) + L"." + std::to_wstring(rnd() % 100); };
+            std::wstring src = L"wardley-beta\n";
+            if (rnd() % 2) src += L"title Map " + std::to_wstring(it) + L"\n";
+            if (rnd() % 3 == 0) src += L"evolution A -> B" + std::wstring(rnd() % 2 ? L"@0.5" : L"") + L" -> C\n";
+            const int count = 1 + static_cast<int>(rnd() % 12);
+            static const wchar_t* kStrategy[] = {L"", L" (build)", L" (buy)", L" (outsource)", L" (market)"};
+            for (int k = 0; k < count; ++k) {
+                const bool anchor = rnd() % 5 == 0;
+                src += (anchor ? L"anchor N" : L"component N") + std::to_wstring(k) + L" [0." + std::to_wstring(rnd() % 100) + L", 0." + std::to_wstring(rnd() % 100) + L"]";
+                if (!anchor) {
+                    if (rnd() % 4 == 0) src += L" label [" + std::to_wstring(rnd() % 30) + L", -" + std::to_wstring(rnd() % 30) + L"]";
+                    src += kStrategy[rnd() % 5];
+                    if (rnd() % 5 == 0) src += L" inertia";
+                }
+                src += L"\n";
+            }
+            static const wchar_t* kArrow[] = {L" -> ", L" --> ", L" -.-> ", L" > ", L" +> ", L" +< ", L" +<> ", L" +'why'> ", L" "};
+            for (int k = 0, links = static_cast<int>(rnd() % 15); k < links; ++k) {
+                src += L"N" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + kArrow[rnd() % 8] + L"N" + std::to_wstring(rnd() % static_cast<uint32_t>(count));
+                if (rnd() % 4 == 0) src += L"; label";
+                src += L"\n";
+            }
+            if (rnd() % 3 == 0) src += L"pipeline N0 {\n  component P1 [0.2]\n  component P2 [0." + std::to_wstring(rnd() % 100) + L"]\n}\nP1 -> N0\n";
+            if (rnd() % 2) src += L"evolve N" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + L" " + coord() + L"\n";
+            if (rnd() % 3 == 0) src += L"note \"n\" [0.5, 0.5]\nannotation 2, [0.1, 0.2] \"two\"\nannotations [0.9, 0.1]\naccelerator Up [0.5, 0.5]\n";
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 300)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated wardley maps in %.0f ms\n", iterations / 4, NowMs() - wm0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();

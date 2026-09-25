@@ -67,6 +67,8 @@ constexpr uint32_t kLight[kDgRoleCount] = {
     // venn1..8, text on them (computed), shade (explicit)
     0xFF5353FF, 0xFFFFFF45, 0xFFB5FF20, 0xFFFF53FF, 0xFF53FFFF, 0xFF45FF45, 0xFFFF5353, 0xFF45FFFF,
     0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // wardley: component fill, evolution
+    0xFFFFFFFF, 0xFFDC3545,
 };
 constexpr uint32_t kDark[kDgRoleCount] = {
     0x00000000,  // none
@@ -126,6 +128,8 @@ constexpr uint32_t kDark[kDgRoleCount] = {
     // venn1..8, text on them (computed), shade (explicit)
     0xFF6A6E6E, 0xFFA40000, 0xFFCC2A91, 0xFF87A1A9, 0xFFBF7344, 0xFFEB2626, 0xFFB800E1, 0xFFFEAB35,
     0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // wardley: component fill, evolution
+    0xFF1F2020, 0xFFFF6B6B,
 };
 
 D2D1_COLOR_F ToColor(uint32_t argb) {

@@ -574,7 +574,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4, Architecture, TreeView, Info, Ishikawa, Cynefin, Venn };
+enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4, Architecture, TreeView, Info, Ishikawa, Cynefin, Venn, Wardley };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -612,6 +612,7 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (EqualsNoCase(*name, L"ishikawa-beta") || EqualsNoCase(*name, L"ishikawa")) return Kind::Ishikawa;
     if (*name == L"cynefin-beta") return Kind::Cynefin;
     if (*name == L"venn-beta") return Kind::Venn;
+    if (EqualsNoCase(*name, L"wardley-beta")) return Kind::Wardley;  // (the parser wants it in lower case)
     return Kind::Unknown;
 }
 
@@ -670,6 +671,7 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         case Kind::Ishikawa: IshikawaDiagram(src, nullptr); return true;
         case Kind::Cynefin: CynefinDiagram(src, nullptr); return true;
         case Kind::Venn: VennDiagram(src, nullptr); return true;
+        case Kind::Wardley: WardleyMap(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -711,6 +713,7 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         case Kind::Ishikawa: return IshikawaDiagram(src, &builder);
         case Kind::Cynefin: return CynefinDiagram(src, &builder);
         case Kind::Venn: return VennDiagram(src, &builder);
+        case Kind::Wardley: return WardleyMap(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;
