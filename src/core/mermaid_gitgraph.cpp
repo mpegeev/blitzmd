@@ -384,6 +384,16 @@ public:
             }
             b_.End(Role(kDgNone), Role(kDgLine), 1.f, 2);
         }
+        // Branch labels at the lanes' start (under arrows and ids, as Mermaid's).
+        for (size_t k = 0; k < p_.branches.size(); ++k) {
+            const M& m = labels[k];
+            const float w = m.w + 18, h = m.h + 4, l = lane_at_[k];
+            const D2D1_RECT_F r = lr ? D2D1::RectF(label_w - w, l - h / 2, label_w, l + h / 2)
+                                     : D2D1::RectF(l - w / 2, p_.dir == Dir::BT ? end + 10 : 0.f, l + w / 2, (p_.dir == Dir::BT ? end + 10 : 0.f) + h);
+            b_.Rect(r, 4, Role(Git(static_cast<int>(k))), Role(kDgNone));
+            const Branch& br = p_.branches[k];
+            b_.Text(m, D2D1::Point2F(r.left + 9, r.top + 2), Role(static_cast<uint8_t>(kDgGitText + lane_[k] % 8)), br.text.pos, br.text.len);
+        }
         // Lines from parents (the lanes they may run between start as the
         // branches' own).
         lanes_ = lane_at_;
@@ -400,16 +410,6 @@ public:
             const Commit& c = p_.commits[i];
             if (c.type != Type::CherryPick && (c.type != Type::Merge || !c.id_text.raw.empty())) Id(i, unit);
             Tags(i, unit);
-        }
-        // Branch labels at the lanes' start.
-        for (size_t k = 0; k < p_.branches.size(); ++k) {
-            const M& m = labels[k];
-            const float w = m.w + 18, h = m.h + 4, l = lane_at_[k];
-            const D2D1_RECT_F r = lr ? D2D1::RectF(label_w - w, l - h / 2, label_w, l + h / 2)
-                                     : D2D1::RectF(l - w / 2, p_.dir == Dir::BT ? end + 10 : 0.f, l + w / 2, (p_.dir == Dir::BT ? end + 10 : 0.f) + h);
-            b_.Rect(r, 4, Role(Git(static_cast<int>(k))), Role(kDgNone));
-            const Branch& br = p_.branches[k];
-            b_.Text(m, D2D1::Point2F(r.left + 9, r.top + 2), Role(static_cast<uint8_t>(kDgGitText + lane_[k] % 8)), br.text.pos, br.text.len);
         }
         Title(unit);
         // Everything moved inside the margins.

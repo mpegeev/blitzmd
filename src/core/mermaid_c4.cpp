@@ -207,8 +207,9 @@ private:
             return;
         }
         if (name == L"UpdateLayoutConfig") {
-            if (const Text v = arg(0, L"c4ShapeInRow"); !v.raw.empty()) shapes_in_row = std::clamp(static_cast<int>(ParseInt(v.raw)), 1, 20);
-            if (const Text v = arg(1, L"c4BoundaryInRow"); !v.raw.empty()) boundaries_in_row = std::clamp(static_cast<int>(ParseInt(v.raw)), 1, 20);
+            // (Anything under 1 left alone, as in Mermaid.)
+            if (const int v = static_cast<int>(ParseInt(arg(0, L"c4ShapeInRow").raw)); v >= 1) shapes_in_row = std::min(v, 20);
+            if (const int v = static_cast<int>(ParseInt(arg(1, L"c4BoundaryInRow").raw)); v >= 1) boundaries_in_row = std::min(v, 20);
             return;
         }
         if (name == L"UpdateBoundaryStyle" || name == L"AddElementTag" || name == L"AddRelTag") return;
@@ -276,9 +277,13 @@ private:
             Element& x = elements[static_cast<size_t>(old->second)];
             const bool was_boundary = x.kind == Kind::Boundary || x.kind == Kind::Node, is_boundary = e.kind == Kind::Boundary || e.kind == Kind::Node;
             if (was_boundary == is_boundary) {
-                e.parent = x.parent;
+                // It moves to where it is declared now.
+                const int index = old->second;
+                std::vector<int>& from = x.parent >= 0 ? elements[static_cast<size_t>(x.parent)].children : roots;
+                from.erase(std::remove(from.begin(), from.end(), index), from.end());
                 e.children = std::move(x.children);
                 x = std::move(e);
+                (parent >= 0 ? elements[static_cast<size_t>(parent)].children : roots).push_back(index);
                 return;
             }
         }

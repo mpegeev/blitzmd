@@ -41,18 +41,18 @@ public:
             }
             if (c_.AtEnd()) break;
             const size_t row = c_.pos();
-            const auto [a, a_pos] = Field();
+            const auto [a, a_pos, a_len] = Field();
             if (!c_.Eat(L',')) c_.Fail(Tr(L"Expected source,target,value", L"Ожидалось источник,цель,значение"));
-            const auto [b, b_pos] = Field();
+            const auto [b, b_pos, b_len] = Field();
             if (!c_.Eat(L',')) c_.Fail(Tr(L"Expected source,target,value", L"Ожидалось источник,цель,значение"));
-            const double value = ParseFloat(Field().first);
+            const double value = ParseFloat(Field().text);
             if (!(value >= 0) || !std::isfinite(value)) {
                 c_.set_pos(row);
                 c_.Fail(Tr(L"Expected a number", L"Ожидалось число"));
             }
             SLink l;
-            l.source = Node(a, a_pos);
-            l.target = Node(b, b_pos);
+            l.source = Node(a, a_pos, a_len);
+            l.target = Node(b, b_pos, b_len);
             l.value = value;
             l.index = links.size();
             if (links.size() >= kMaxNodes) c_.Fail(Tr(L"Too many flows", L"Слишком много потоков"));
@@ -100,10 +100,14 @@ private:
 
     // A CSV field: text, or "quoted" with "" for a quote; trimmed, as
     // Mermaid trims them.
-    std::pair<std::wstring, size_t> Field() {
+    struct Cell {
+        std::wstring text;
+        size_t pos, len;  // in the source
+    };
+    Cell Field() {
         while (c_.Peek() == L' ' || c_.Peek() == L'\t') c_.Advance();
         std::wstring out;
-        size_t start = c_.pos();
+        size_t start = c_.pos(), len = 0;
         if (c_.Eat(L'"')) {
             start = c_.pos();
             for (;;) {
@@ -114,14 +118,18 @@ private:
                         c_.Advance(2);
                         continue;
                     }
+                    len = c_.pos() - start;
                     c_.Advance();
                     break;
                 }
                 out.push_back(c_.Peek());
                 c_.Advance();
             }
+            // (Trimmed: spaces are themselves in the source too.)
             const std::wstring_view t = Trim(out);
-            start += static_cast<size_t>(t.data() - out.data());
+            const size_t lead = static_cast<size_t>(t.data() - out.data()), trail = out.size() - lead - t.size();
+            start += lead;
+            len -= lead + trail;
             out = std::wstring(t);
         } else {
             while (!c_.AtEnd() && c_.Peek() != L',' && c_.Peek() != L'\n' && c_.Peek() != L'\r') {
@@ -129,18 +137,19 @@ private:
                 c_.Advance();
             }
             while (!out.empty() && (out.back() == L' ' || out.back() == L'\t')) out.pop_back();
+            len = out.size();
         }
         if (out.size() > kMaxLabel) c_.Fail(Tr(L"Text too long", L"Слишком длинный текст"));
-        return {out, start};
+        return {out, start, len};
     }
 
-    size_t Node(const std::wstring& name, size_t pos) {
+    size_t Node(const std::wstring& name, size_t pos, size_t len) {
         if (auto it = ids_.find(name); it != ids_.end()) return it->second;
         if (nodes.size() >= kMaxNodes) c_.Fail(Tr(L"Too many nodes", L"Слишком много узлов"));
         SNode n;
         n.name = name;
         n.pos = static_cast<uint32_t>(pos);
-        n.len = static_cast<uint32_t>(name.size());
+        n.len = static_cast<uint32_t>(len);
         ids_.emplace(name, nodes.size());
         nodes.push_back(std::move(n));
         return nodes.size() - 1;

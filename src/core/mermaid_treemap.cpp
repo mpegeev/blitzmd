@@ -325,8 +325,10 @@ private:
         const float room = std::max(15.f, value ? w - 10 - 30 - 10 - 6 : w - 12);
         const RichText name = ParseLabel(n.text, false);
         M m = b_.Measure(name, 0, true, 12 / unit, false);
-        if (m.w > room) {
-            // As Mermaid: shortened with "..." (or left out) till it fits.
+        // As Mermaid: shortened with "..." (or left out) till it fits; then
+        // clipped to the section less 12 (here: shortened to that too).
+        auto fit = [&](float limit) {
+            if (!m.layout || m.w <= limit) return;
             auto cut = [&](size_t k) {
                 RichText t;
                 t.text = name.text.substr(0, k) + L"...";
@@ -335,12 +337,14 @@ private:
             size_t lo = 0, hi = name.text.size();
             while (lo + 1 < hi) {
                 const size_t mid = (lo + hi) / 2;
-                if (cut(mid).w <= room) lo = mid;
+                if (cut(mid).w <= limit) lo = mid;
                 else hi = mid;
             }
             m = cut(lo);
-            if (m.w > room) m = M{};
-        }
+            if (m.w > limit) m = M{};
+        };
+        fit(room);
+        fit(w - 12 - 6);
         if (m.layout) b_.Text(m, D2D1::Point2F(r.left + 6, r.top + kHeader / 2 - m.h / 2), ink, n.pos, n.len);
         if (value) {
             RichText v;
