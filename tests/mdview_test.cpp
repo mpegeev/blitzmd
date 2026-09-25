@@ -1656,6 +1656,12 @@ int main(int argc, char** ansi_argv) {
             {L"railroad-peg-beta\nValue <- [0-9]+ ;", false, L"Line 2"},
             {L"railroad-beta", true, nullptr},
             {L"Railroad-Beta\na = terminal(\"x\");", false, L"Line 1"},
+            {L"eventmodeling\ntf 01 ui Web.Form\ntf 02 cmd Place `json` { \"a\": 1 }\ntf 03 evt Orders.Placed [[D]]\ntf 04 pcr Billing.Charger ->> 03\ntf 05 cmd Charge\nrf 06 rmo Status ->> 03 ->> 05\ntf 07 evt X 'quoted'\nentity Foo.Bar\ndata D {\n  id: string\n}\nnote 01 {\n  hello\n}\ngwt 01 given evt X when cmd Y then evt Z rmo W\n// c\n/* block */ %% c", true, nullptr},
+            {L"eventmodeling\ntitle T\ntf 01 ui A", false, L"Line 2"},
+            {L"eventmodeling\ngwt 01 given evt Foo.Bar then evt Y", false, L"Line 2"},
+            {L"eventmodeling\ntf 01 foo A", false, L"Line 2"},
+            {L"eventmodeling\ndata D { a }", false, L"Line 2"},
+            {L"eventmodeling", true, nullptr},
             {L"requirementDiagram\naccDescr {\n  multi line\n}\nrequirement \"**Bold** name\" {\nverifymethod: analysis\nid: 2\nid: 3\n}\nelement c {\n}\nc:::thick\n\"**Bold** name\" - traces -> \"**Bold** name\"", true, nullptr},
             {L"C4Dynamic\naccDescr {\n multi\n}\nContainer(c1,\"C1\")\nContainer(c2,\"C2\")\nRelIndex(1, c1, c2, \"first\")\nRel_Back(c2, c1, \"back\")\nUpdateRelStyle(c2, c1, \"red\", \"blue\", \"1e40\", \"-0x20\")\nSystem(c1, \"Again\")\nBoundary(b,\"B\") {\n  Person(p, \"P\")\n}", true, nullptr},
             {L"block-beta\ncolumns 3\na([\"Stadium\"]) e:::hot f:2\nclassDef hot fill:#f96\nx<[\" \"]>(y)", true, nullptr},
@@ -1942,6 +1948,9 @@ int main(int argc, char** ansi_argv) {
             L"railroad-abnf-beta\na = " + repeat(L"999999999*999999999 b / ", 2000) + L"c ;",
             L"railroad-peg-beta\nA <- " + repeat(L"( ", 30) + L"B" + repeat(L" )", 30) + L" ;",
             L"railroad-beta\na = choice(" + repeat(L"terminal(\"x\"), ", 4000) + L"terminal(\"y\"));",
+            L"eventmodeling\n" + repeat(L"tf 01 ui N" + std::wstring(3000, L'n') + L".A ->> 01 { " + std::wstring(3000, L'd') + L" }\n", 60),
+            L"eventmodeling\n" + repeat(L"tf 99 evt S.E ->> 99 ->> 99 ->> 99\ntf 98 cmd C.D\n", 1000),
+            L"eventmodeling\ndata D {\n" + repeat(L"  " + std::wstring(40, L'x') + L" ", 90) + L"\n}\n" + repeat(L"tf 01 rmo R [[D]]\n", 200),
             [&] {  // blocks nested as deep as allowed: sizes double each level
                 std::wstring s = L"block-beta\n";
                 for (int i = 0; i < 20; ++i) s += L"block:b" + std::to_wstring(i) + L"\ncolumns 2\nx" + std::to_wstring(i) + L" y" + std::to_wstring(i) + L"\n";
@@ -2627,6 +2636,27 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated railroad diagrams in %.0f ms\n", iterations / 4, NowMs() - rr0);
+        // Event models: frames of every kind, namespaces, sources, data.
+        const double em0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            static const wchar_t* kKinds[] = {L"ui", L"cmd", L"evt", L"rmo", L"pcr", L"command", L"event", L"readmodel", L"processor"};
+            std::wstring src = L"eventmodeling\ndata Shape {\n  a: 1\n  b: two words\n}\n";
+            const int count = 1 + static_cast<int>(rnd() % 12);
+            for (int k = 0; k < count; ++k) {
+                src += std::wstring(rnd() % 6 == 0 ? L"rf " : L"tf ") + std::to_wstring(k + 1) + L" " + kKinds[rnd() % 9] + L" " + (rnd() % 3 == 0 ? L"Ns" + std::to_wstring(rnd() % 3) + L"." : L"") + L"Frame" + std::to_wstring(k);
+                if (k > 0 && rnd() % 3 == 0) src += L" ->> " + std::to_wstring(1 + rnd() % static_cast<uint32_t>(k));
+                if (rnd() % 4 == 0) src += L" [[Shape]]";
+                else if (rnd() % 4 == 0) src += L" { x: " + std::to_wstring(rnd() % 100) + L" }";
+                src += L"\n";
+            }
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 300)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated event models in %.0f ms\n", iterations / 4, NowMs() - em0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();

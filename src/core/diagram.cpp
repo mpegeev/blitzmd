@@ -71,6 +71,9 @@ constexpr uint32_t kLight[kDgRoleCount] = {
     0xFFFFFFFF, 0xFFDC3545,
     // railroad: terminal stroke and text, special fill and stroke
     0xFFEEEEBC, 0xFF000021, 0xFFF9FFEC, 0xFFE3F1C7,
+    // event models: UI, processor, read model, command, event (fill, stroke), swimlane
+    0xFFFFFFFF, 0xFFDBDADA, 0xFFEDB3F6, 0xFFB88CBF, 0xFFD3F1A2, 0xFFA3B732,
+    0xFFBCD6FE, 0xFF679AC3, 0xFFFFB778, 0xFFC19A0F, 0xFFFAFAFA, 0xFFF0F0F0,
 };
 constexpr uint32_t kDark[kDgRoleCount] = {
     0x00000000,  // none
@@ -134,6 +137,9 @@ constexpr uint32_t kDark[kDgRoleCount] = {
     0xFF1F2020, 0xFFFF6B6B,
     // railroad: terminal stroke and text, special fill and stroke
     0xFF2F2F2F, 0xFFB8B6B6, 0xFF201F1F, 0xFF060606,
+    // event models: UI, processor, read model, command, event (fill, stroke), swimlane
+    0xFF2D2D2D, 0xFF555555, 0xFF78517B, 0xFF8A6D8C, 0xFF547C3E, 0xFF6D8C5C,
+    0xFF3E547C, 0xFF5C6D8C, 0xFF7C5F3E, 0xFF8C755C, 0xFF404040, 0xFF525252,
 };
 
 D2D1_COLOR_F ToColor(uint32_t argb) {
@@ -529,6 +535,7 @@ SceneBuilder::Measured SceneBuilder::Measure(const RichText& t, float wrap, bool
         if (s.bold) m.layout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, r);
         if (s.italic) m.layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, r);
         if (s.underline) m.layout->SetUnderline(TRUE, r);
+        if (s.mono) m.layout->SetFontFamilyName(L"Consolas", r);
     }
     DWRITE_TEXT_METRICS tm{};
     m.layout->GetMetrics(&tm);

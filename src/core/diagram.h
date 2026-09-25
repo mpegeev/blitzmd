@@ -60,7 +60,9 @@ enum DiagramRole : uint8_t {
     kDgShade = kDgVennText + 8,           // an explicit color 30% darker (lighter in the dark theme)
     kDgWardley = kDgShade + 1,            // + n: wardley maps' component fill, evolution
     kDgRailroad = kDgWardley + 2,         // + n: railroad terminals' stroke and text, specials' fill and stroke
-    kDgRoleCount = kDgRailroad + 4,
+    kDgEventModel = kDgRailroad + 4,      // + n: event models' UI, processor, read model, command,
+                                          // event fills and strokes; swimlanes' fill and stroke
+    kDgRoleCount = kDgEventModel + 12,
 };
 
 struct DgColor {
@@ -80,6 +82,7 @@ struct RichText {
         uint32_t start = 0, length = 0;
         bool bold = false, italic = false;
         bool underline = false;  // class diagrams: static members
+        bool mono = false;       // code (a monospace font)
     };
     std::wstring text;  // '\n' between lines
     std::vector<Span> spans;

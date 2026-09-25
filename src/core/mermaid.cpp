@@ -574,7 +574,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4, Architecture, TreeView, Info, Ishikawa, Cynefin, Venn, Wardley, Railroad, Ebnf, Abnf, Peg };
+enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4, Architecture, TreeView, Info, Ishikawa, Cynefin, Venn, Wardley, Railroad, Ebnf, Abnf, Peg, EventModel };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -617,6 +617,7 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (EqualsNoCase(*name, L"railroad-ebnf-beta")) return Kind::Ebnf;
     if (EqualsNoCase(*name, L"railroad-abnf-beta")) return Kind::Abnf;
     if (EqualsNoCase(*name, L"railroad-peg-beta")) return Kind::Peg;
+    if (name->starts_with(L"eventmodeling")) return Kind::EventModel;
     return Kind::Unknown;
 }
 
@@ -680,6 +681,7 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         case Kind::Ebnf: EbnfDiagram(src, nullptr); return true;
         case Kind::Abnf: AbnfDiagram(src, nullptr); return true;
         case Kind::Peg: PegDiagram(src, nullptr); return true;
+        case Kind::EventModel: EventModel(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -726,6 +728,7 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         case Kind::Ebnf: return EbnfDiagram(src, &builder);
         case Kind::Abnf: return AbnfDiagram(src, &builder);
         case Kind::Peg: return PegDiagram(src, &builder);
+        case Kind::EventModel: return EventModel(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;
