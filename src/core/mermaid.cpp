@@ -574,7 +574,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4, Architecture, TreeView, Info, Ishikawa, Cynefin };
+enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4, Architecture, TreeView, Info, Ishikawa, Cynefin, Venn };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -611,6 +611,7 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (*name == L"info") return Kind::Info;
     if (EqualsNoCase(*name, L"ishikawa-beta") || EqualsNoCase(*name, L"ishikawa")) return Kind::Ishikawa;
     if (*name == L"cynefin-beta") return Kind::Cynefin;
+    if (*name == L"venn-beta") return Kind::Venn;
     return Kind::Unknown;
 }
 
@@ -668,6 +669,7 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         case Kind::Info: InfoDiagram(src, nullptr); return true;
         case Kind::Ishikawa: IshikawaDiagram(src, nullptr); return true;
         case Kind::Cynefin: CynefinDiagram(src, nullptr); return true;
+        case Kind::Venn: VennDiagram(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -708,6 +710,7 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         case Kind::Info: return InfoDiagram(src, &builder);
         case Kind::Ishikawa: return IshikawaDiagram(src, &builder);
         case Kind::Cynefin: return CynefinDiagram(src, &builder);
+        case Kind::Venn: return VennDiagram(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;

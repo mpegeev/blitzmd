@@ -55,7 +55,10 @@ enum DiagramRole : uint8_t {
     kDgScaleLighter = kDgScalePeer + 12,  // + n: cScale 10% lighter (kanban columns)
     kDgCynefin = kDgScaleLighter + 12,    // + n: cynefin's complex, complicated, chaotic, clear,
                                           // confusion backgrounds, its cliff
-    kDgRoleCount = kDgCynefin + 6,
+    kDgVenn = kDgCynefin + 6,             // + n: venn1..8
+    kDgVennText = kDgVenn + 8,            // + n: text of them (30% darker; lighter in the dark theme)
+    kDgShade = kDgVennText + 8,           // an explicit color 30% darker (lighter in the dark theme)
+    kDgRoleCount = kDgShade + 1,
 };
 
 struct DgColor {
@@ -65,6 +68,7 @@ struct DgColor {
 inline DgColor Role(uint8_t role) { return DgColor{role, 0}; }
 inline DgColor Argb(uint32_t argb) { return DgColor{kDgArgb, argb}; }
 inline DgColor Tint(uint32_t argb) { return DgColor{kDgTint, argb}; }
+inline DgColor Shade(uint32_t argb) { return DgColor{kDgShade, argb}; }
 // A role at an opacity (0 to 255; 0: not painted).
 inline DgColor RoleAt(uint8_t role, uint8_t alpha) { return alpha ? DgColor{role, static_cast<uint32_t>(alpha) << 24} : DgColor{}; }
 

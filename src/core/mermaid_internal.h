@@ -156,5 +156,6 @@ std::shared_ptr<DiagramScene> TreeView(const Source& src, SceneBuilder* builder)
 std::shared_ptr<DiagramScene> InfoDiagram(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> IshikawaDiagram(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> CynefinDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> VennDiagram(const Source& src, SceneBuilder* builder);
 
 }  // namespace mdv::mermaid

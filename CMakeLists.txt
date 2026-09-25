@@ -95,6 +95,7 @@ add_library(mdview_core STATIC
     src/core/mermaid_treeview.cpp
     src/core/mermaid_ishikawa.cpp
     src/core/mermaid_cynefin.cpp
+    src/core/mermaid_venn.cpp
     src/core/render.cpp
     src/core/icons.cpp
     src/core/zoom.cpp

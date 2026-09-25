@@ -1619,6 +1619,19 @@ int main(int argc, char** ansi_argv) {
             {L"cynefin-beta\n  title T\n  complex\n    \"a\"\n    'b'\n  confusion\n    \"1\"\n    \"2\"\n    \"3\"\n    \"4\"\n  chaotic --> complex : \"stabilize\"\n  clear --> clear", true, nullptr},
             {L"cynefin-beta\n  \"orphan\"", false, L"Line 2"},
             {L"cynefin-beta\n  complex --> nowhere", false, L"Line 2"},
+            {L"venn-beta\n  title T\n  set A[\"Alpha\"]: 30\n  set B\n    text b1[\"one\"]\n  union A,B[\"Both\"]: 5\n    text t\n    TEXT t2\ntext A x\n  style A fill:#f00, fill-opacity: 0.5, stroke: rgb(1, 2, 3), stroke-width: 4\n  style A,B color: red, fill: \"#ffd700\"", true, nullptr},
+            {L"venn-beta set A set B union A,B", true, nullptr},
+            {L"venn-beta\n  set \"A B\"\n  set C\n  union \"A B\", C:0\ntext \"A B\",C 1", true, nullptr},
+            {L"venn-beta\n  set A %% a comment\n  %% a line of it\n    text x", true, nullptr},
+            {L"venn-beta\n  set A\n  set A: 0\n  set B\n  union A,B", true, nullptr},
+            {L"venn-beta\n  set A\n  union A,B", false, L"Line 3"},
+            {L"venn-beta\n  set A\n  union A", false, L"Line 3"},
+            {L"venn-beta\n  set A\n  style A color: red\n    text x", false, L"Line 4"},
+            {L"venn-beta\n  set A: -1", false, L"Line 2"},
+            {L"venn-beta\n  set A: 1e5", false, L"Line 2"},
+            {L"venn-beta\n  set A[\"open", false, L"Line 2"},
+            {L"venn-beta\n  set text", false, L"Line 2"},
+            {L"venn\n  set A", false, nullptr},
             {L"requirementDiagram\naccDescr {\n  multi line\n}\nrequirement \"**Bold** name\" {\nverifymethod: analysis\nid: 2\nid: 3\n}\nelement c {\n}\nc:::thick\n\"**Bold** name\" - traces -> \"**Bold** name\"", true, nullptr},
             {L"C4Dynamic\naccDescr {\n multi\n}\nContainer(c1,\"C1\")\nContainer(c2,\"C2\")\nRelIndex(1, c1, c2, \"first\")\nRel_Back(c2, c1, \"back\")\nUpdateRelStyle(c2, c1, \"red\", \"blue\", \"1e40\", \"-0x20\")\nSystem(c1, \"Again\")\nBoundary(b,\"B\") {\n  Person(p, \"P\")\n}", true, nullptr},
             {L"block-beta\ncolumns 3\na([\"Stadium\"]) e:::hot f:2\nclassDef hot fill:#f96\nx<[\" \"]>(y)", true, nullptr},
@@ -1862,6 +1875,37 @@ int main(int argc, char** ansi_argv) {
             }(),
             L"ishikawa-beta\nEffect\n" + repeat(L"  cause\n    sub one two three four five six\n", 900),
             L"cynefin-beta\ncomplex\n" + repeat(L"  \"" + std::wstring(200, L'i') + L"\"\n", 1500) + repeat(L"complex --> clear : \"t\"\n", 400),
+            [&] {  // venn: as many sets as allowed, every pair given
+                std::wstring s = L"venn-beta\n";
+                for (int i = 0; i < 24; ++i) s += L"set s" + std::to_wstring(i) + L": " + std::to_wstring(5 + i * 7 % 40) + L"\n";
+                for (int i = 0; i < 24; ++i) {
+                    for (int j = i + 1; j < 24; ++j) s += L"union s" + std::to_wstring(i) + L",s" + std::to_wstring(j) + L": " + std::to_wstring((i + j) % 5) + L"\n";
+                }
+                return s;
+            }(),
+            [&] {  // venn: unions of nearly all the sets, as much work as allowed
+                std::wstring s = L"venn-beta\n";
+                for (int i = 0; i < 24; ++i) s += L"set s" + std::to_wstring(i) + L"\n";
+                for (int k = 0; k < 24; ++k) {
+                    s += L"union ";
+                    for (int i = 0, n = 0; i < 24; ++i) {
+                        if (i != k) s += (n++ ? L"," : L"") + std::wstring(L"s") + std::to_wstring(i);
+                    }
+                    s += L"\n";
+                }
+                for (int k = 0; k < 80; ++k) {
+                    s += L"union ";
+                    for (int i = 0, n = 0; i < 24; ++i) {
+                        if ((i + k) % 6 != 0 && (i * 5 + k) % 7 != 0) s += (n++ ? L"," : L"") + std::wstring(L"s") + std::to_wstring(i);
+                    }
+                    s += L"\n";
+                }
+                return s;
+            }(),
+            L"venn-beta\n" + repeat(L"set s\n", 30) + L"set a: 1" + std::wstring(400, L'0') + L"\nset b: 0." + std::wstring(400, L'0') + L"1\n",
+            L"venn-beta\nset a: 1000000000000000000000000000000\nset b: 0.000000000000000000000000000001\nunion a,b: 0.0000000000000000000000000000001\n",
+            L"venn-beta\nset a\nset b\nunion a,b\n" + repeat(L"  text \"" + std::wstring(300, L'x') + L" y\"\n", 2000),
+            L"venn-beta\n" + repeat(L"set a[\"" + std::wstring(3000, L'w') + L"\"]\nstyle a fill:#123, stroke-width: 1e300, fill-opacity: 900\n", 50),
             [&] {  // blocks nested as deep as allowed: sizes double each level
                 std::wstring s = L"block-beta\n";
                 for (int i = 0; i < 20; ++i) s += L"block:b" + std::to_wstring(i) + L"\ncolumns 2\nx" + std::to_wstring(i) + L" y" + std::to_wstring(i) + L"\n";
@@ -2417,6 +2461,36 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated tree views, fishbones and cynefin diagrams in %.0f ms\n", iterations / 4, NowMs() - tv0);
+        // Venn diagrams: sets, unions of them with sizes that may not fit,
+        // text nodes, styles.
+        const double vn0 = NowMs();
+        for (int it = 0; it < iterations / 8; ++it) {
+            const int sets = 1 + static_cast<int>(rnd() % 7);
+            std::wstring src = L"venn-beta\n";
+            for (int k = 0; k < sets; ++k) {
+                src += L"  set S" + std::to_wstring(k) + (rnd() % 3 == 0 ? L"[\"set " + std::to_wstring(k) + L"\"]" : L"");
+                if (rnd() % 2) src += L": " + std::to_wstring(rnd() % 60);
+                src += L"\n";
+                if (rnd() % 3 == 0) src += L"    text t" + std::to_wstring(k) + L"\n";
+            }
+            for (int u = 0, unions = sets > 1 ? static_cast<int>(rnd() % 8) : 0; u < unions; ++u) {
+                src += L"  union ";
+                const int first = static_cast<int>(rnd() % static_cast<uint32_t>(sets));
+                const int count = 2 + static_cast<int>(rnd() % static_cast<uint32_t>(sets - 1));
+                for (int k = 0; k < count; ++k) src += (k ? L"," : L"") + std::wstring(L"S") + std::to_wstring((first + k) % sets);
+                if (rnd() % 2) src += L": " + std::to_wstring(rnd() % 20) + L"." + std::to_wstring(rnd() % 10);
+                src += L"\n";
+                if (rnd() % 2) src += L"    text u" + std::to_wstring(u) + L"[\"a label\"]\n";
+            }
+            if (rnd() % 3 == 0) src += L"  style S0 fill:#" + std::to_wstring(100 + rnd() % 900) + L", color: blue\n";
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 300)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated venn diagrams in %.0f ms\n", iterations / 8, NowMs() - vn0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();
