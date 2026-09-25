@@ -574,7 +574,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4, Architecture };
+enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4, Architecture, TreeView, Info, Ishikawa, Cynefin };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -607,6 +607,10 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (EqualsNoCase(*name, L"block-beta") || EqualsNoCase(*name, L"block")) return Kind::Block;
     if (*name == L"C4Context" || *name == L"C4Container" || *name == L"C4Component" || *name == L"C4Dynamic" || *name == L"C4Deployment") return Kind::C4;
     if (*name == L"architecture-beta" || *name == L"architecture") return Kind::Architecture;  // (the parser wants "-beta")
+    if (*name == L"treeView-beta") return Kind::TreeView;
+    if (*name == L"info") return Kind::Info;
+    if (EqualsNoCase(*name, L"ishikawa-beta") || EqualsNoCase(*name, L"ishikawa")) return Kind::Ishikawa;
+    if (*name == L"cynefin-beta") return Kind::Cynefin;
     return Kind::Unknown;
 }
 
@@ -660,6 +664,10 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         case Kind::Block: BlockDiagram(src, nullptr); return true;
         case Kind::C4: C4Diagram(src, nullptr); return true;
         case Kind::Architecture: ArchitectureDiagram(src, nullptr); return true;
+        case Kind::TreeView: TreeView(src, nullptr); return true;
+        case Kind::Info: InfoDiagram(src, nullptr); return true;
+        case Kind::Ishikawa: IshikawaDiagram(src, nullptr); return true;
+        case Kind::Cynefin: CynefinDiagram(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -696,6 +704,10 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         case Kind::Block: return BlockDiagram(src, &builder);
         case Kind::C4: return C4Diagram(src, &builder);
         case Kind::Architecture: return ArchitectureDiagram(src, &builder);
+        case Kind::TreeView: return TreeView(src, &builder);
+        case Kind::Info: return InfoDiagram(src, &builder);
+        case Kind::Ishikawa: return IshikawaDiagram(src, &builder);
+        case Kind::Cynefin: return CynefinDiagram(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;

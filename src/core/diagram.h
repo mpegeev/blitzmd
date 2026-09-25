@@ -53,7 +53,9 @@ enum DiagramRole : uint8_t {
     kDgGitInv = kDgScaleBright + 12,   // + n: gitInv0..7 (a highlighted commit)
     kDgScalePeer = kDgGitInv + 8,      // + n: cScalePeer0..11 (treemap sections' borders)
     kDgScaleLighter = kDgScalePeer + 12,  // + n: cScale 10% lighter (kanban columns)
-    kDgRoleCount = kDgScaleLighter + 12,
+    kDgCynefin = kDgScaleLighter + 12,    // + n: cynefin's complex, complicated, chaotic, clear,
+                                          // confusion backgrounds, its cliff
+    kDgRoleCount = kDgCynefin + 6,
 };
 
 struct DgColor {

@@ -62,6 +62,8 @@ constexpr uint32_t kLight[kDgRoleCount] = {
     0xFFFF3939, 0xFFFF9C39, 0xFF9CFF39, 0xFF39FF9C, 0xFF39FFFF, 0xFF399CFF,
     // cScale lighter (computed)
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // cynefin: domains' backgrounds, the cliff
+    0xFFE8F5E9, 0xFFE3F2FD, 0xFFFBE9E7, 0xFFFFF8E1, 0xFFF3E5F5, 0xFF8B0000,
 };
 constexpr uint32_t kDark[kDgRoleCount] = {
     0x00000000,  // none
@@ -116,6 +118,8 @@ constexpr uint32_t kDark[kDgRoleCount] = {
     0xFF65007B, 0xFFCC7801, 0xFF23760A, 0xFF2A2C41, 0xFF003CA2, 0xFF0182CF,
     // cScale lighter (computed)
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // cynefin: domains' backgrounds, the cliff
+    0xFF1B5E20, 0xFF0D47A1, 0xFFBF360C, 0xFFF57F17, 0xFF4A148C, 0xFFFF6B6B,
 };
 
 D2D1_COLOR_F ToColor(uint32_t argb) {
@@ -182,7 +186,7 @@ uint32_t ResolveRole(const DgColor& c, bool dark) {
         for (int shift = 0; shift <= 16; shift += 8) out |= std::min(((v >> shift) & 0xFF) * 6 / 5, 255u) << shift;
         return out;
     }
-    if (c.role >= kDgScaleLighter) return Lighten(table[kDgScale + c.role - kDgScaleLighter], 0.1f);
+    if (c.role >= kDgScaleLighter && c.role < kDgCynefin) return Lighten(table[kDgScale + c.role - kDgScaleLighter], 0.1f);
     if (c.role < kDgCategory || c.role >= kDgCategorySolid) return table[c.role];
     // Categories as Mermaid paints pie slices: at 70% over the page.
     const uint32_t v = table[c.role], page = table[kDgPage];

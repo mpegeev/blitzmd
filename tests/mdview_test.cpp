@@ -1607,6 +1607,18 @@ int main(int argc, char** ansi_argv) {
             {L"architecture-beta\n  service a(server)[]", false, L"Line 2"},
             {L"architecture-beta\n  group g\n  group e(cloud)[Empty] in g\n  service a \"x\" in g\n  accDescr {\n    multi\n  }\n  title T", true, nullptr},
             {L"architecture-beta\n  group g[G]\n  service a(server)[A]\n  a:R -- L:g", false, L"Line 4"},
+            {L"info", true, nullptr},
+            {L"info showInfo", true, nullptr},
+            {L"info more", false, L"Line 1"},
+            {L"treeView-beta\n    title T\n    src/\n        main.cpp ## entry\n        util/ :::highlight\n            a.h icon(file)\n    \"name with spaces\"\n    b.ps1 icon(logos:x)\n    c icon()", true, nullptr},
+            {L"treeView-beta\n├── src/\n│   ├── main.rs\n│   └── lib.rs\n└── Cargo.toml", true, nullptr},
+            {L"treeView-beta\n├── src/\n    indented", false, L"Line 3"},
+            {L"treeView-beta\n├──", false, L"Line 2"},
+            {L"ishikawa-beta\n    Effect\n    Cause A\n        Sub 1\n            Sub sub\n        Sub 2\n    Cause B\n    %% a comment\n    Cause C<br>two lines", true, nullptr},
+            {L"ishikawa\n", false, nullptr},
+            {L"cynefin-beta\n  title T\n  complex\n    \"a\"\n    'b'\n  confusion\n    \"1\"\n    \"2\"\n    \"3\"\n    \"4\"\n  chaotic --> complex : \"stabilize\"\n  clear --> clear", true, nullptr},
+            {L"cynefin-beta\n  \"orphan\"", false, L"Line 2"},
+            {L"cynefin-beta\n  complex --> nowhere", false, L"Line 2"},
             {L"requirementDiagram\naccDescr {\n  multi line\n}\nrequirement \"**Bold** name\" {\nverifymethod: analysis\nid: 2\nid: 3\n}\nelement c {\n}\nc:::thick\n\"**Bold** name\" - traces -> \"**Bold** name\"", true, nullptr},
             {L"C4Dynamic\naccDescr {\n multi\n}\nContainer(c1,\"C1\")\nContainer(c2,\"C2\")\nRelIndex(1, c1, c2, \"first\")\nRel_Back(c2, c1, \"back\")\nUpdateRelStyle(c2, c1, \"red\", \"blue\", \"1e40\", \"-0x20\")\nSystem(c1, \"Again\")\nBoundary(b,\"B\") {\n  Person(p, \"P\")\n}", true, nullptr},
             {L"block-beta\ncolumns 3\na([\"Stadium\"]) e:::hot f:2\nclassDef hot fill:#f96\nx<[\" \"]>(y)", true, nullptr},
@@ -1837,6 +1849,19 @@ int main(int argc, char** ansi_argv) {
             L"sankey-beta\nA,B,1\nB,A,1",
             L"sankey-beta\na,b,0\nb,c,0\nc,d,1e-300",
             L"sankey-beta\nA,B,1e300\nB,C,1.7e308",
+            [&] {  // a deep tree view
+                std::wstring s = L"treeView-beta\n";
+                for (int i = 0; i < 1000; ++i) s += std::wstring(static_cast<size_t>(i % 200), L' ') + L"n" + std::to_wstring(i) + L"/ ## d\n";
+                return s;
+            }(),
+            L"treeView-beta\n" + repeat(L"\u251c\u2500\u2500 " + std::wstring(40, L'x') + L"\n\u2502   \u2514\u2500\u2500 y :::highlight\n", 900),
+            [&] {  // a deep fishbone
+                std::wstring s = L"ishikawa-beta\nEffect\n";
+                for (int i = 0; i < 30; ++i) s += std::wstring(static_cast<size_t>(i + 1) * 2, L' ') + L"cause " + std::to_wstring(i) + L"\n";
+                return s;
+            }(),
+            L"ishikawa-beta\nEffect\n" + repeat(L"  cause\n    sub one two three four five six\n", 900),
+            L"cynefin-beta\ncomplex\n" + repeat(L"  \"" + std::wstring(200, L'i') + L"\"\n", 1500) + repeat(L"complex --> clear : \"t\"\n", 400),
             [&] {  // blocks nested as deep as allowed: sizes double each level
                 std::wstring s = L"block-beta\n";
                 for (int i = 0; i < 20; ++i) s += L"block:b" + std::to_wstring(i) + L"\ncolumns 2\nx" + std::to_wstring(i) + L" y" + std::to_wstring(i) + L"\n";
@@ -2349,6 +2374,49 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated architecture, sankey, block, requirement and C4 diagrams in %.0f ms\n", iterations / 4, NowMs() - ar0);
+        // Well-formed random tree views, fishbones and cynefin diagrams.
+        const double tv0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            std::wstring src;
+            const int count = 1 + static_cast<int>(rnd() % 15);
+            switch (it % 3) {
+            case 0: {
+                src = L"treeView-beta\n";
+                int depth = 0;
+                for (int k = 0; k < count; ++k) {
+                    depth = std::max(0, depth + static_cast<int>(rnd() % 3) - 1);
+                    src += std::wstring(static_cast<size_t>(depth) * 4, L' ') + L"n" + std::to_wstring(k) + (rnd() % 3 == 0 ? L"/" : L"") +
+                           (rnd() % 5 == 0 ? L" :::highlight" : L"") + (rnd() % 5 == 0 ? L" ## note" : L"") + (rnd() % 6 == 0 ? L" icon(folder)" : L"") + L"\n";
+                }
+                break;
+            }
+            case 1: {
+                src = L"ishikawa-beta\nEffect of it all\n";
+                int depth = 1;
+                for (int k = 0; k < count; ++k) {
+                    depth = std::clamp(depth + static_cast<int>(rnd() % 3) - 1, 1, 5);
+                    src += std::wstring(static_cast<size_t>(depth) * 2, L' ') + L"cause number " + std::to_wstring(k) + L"\n";
+                }
+                break;
+            }
+            default: {
+                static const wchar_t* kCyn[] = {L"complex", L"complicated", L"clear", L"chaotic", L"confusion"};
+                src = L"cynefin-beta\n";
+                for (int k = 0; k < count; ++k) {
+                    if (rnd() % 3 == 0) src += std::wstring(kCyn[rnd() % 5]) + L" --> " + kCyn[rnd() % 5] + (rnd() & 1 ? L" : \"move\"" : L"") + L"\n";
+                    else src += std::wstring(kCyn[rnd() % 5]) + L"\n  \"item " + std::to_wstring(k) + L"\"\n";
+                }
+                break;
+            }
+            }
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 300)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated tree views, fishbones and cynefin diagrams in %.0f ms\n", iterations / 4, NowMs() - tv0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();

@@ -152,5 +152,9 @@ std::shared_ptr<DiagramScene> SankeyDiagram(const Source& src, SceneBuilder* bui
 std::shared_ptr<DiagramScene> BlockDiagram(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> C4Diagram(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> ArchitectureDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> TreeView(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> InfoDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> IshikawaDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> CynefinDiagram(const Source& src, SceneBuilder* builder);
 
 }  // namespace mdv::mermaid
