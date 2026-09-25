@@ -62,6 +62,18 @@ constexpr uint32_t kLight[kDgRoleCount] = {
     0xFFFF3939, 0xFFFF9C39, 0xFF9CFF39, 0xFF39FF9C, 0xFF39FFFF, 0xFF399CFF,
     // cScale lighter (computed)
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // cynefin: domains' backgrounds, the cliff
+    0xFFE8F5E9, 0xFFE3F2FD, 0xFFFBE9E7, 0xFFFFF8E1, 0xFFF3E5F5, 0xFF8B0000,
+    // venn1..8, text on them (computed), shade (explicit)
+    0xFF5353FF, 0xFFFFFF45, 0xFFB5FF20, 0xFFFF53FF, 0xFF53FFFF, 0xFF45FF45, 0xFFFF5353, 0xFF45FFFF,
+    0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // wardley: component fill, evolution
+    0xFFFFFFFF, 0xFFDC3545,
+    // railroad: terminal stroke and text, special fill and stroke
+    0xFFEEEEBC, 0xFF000021, 0xFFF9FFEC, 0xFFE3F1C7,
+    // event models: UI, processor, read model, command, event (fill, stroke), swimlane
+    0xFFFFFFFF, 0xFFDBDADA, 0xFFEDB3F6, 0xFFB88CBF, 0xFFD3F1A2, 0xFFA3B732,
+    0xFFBCD6FE, 0xFF679AC3, 0xFFFFB778, 0xFFC19A0F, 0xFFFAFAFA, 0xFFF0F0F0,
 };
 constexpr uint32_t kDark[kDgRoleCount] = {
     0x00000000,  // none
@@ -116,6 +128,18 @@ constexpr uint32_t kDark[kDgRoleCount] = {
     0xFF65007B, 0xFFCC7801, 0xFF23760A, 0xFF2A2C41, 0xFF003CA2, 0xFF0182CF,
     // cScale lighter (computed)
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // cynefin: domains' backgrounds, the cliff
+    0xFF1B5E20, 0xFF0D47A1, 0xFFBF360C, 0xFFF57F17, 0xFF4A148C, 0xFFFF6B6B,
+    // venn1..8, text on them (computed), shade (explicit)
+    0xFF6A6E6E, 0xFFA40000, 0xFFCC2A91, 0xFF87A1A9, 0xFFBF7344, 0xFFEB2626, 0xFFB800E1, 0xFFFEAB35,
+    0, 0, 0, 0, 0, 0, 0, 0, 0,
+    // wardley: component fill, evolution
+    0xFF1F2020, 0xFFFF6B6B,
+    // railroad: terminal stroke and text, special fill and stroke
+    0xFF2F2F2F, 0xFFB8B6B6, 0xFF201F1F, 0xFF060606,
+    // event models: UI, processor, read model, command, event (fill, stroke), swimlane
+    0xFF2D2D2D, 0xFF555555, 0xFF78517B, 0xFF8A6D8C, 0xFF547C3E, 0xFF6D8C5C,
+    0xFF3E547C, 0xFF5C6D8C, 0xFF7C5F3E, 0xFF8C755C, 0xFF404040, 0xFF525252,
 };
 
 D2D1_COLOR_F ToColor(uint32_t argb) {
@@ -124,12 +148,13 @@ D2D1_COLOR_F ToColor(uint32_t argb) {
 }
 
 bool Painted(const DgColor& c) {
-    return c.role != kDgNone && ((c.role != kDgArgb && c.role != kDgTint) || (c.argb >> 24) != 0);
+    return c.role != kDgNone && ((c.role != kDgArgb && c.role != kDgTint && c.role != kDgShade) || (c.argb >> 24) != 0);
 }
 
 uint32_t ResolveRole(const DgColor& c, bool dark);
 
-// khroma's lighten: the HSL lightness raised by `amount` (0 to 1).
+// khroma's lighten: the HSL lightness raised by `amount` (-1 to 1; below 0:
+// darken).
 uint32_t Lighten(uint32_t argb, float amount) {
     const float r = ((argb >> 16) & 0xFF) / 255.f, g = ((argb >> 8) & 0xFF) / 255.f, b = (argb & 0xFF) / 255.f;
     const float hi = std::max({r, g, b}), lo = std::min({r, g, b}), l = (hi + lo) / 2, d = hi - lo;
@@ -141,7 +166,7 @@ uint32_t Lighten(uint32_t argb, float amount) {
         else h = (r - g) / d + 4;
         h /= 6;
     }
-    const float l2 = std::min(l + amount, 1.f);
+    const float l2 = std::clamp(l + amount, 0.f, 1.f);
     auto hue = [](float p, float q, float t) {
         if (t < 0) t += 1;
         if (t > 1) t -= 1;
@@ -164,7 +189,7 @@ uint32_t Lighten(uint32_t argb, float amount) {
 // A theme role at an opacity (RoleAt: its argb's alpha), or as it is.
 uint32_t Resolve(const DgColor& c, bool dark) {
     const uint32_t v = ResolveRole(c, dark);
-    if (c.role == kDgArgb || c.role == kDgTint || (c.argb >> 24) == 0) return v;
+    if (c.role == kDgArgb || c.role == kDgTint || c.role == kDgShade || (c.argb >> 24) == 0) return v;
     return (v & 0xFFFFFF) | ((((v >> 24) * (c.argb >> 24) + 127) / 255) << 24);
 }
 
@@ -173,8 +198,10 @@ uint32_t ResolveRole(const DgColor& c, bool dark) {
     // Light backgrounds picked for a white page would glare on a dark one
     // (and hide light text): a quarter of the color there.
     if (c.role == kDgTint) return dark ? (c.argb & 0xFFFFFF) | (std::min(c.argb >> 24, 0x40u) << 24) : c.argb;
+    if (c.role == kDgShade) return Lighten(c.argb, dark ? 0.3f : -0.3f);
     if (c.role >= kDgRoleCount) return 0;
     const uint32_t* table = dark ? kDark : kLight;
+    if (c.role >= kDgVennText && c.role < kDgShade) return Lighten(table[kDgVenn + c.role - kDgVennText], dark ? 0.3f : -0.3f);
     if (c.role >= kDgScaleBright && c.role < kDgGitInv) {
         // (Mermaid's CSS filter: brightness(120%).)
         const uint32_t v = table[kDgScale + c.role - kDgScaleBright];
@@ -182,7 +209,7 @@ uint32_t ResolveRole(const DgColor& c, bool dark) {
         for (int shift = 0; shift <= 16; shift += 8) out |= std::min(((v >> shift) & 0xFF) * 6 / 5, 255u) << shift;
         return out;
     }
-    if (c.role >= kDgScaleLighter) return Lighten(table[kDgScale + c.role - kDgScaleLighter], 0.1f);
+    if (c.role >= kDgScaleLighter && c.role < kDgCynefin) return Lighten(table[kDgScale + c.role - kDgScaleLighter], 0.1f);
     if (c.role < kDgCategory || c.role >= kDgCategorySolid) return table[c.role];
     // Categories as Mermaid paints pie slices: at 70% over the page.
     const uint32_t v = table[c.role], page = table[kDgPage];
@@ -508,6 +535,7 @@ SceneBuilder::Measured SceneBuilder::Measure(const RichText& t, float wrap, bool
         if (s.bold) m.layout->SetFontWeight(DWRITE_FONT_WEIGHT_BOLD, r);
         if (s.italic) m.layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, r);
         if (s.underline) m.layout->SetUnderline(TRUE, r);
+        if (s.mono) m.layout->SetFontFamilyName(L"Consolas", r);
     }
     DWRITE_TEXT_METRICS tm{};
     m.layout->GetMetrics(&tm);

@@ -80,6 +80,16 @@ bool IsWordChar(wchar_t c);
 // A number as JavaScript writes it (3, 0.5, 1e+21, Infinity).
 std::wstring JsNumber(double v);
 
+// Langium grammars hide a YAML block (--- lines ---) anywhere: its length
+// at `pos`, or 0.
+size_t YamlBlockLength(std::wstring_view s, size_t pos);
+// ... and a directive (%%{...}%% then a line end): its length, or 0 (then
+// the line is a comment).
+size_t DirectiveLength(std::wstring_view s, size_t pos);
+
+// Mermaid's #name; and #123; entities decoded (it decodes them in all text).
+std::wstring DecodeEntities(std::wstring_view s);
+
 // "Line 3: message".
 std::wstring FormatError(std::wstring_view source, const ParseError& e);
 
@@ -152,5 +162,16 @@ std::shared_ptr<DiagramScene> SankeyDiagram(const Source& src, SceneBuilder* bui
 std::shared_ptr<DiagramScene> BlockDiagram(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> C4Diagram(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> ArchitectureDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> TreeView(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> InfoDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> IshikawaDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> CynefinDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> VennDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> WardleyMap(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> RailroadDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> EbnfDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> AbnfDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> PegDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> EventModel(const Source& src, SceneBuilder* builder);
 
 }  // namespace mdv::mermaid

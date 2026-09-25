@@ -96,6 +96,66 @@ Source Preprocess(std::wstring_view text) {
     return src;
 }
 
+// ---[\t ]*\r?\n(?:[\S\s]*?\r?\n)?---(?:\r?\n|(?!\S))
+size_t YamlBlockLength(std::wstring_view s, size_t pos) {
+    if (s.substr(pos, 3) != L"---") return 0;
+    size_t k = pos + 3;
+    while (k < s.size() && (s[k] == L' ' || s[k] == L'\t')) ++k;
+    if (k < s.size() && s[k] == L'\r') ++k;
+    if (k >= s.size() || s[k] != L'\n') return 0;
+    // The closing line: at the start of any later line.
+    for (size_t q = k + 1; q <= s.size();) {
+        if (s.substr(q, 3) == L"---") {
+            size_t e = q + 3;
+            if (e >= s.size()) return e - pos;
+            if (s[e] == L'\n') return e + 1 - pos;
+            if (s[e] == L'\r' && e + 1 < s.size() && s[e + 1] == L'\n') return e + 2 - pos;
+            if (std::iswspace(s[e])) return e - pos;
+        }
+        const size_t nl = s.find(L'\n', q);
+        if (nl == std::wstring_view::npos) break;
+        q = nl + 1;
+    }
+    return 0;
+}
+
+// %%{[\S\s]*?}%%(?:\r?\n|(?!\S)): the first }%% then a line end, a blank
+// or the end.
+size_t DirectiveLength(std::wstring_view s, size_t pos) {
+    if (s.substr(pos, 3) != L"%%{") return 0;
+    for (size_t e = s.find(L"}%%", pos + 3); e != std::wstring_view::npos; e = s.find(L"}%%", e + 1)) {
+        const size_t k = e + 3;
+        if (k >= s.size()) return k - pos;
+        if (s[k] == L'\n') return k + 1 - pos;
+        if (s[k] == L'\r' && k + 1 < s.size() && s[k + 1] == L'\n') return k + 2 - pos;
+        if (std::iswspace(s[k])) return k - pos;
+    }
+    return 0;
+}
+
+// Mermaid's #name; and #123; entities (it decodes them in all text).
+std::wstring DecodeEntities(std::wstring_view s) {
+    std::wstring out;
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == L'#') {
+            size_t e = i + 1;
+            while (e < s.size() && e - i <= 32 && ((s[e] >= L'a' && s[e] <= L'z') || (s[e] >= L'A' && s[e] <= L'Z') || (s[e] >= L'0' && s[e] <= L'9') || s[e] == L'_')) ++e;
+            if (e > i + 1 && e < s.size() && s[e] == L';') {
+                const std::wstring_view inner = s.substr(i + 1, e - i - 1);
+                const bool number = std::all_of(inner.begin(), inner.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; });
+                std::wstring decoded;
+                if (AppendEntity(decoded, (number ? L"&#" : L"&") + std::wstring(inner) + L";")) {
+                    out += decoded;
+                    i = e;
+                    continue;
+                }
+            }
+        }
+        out.push_back(s[i]);
+    }
+    return out;
+}
+
 // A number as JavaScript writes it (3, 0.5, 1e+21).
 std::wstring JsNumber(double v) {
     if (std::isnan(v)) return L"NaN";
@@ -574,7 +634,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4, Architecture };
+enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4, Architecture, TreeView, Info, Ishikawa, Cynefin, Venn, Wardley, Railroad, Ebnf, Abnf, Peg, EventModel };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -583,7 +643,7 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     const size_t start = c.pos();
     while (!c.AtEnd() && (IsWordChar(c.Peek()) || c.Peek() == L'-')) c.Advance();
     *name = std::wstring(src.text.substr(start, c.pos() - start));
-    if (EqualsNoCase(*name, L"flowchart") || EqualsNoCase(*name, L"graph") || EqualsNoCase(*name, L"flowchart-elk")) {
+    if (EqualsNoCase(*name, L"flowchart") || EqualsNoCase(*name, L"graph") || EqualsNoCase(*name, L"flowchart-elk") || *name == L"swimlane-beta") {
         return Kind::Flowchart;
     }
     if (EqualsNoCase(*name, L"sequenceDiagram")) return Kind::Sequence;
@@ -607,6 +667,17 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (EqualsNoCase(*name, L"block-beta") || EqualsNoCase(*name, L"block")) return Kind::Block;
     if (*name == L"C4Context" || *name == L"C4Container" || *name == L"C4Component" || *name == L"C4Dynamic" || *name == L"C4Deployment") return Kind::C4;
     if (*name == L"architecture-beta" || *name == L"architecture") return Kind::Architecture;  // (the parser wants "-beta")
+    if (*name == L"treeView-beta") return Kind::TreeView;
+    if (*name == L"info") return Kind::Info;
+    if (EqualsNoCase(*name, L"ishikawa-beta") || EqualsNoCase(*name, L"ishikawa")) return Kind::Ishikawa;
+    if (*name == L"cynefin-beta") return Kind::Cynefin;
+    if (*name == L"venn-beta") return Kind::Venn;
+    if (EqualsNoCase(*name, L"wardley-beta")) return Kind::Wardley;  // (the parser wants it in lower case)
+    if (EqualsNoCase(*name, L"railroad-beta")) return Kind::Railroad;  // (the same)
+    if (EqualsNoCase(*name, L"railroad-ebnf-beta")) return Kind::Ebnf;
+    if (EqualsNoCase(*name, L"railroad-abnf-beta")) return Kind::Abnf;
+    if (EqualsNoCase(*name, L"railroad-peg-beta")) return Kind::Peg;
+    if (name->starts_with(L"eventmodeling")) return Kind::EventModel;
     return Kind::Unknown;
 }
 
@@ -660,6 +731,17 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         case Kind::Block: BlockDiagram(src, nullptr); return true;
         case Kind::C4: C4Diagram(src, nullptr); return true;
         case Kind::Architecture: ArchitectureDiagram(src, nullptr); return true;
+        case Kind::TreeView: TreeView(src, nullptr); return true;
+        case Kind::Info: InfoDiagram(src, nullptr); return true;
+        case Kind::Ishikawa: IshikawaDiagram(src, nullptr); return true;
+        case Kind::Cynefin: CynefinDiagram(src, nullptr); return true;
+        case Kind::Venn: VennDiagram(src, nullptr); return true;
+        case Kind::Wardley: WardleyMap(src, nullptr); return true;
+        case Kind::Railroad: RailroadDiagram(src, nullptr); return true;
+        case Kind::Ebnf: EbnfDiagram(src, nullptr); return true;
+        case Kind::Abnf: AbnfDiagram(src, nullptr); return true;
+        case Kind::Peg: PegDiagram(src, nullptr); return true;
+        case Kind::EventModel: EventModel(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -696,6 +778,17 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         case Kind::Block: return BlockDiagram(src, &builder);
         case Kind::C4: return C4Diagram(src, &builder);
         case Kind::Architecture: return ArchitectureDiagram(src, &builder);
+        case Kind::TreeView: return TreeView(src, &builder);
+        case Kind::Info: return InfoDiagram(src, &builder);
+        case Kind::Ishikawa: return IshikawaDiagram(src, &builder);
+        case Kind::Cynefin: return CynefinDiagram(src, &builder);
+        case Kind::Venn: return VennDiagram(src, &builder);
+        case Kind::Wardley: return WardleyMap(src, &builder);
+        case Kind::Railroad: return RailroadDiagram(src, &builder);
+        case Kind::Ebnf: return EbnfDiagram(src, &builder);
+        case Kind::Abnf: return AbnfDiagram(src, &builder);
+        case Kind::Peg: return PegDiagram(src, &builder);
+        case Kind::EventModel: return EventModel(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;

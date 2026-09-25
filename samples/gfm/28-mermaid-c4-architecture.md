@@ -1,6 +1,6 @@
 # Mermaid: requirement, sankey, block, C4 and architecture diagrams
 
-The last Mermaid types drawn natively, like the others in [20-mermaid-flowchart.md](20-mermaid-flowchart.md) to [27-mermaid-git-kanban.md](27-mermaid-git-kanban.md).
+More Mermaid types drawn natively, like the others in [20-mermaid-flowchart.md](20-mermaid-flowchart.md) to [27-mermaid-git-kanban.md](27-mermaid-git-kanban.md).
 
 ## Requirement diagram
 

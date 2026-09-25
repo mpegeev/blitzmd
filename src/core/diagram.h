@@ -53,7 +53,16 @@ enum DiagramRole : uint8_t {
     kDgGitInv = kDgScaleBright + 12,   // + n: gitInv0..7 (a highlighted commit)
     kDgScalePeer = kDgGitInv + 8,      // + n: cScalePeer0..11 (treemap sections' borders)
     kDgScaleLighter = kDgScalePeer + 12,  // + n: cScale 10% lighter (kanban columns)
-    kDgRoleCount = kDgScaleLighter + 12,
+    kDgCynefin = kDgScaleLighter + 12,    // + n: cynefin's complex, complicated, chaotic, clear,
+                                          // confusion backgrounds, its cliff
+    kDgVenn = kDgCynefin + 6,             // + n: venn1..8
+    kDgVennText = kDgVenn + 8,            // + n: text of them (30% darker; lighter in the dark theme)
+    kDgShade = kDgVennText + 8,           // an explicit color 30% darker (lighter in the dark theme)
+    kDgWardley = kDgShade + 1,            // + n: wardley maps' component fill, evolution
+    kDgRailroad = kDgWardley + 2,         // + n: railroad terminals' stroke and text, specials' fill and stroke
+    kDgEventModel = kDgRailroad + 4,      // + n: event models' UI, processor, read model, command,
+                                          // event fills and strokes; swimlanes' fill and stroke
+    kDgRoleCount = kDgEventModel + 12,
 };
 
 struct DgColor {
@@ -63,6 +72,7 @@ struct DgColor {
 inline DgColor Role(uint8_t role) { return DgColor{role, 0}; }
 inline DgColor Argb(uint32_t argb) { return DgColor{kDgArgb, argb}; }
 inline DgColor Tint(uint32_t argb) { return DgColor{kDgTint, argb}; }
+inline DgColor Shade(uint32_t argb) { return DgColor{kDgShade, argb}; }
 // A role at an opacity (0 to 255; 0: not painted).
 inline DgColor RoleAt(uint8_t role, uint8_t alpha) { return alpha ? DgColor{role, static_cast<uint32_t>(alpha) << 24} : DgColor{}; }
 
@@ -72,6 +82,7 @@ struct RichText {
         uint32_t start = 0, length = 0;
         bool bold = false, italic = false;
         bool underline = false;  // class diagrams: static members
+        bool mono = false;       // code (a monospace font)
     };
     std::wstring text;  // '\n' between lines
     std::vector<Span> spans;

@@ -81,7 +81,23 @@ autolink `www.` / `https://` / e-mail), изображения, HTML-сущно�
   - architecture-beta: сервисы значками (database, disk, server, internet, cloud; значки из
     внешних наборов — «?», как у Mermaid без них), соединения, вложенные группы, связи между
     сторонами со стрелками и подписями, `{group}`, `align`. Раскладка — по сетке, которую задают
-    стороны связей (у Mermaid — «силовая» с этой же сеткой как ограничением).
+    стороны связей (у Mermaid — «силовая» с этой же сеткой как ограничением);
+  - treeView-beta: дерево файлов по отступам или псевдографике, значки папок и файлов,
+    описания, подсвеченные строки;
+  - ishikawa-beta: «рыбья кость» — следствие головой, причины костями вверх и вниз, подпричины;
+  - cynefin-beta: четыре домена и беспорядок, элементы плашками, переходы стрелками;
+  - venn-beta: множества кругами с площадями и пересечениями по размерам (раскладка как у
+    venn.js, на котором Mermaid её строит), подписи областей, текстовые узлы, стили;
+  - wardley-beta: карты Уордли — компоненты по видимости и эволюции, связи с потоками,
+    тренды эволюции, конвейеры, стратегии (build, buy, outsource, market), инерция, заметки,
+    аннотации, ускорители, этапы эволюции;
+  - railroad-beta, railroad-ebnf-beta, railroad-abnf-beta, railroad-peg-beta: синтаксические
+    диаграммы грамматик, записанных вызовами, EBNF, ABNF или PEG;
+  - eventmodeling: модели событий — кадры UI, команд, моделей чтения, событий и процессоров
+    по дорожкам, данные кадров, стрелки между ними;
+  - swimlane-beta: flowchart, где подграфы верхнего уровня — дорожки (столбцы или строки)
+    с заголовками, связи под прямыми углами (раскладка упрощённая: у Mermaid своя, дорожечная);
+  - info: версия Mermaid, которой следуют эти диаграммы.
   Диаграммы масштабируются и открываются на всё окно, как картинки; копирование даёт исходный
   текст, поиск подсвечивает подписи. Неподдержанный тип или ошибка — блок кода с пометкой о причине.
   Темы Mermaid (`%%{init: {theme: ...}}%%`, `themeVariables`) не применяются: цвета всегда
@@ -258,6 +274,7 @@ out\build\x64-release\emoji_test.exe          # таблица эмодзи-ко
 & $t mermaid samples\gfm\26-mermaid-more.md       # и для timeline, mindmap, quadrantChart, xychart
 & $t mermaid samples\gfm\27-mermaid-git-kanban.md # и для gitGraph, kanban, packet, radar, treemap
 & $t mermaid samples\gfm\28-mermaid-c4-architecture.md # и для requirement, sankey, block, C4, architecture
+& $t mermaid samples\gfm\29-mermaid-beta.md     # и для treeView, ishikawa, cynefin, venn, wardley, railroad, eventmodeling, swimlane
 & $t mmd diagram.mmd out.png [--dark]          # одна диаграмма Mermaid в PNG
 & $t tex "\frac{a}{b}"                        # дерево разобранной формулы
 ```

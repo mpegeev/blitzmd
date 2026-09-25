@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1607,6 +1608,85 @@ int main(int argc, char** ansi_argv) {
             {L"architecture-beta\n  service a(server)[]", false, L"Line 2"},
             {L"architecture-beta\n  group g\n  group e(cloud)[Empty] in g\n  service a \"x\" in g\n  accDescr {\n    multi\n  }\n  title T", true, nullptr},
             {L"architecture-beta\n  group g[G]\n  service a(server)[A]\n  a:R -- L:g", false, L"Line 4"},
+            {L"info", true, nullptr},
+            {L"info showInfo", true, nullptr},
+            {L"info more", false, L"Line 1"},
+            {L"treeView-beta\n    title T\n    src/\n        main.cpp ## entry\n        util/ :::highlight\n            a.h icon(file)\n    \"name with spaces\"\n    b.ps1 icon(logos:x)\n    c icon()", true, nullptr},
+            {L"treeView-beta\n├── src/\n│   ├── main.rs\n│   └── lib.rs\n└── Cargo.toml", true, nullptr},
+            {L"treeView-beta\n├── src/\n    indented", false, L"Line 3"},
+            {L"treeView-beta\n├──", false, L"Line 2"},
+            {L"ishikawa-beta\n    Effect\n    Cause A\n        Sub 1\n            Sub sub\n        Sub 2\n    Cause B\n    %% a comment\n    Cause C<br>two lines", true, nullptr},
+            {L"ishikawa\n", true, nullptr},
+            {L"ishikawa-beta Effect\n  Cause A\n  Cause B", true, nullptr},
+            {L"info\nshowInfo\ntitle T\naccTitle: x", true, nullptr},
+            {L"info showinfo", false, L"Line 1"},
+            {L"info;", false, L"Line 1"},
+            {L"treeView-beta\n\u251c a\n\u2502 \u251c b\n\u2502 \u2502 \u2514 c\n\u2502 \u2514 d\n\u2514 e", true, nullptr},
+            {L"treeView-beta title T\na", false, L"Line 1"},
+            {L"treeView-beta\na\ntitle T", false, L"Line 3"},
+            {L"treeView-beta\na icon(foo bar)", false, L"Line 2"},
+            {L"cynefin-beta\n  title T %% hidden\n  complex-->clear\n  complex--> clear", true, nullptr},
+            {L"venn-beta\n  set A: 5\n  set B: 8\n  set A: 10", true, nullptr},
+            {L"venn-beta\n  set A\n  style A fill:#12345", false, L"Line 3"},
+            {L"venn-beta\n  set A\n  style A fill:#12345, color: foo", true, nullptr},
+            {L"venn-beta\n  set A: 0\n  set B\n  style A fill:#12345", true, nullptr},
+            {L"venn-beta\n  set A: 5\n  set B: 5\n  union A,B: 3\n  union A,B: 5", true, nullptr},
+            {L"wardley-beta\ncomponent A [0.5, 0.5]\ntitle", true, nullptr},
+            {L"railroad-beta\na = terminal(\"x\");%%{ x }%%foo\nb = terminal(\"#quot;y#quot;\");", true, nullptr},
+            {L"swimlane-beta TD\nsubgraph A\na --> b --> c\na --> c\np\nend", true, nullptr},
+            {L"cynefin-beta\n  title T\n  complex\n    \"a\"\n    'b'\n  confusion\n    \"1\"\n    \"2\"\n    \"3\"\n    \"4\"\n  chaotic --> complex : \"stabilize\"\n  clear --> clear", true, nullptr},
+            {L"cynefin-beta\n  \"orphan\"", false, L"Line 2"},
+            {L"cynefin-beta\n  complex --> nowhere", false, L"Line 2"},
+            {L"venn-beta\n  title T\n  set A[\"Alpha\"]: 30\n  set B\n    text b1[\"one\"]\n  union A,B[\"Both\"]: 5\n    text t\n    TEXT t2\ntext A x\n  style A fill:#f00, fill-opacity: 0.5, stroke: rgb(1, 2, 3), stroke-width: 4\n  style A,B color: red, fill: \"#ffd700\"", true, nullptr},
+            {L"venn-beta set A set B union A,B", true, nullptr},
+            {L"venn-beta\n  set \"A B\"\n  set C\n  union \"A B\", C:0\ntext \"A B\",C 1", true, nullptr},
+            {L"venn-beta\n  set A %% a comment\n  %% a line of it\n    text x", true, nullptr},
+            {L"venn-beta\n  set A\n  set A: 0\n  set B\n  union A,B", true, nullptr},
+            {L"venn-beta\n  set A\n  union A,B", false, L"Line 3"},
+            {L"venn-beta\n  set A\n  union A", false, L"Line 3"},
+            {L"venn-beta\n  set A\n  style A color: red\n    text x", false, L"Line 4"},
+            {L"venn-beta\n  set A: -1", false, L"Line 2"},
+            {L"venn-beta\n  set A: 1e5", false, L"Line 2"},
+            {L"venn-beta\n  set A[\"open", false, L"Line 2"},
+            {L"venn-beta\n  set text", false, L"Line 2"},
+            {L"venn\n  set A", false, nullptr},
+            {L"wardley-beta\ntitle Tea\nsize [800, 500]\nevolution Genesis@0.2 / Concept -> Custom -> Product -> Commodity\nanchor Business [0.95, 0.63]\ncomponent Cup of Tea [0.79, 0.61] label [19, -4]\ncomponent Kettle [0.43, 0.35] (buy) inertia\ncomponent 'Power' [0.10, 0.7] (outsource)\ncomponent M [0.5, 0.5] (market) (inertia)\nBusiness -> Cup of Tea\nCup of Tea -> Kettle; limited by\nKettle +> 'Power'\nKettle +'x'<> M\nM -.-> Kettle\nevolve Kettle 0.62\nevolve Nope 150.0\nnote \"a note\" [0.30, 0.49]\nannotations [0.9, 0.1]\nannotation 1, [0.3, 0.3] \"first\"\naccelerator Fast [0.5, 0.5]\ndeaccelerator Slow [0.6, 0.6]\n%% a comment", true, nullptr},
+            {L"wardley-beta\ncomponent X [0.5, 0.5]\npipeline X {\n  component Y [0.2]\n  component Z [0.8] label [-10, 5]\n}\nY -> X\nX +< Y", true, nullptr},
+            {L"wardley-beta\ncomponent A [0.5, 0.5]\ncomponent B [0.4, 0.4]\nA B", false, L"Line 4"},
+            {L"wardley-beta\ncomponent anchor thing [0.1, 0.1]", false, L"Line 2"},
+            {L"wardley-beta\ncomponent A [50, 30]", false, L"Line 2"},
+            {L"wardley-beta\ncomponent A [0.5, 150.0]", false, L"Line 2"},
+            {L"wardley-beta\ncomponent A [0.5, 0.5]\nevolve A 150.0", false, L"Line 3"},
+            {L"wardley-beta\npipeline Missing {\n  component Y [0.2]\n}", false, L"Line 2"},
+            {L"wardley-beta\ncomponent X [0.5, 0.5]\npipeline X {\n}", false, L"Line 4"},
+            {L"wardley-beta\nnote bare [0.5, 0.5]", false, L"Line 2"},
+            {L"Wardley-Beta\ncomponent A [0.5, 0.5]", false, L"Line 1"},
+            {L"railroad-beta\ntitle Expressions\nexpr = sequence(nonterminal(\"term\"), zeroOrMore(sequence(choice(terminal(\"+\"), terminal('-')), nonterminal(\"term\"))));\nterm = sequence(nonterminal(\"factor\"), optional(choice(terminal(\"*\"), special(\"div\"))));\nlist = oneOrMore(terminal(\"it\\\"em\")); /* c */ %% c", true, nullptr},
+            {L"railroad-beta\na = choice();", false, L"Line 2"},
+            {L"railroad-beta\na = terminal(\"x\")", false, L"Line 2"},
+            {L"railroad-beta\ntitles = terminal(\"x\");", true, nullptr},
+            {L"railroad-ebnf-beta\nvalue = object | array | \"true\" ;\nobject ::= \"{\" , [ member , { \",\" , member } ] , \"}\" ;\nletter = ? any letter ? - digit (* iso *) ;\nopt = term? c* d+ /* c */ ;", true, nullptr},
+            {L"railroad-ebnf-beta\na = ;", false, L"Line 2"},
+            {L"railroad-abnf-beta\nrulelist = 1*( rule / (*c-wsp c-nl) ) ;\ndigit = %x30-39 %d13.10 ;\nopt = [ \"a\" ] 2\"b\" 3*5\"c\" *1\"d\" ;\nx = y ; a comment\n ;", true, nullptr},
+            {L"railroad-abnf-beta\na = b ; comment\nc = d ;", false, L"Line 3"},
+            {L"railroad-peg-beta\n# a comment\nExpr <- Sum ;\nSum <- Product (('+' / \"-\") Product)* ;\nValue <- Number / \"(\" Expr \")\" / !\"x\" . / &Value \"y\"+ ;", true, nullptr},
+            {L"railroad-peg-beta\nValue <- [0-9]+ ;", false, L"Line 2"},
+            {L"railroad-beta", true, nullptr},
+            {L"railroad-beta\na = sequence(terminal(\"multi\\nline\"), terminal(\"\"), nonterminal(\"  sp  \"));\n---\nfoo: bar\n---\nb = terminal(\"y\");", true, nullptr},
+            {L"railroad-beta\na = terminal(\"a\\\nb\");", false, L"Line 2"},
+            {L"railroad-abnf-beta\na = 12345678901\"x\" ;", true, nullptr},
+            {L"eventmodeling\ntf 01 ui A\n---\nfoo: 1\n---\ntf 02 rmo Spaces {   a    b   }", true, nullptr},
+            {L"wardley-beta\ncomponent A [0.5, 0.5]\n---\nx: y\n---\ncomponent B [0.4, 0.4]", true, nullptr},
+            {L"Railroad-Beta\na = terminal(\"x\");", false, L"Line 1"},
+            {L"eventmodeling\ntf 01 ui Web.Form\ntf 02 cmd Place `json` { \"a\": 1 }\ntf 03 evt Orders.Placed [[D]]\ntf 04 pcr Billing.Charger ->> 03\ntf 05 cmd Charge\nrf 06 rmo Status ->> 03 ->> 05\ntf 07 evt X 'quoted'\nentity Foo.Bar\ndata D {\n  id: string\n}\nnote 01 {\n  hello\n}\ngwt 01 given evt X when cmd Y then evt Z rmo W\n// c\n/* block */ %% c", true, nullptr},
+            {L"eventmodeling\ntitle T\ntf 01 ui A", false, L"Line 2"},
+            {L"eventmodeling\ngwt 01 given evt Foo.Bar then evt Y", false, L"Line 2"},
+            {L"eventmodeling\ntf 01 foo A", false, L"Line 2"},
+            {L"eventmodeling\ndata D { a }", false, L"Line 2"},
+            {L"eventmodeling", true, nullptr},
+            {L"swimlane-beta LR\n  subgraph Customer\n    A[Place order] --> B{Paid?}\n  end\n  subgraph Shop\n    C --> D\n  end\n  B -->|yes| C\n  B -.->|no| E\n  E --> A\n  D --> D", true, nullptr},
+            {L"swimlane-beta\n  subgraph Dev\n    subgraph Inner\n      a --> b\n    end\n  end\n  b --> Dev", true, nullptr},
+            {L"swimlane-beta XX\n  a --> b", false, L"Line 1"},
             {L"requirementDiagram\naccDescr {\n  multi line\n}\nrequirement \"**Bold** name\" {\nverifymethod: analysis\nid: 2\nid: 3\n}\nelement c {\n}\nc:::thick\n\"**Bold** name\" - traces -> \"**Bold** name\"", true, nullptr},
             {L"C4Dynamic\naccDescr {\n multi\n}\nContainer(c1,\"C1\")\nContainer(c2,\"C2\")\nRelIndex(1, c1, c2, \"first\")\nRel_Back(c2, c1, \"back\")\nUpdateRelStyle(c2, c1, \"red\", \"blue\", \"1e40\", \"-0x20\")\nSystem(c1, \"Again\")\nBoundary(b,\"B\") {\n  Person(p, \"P\")\n}", true, nullptr},
             {L"block-beta\ncolumns 3\na([\"Stadium\"]) e:::hot f:2\nclassDef hot fill:#f96\nx<[\" \"]>(y)", true, nullptr},
@@ -1837,6 +1917,75 @@ int main(int argc, char** ansi_argv) {
             L"sankey-beta\nA,B,1\nB,A,1",
             L"sankey-beta\na,b,0\nb,c,0\nc,d,1e-300",
             L"sankey-beta\nA,B,1e300\nB,C,1.7e308",
+            [&] {  // a deep tree view
+                std::wstring s = L"treeView-beta\n";
+                for (int i = 0; i < 400; ++i) s += std::wstring(static_cast<size_t>(i % 100), L' ') + L"n" + std::to_wstring(i) + L"/ ## d\n";
+                return s;
+            }(),
+            L"treeView-beta\n" + repeat(L"\u251c\u2500\u2500 " + std::wstring(40, L'x') + L"\n\u2502   \u2514\u2500\u2500 y :::highlight\n", 600),
+            [&] {  // a deep fishbone
+                std::wstring s = L"ishikawa-beta\nEffect\n";
+                for (int i = 0; i < 30; ++i) s += std::wstring(static_cast<size_t>(i + 1) * 2, L' ') + L"cause " + std::to_wstring(i) + L"\n";
+                return s;
+            }(),
+            L"ishikawa-beta\nEffect\n" + repeat(L"  cause\n    sub one two three four five six\n", 900),
+            L"cynefin-beta\ncomplex\n" + repeat(L"  \"" + std::wstring(150, L'i') + L"\"\n", 150) + repeat(L"  \"i\"\n", 1700) + repeat(L"complex --> clear : \"t\"\n", 400),
+            [&] {  // venn: as many sets as allowed, every pair given
+                std::wstring s = L"venn-beta\n";
+                for (int i = 0; i < 24; ++i) s += L"set s" + std::to_wstring(i) + L": " + std::to_wstring(5 + i * 7 % 40) + L"\n";
+                for (int i = 0; i < 24; ++i) {
+                    for (int j = i + 1; j < 24; ++j) s += L"union s" + std::to_wstring(i) + L",s" + std::to_wstring(j) + L": " + std::to_wstring((i + j) % 5) + L"\n";
+                }
+                return s;
+            }(),
+            [&] {  // venn: unions of nearly all the sets, as much work as allowed
+                std::wstring s = L"venn-beta\n";
+                for (int i = 0; i < 24; ++i) s += L"set s" + std::to_wstring(i) + L"\n";
+                for (int k = 0; k < 24; ++k) {
+                    s += L"union ";
+                    for (int i = 0, n = 0; i < 24; ++i) {
+                        if (i != k) s += (n++ ? L"," : L"") + std::wstring(L"s") + std::to_wstring(i);
+                    }
+                    s += L"\n";
+                }
+                for (int k = 0; k < 80; ++k) {
+                    s += L"union ";
+                    for (int i = 0, n = 0; i < 24; ++i) {
+                        if ((i + k) % 6 != 0 && (i * 5 + k) % 7 != 0) s += (n++ ? L"," : L"") + std::wstring(L"s") + std::to_wstring(i);
+                    }
+                    s += L"\n";
+                }
+                return s;
+            }(),
+            L"venn-beta\n" + repeat(L"set s\n", 30) + L"set a: 1" + std::wstring(400, L'0') + L"\nset b: 0." + std::wstring(400, L'0') + L"1\n",
+            L"venn-beta\nset a: 1000000000000000000000000000000\nset b: 0.000000000000000000000000000001\nunion a,b: 0.0000000000000000000000000000001\n",
+            L"venn-beta\nset a\nset b\nunion a,b\n" + repeat(L"  text \"" + std::wstring(10, L'x') + L" y\"\n", 1900),
+            L"venn-beta\n" + repeat(L"set a[\"" + std::wstring(700, L'w') + L"\"]\nstyle a fill:#123, stroke-width: 1e300, fill-opacity: 900\n", 50),
+            L"wardley-beta\n" + repeat(L"component c [0.5, 0.5] label [-99999, 99999] (market) inertia\nc +'" + std::wstring(20, L'l') + L"'<> c\n", 500),
+            L"wardley-beta\nsize [999999999, 1]\n" + repeat(L"component " + std::wstring(3000, L'n') + L" [0.1, 0.9]\n", 10),
+            L"wardley-beta\n" + repeat(L"annotation 1, [0.5, 0.5] \"" + std::wstring(20, L'a') + L"\"\n", 800) + L"annotations [0.5, 0.5]\n",
+            L"wardley-beta\ncomponent p [0.5, 0.5]\n" + repeat(L"pipeline p {\n" + repeat(L"component q [0.3]\n", 50) + L"}\n", 30),
+            L"wardley-beta\nevolution " + repeat(L"s@9999.9 -> ", 40) + L"s\n",
+            L"railroad-beta\na = " + repeat(L"optional(", 60) + L"terminal(\"x\")" + repeat(L")", 60) + L";",
+            L"railroad-ebnf-beta\na = b" + repeat(L"?", 3000) + L" ;",
+            L"railroad-ebnf-beta\na = b" + repeat(L" - c", 3000) + L" ;",
+            L"railroad-ebnf-beta\n" + repeat(L"r = ( a | b | \"" + std::wstring(300, L'x') + L"\" ) { c } [ d ] ;\n", 600),
+            L"railroad-abnf-beta\na = " + repeat(L"999999999*999999999 b / ", 2000) + L"c ;",
+            L"railroad-peg-beta\nA <- " + repeat(L"( ", 30) + L"B" + repeat(L" )", 30) + L" ;",
+            L"railroad-beta\na = choice(" + repeat(L"terminal(\"x\"), ", 2900) + L"terminal(\"y\"));",
+            L"eventmodeling\n" + repeat(L"tf 01 ui N" + std::wstring(3000, L'n') + L".A ->> 01 { " + std::wstring(3000, L'd') + L" }\n", 60),
+            L"eventmodeling\n" + repeat(L"tf 99 evt S.E ->> 99 ->> 99 ->> 99\ntf 98 cmd C.D\n", 1000),
+            L"eventmodeling\ndata D {\n" + repeat(repeat(L"y ", 30) + L"\n", 60) + L"}\n" + repeat(L"tf 01 rmo R [[D]]\n", 1300),
+            [&] {  // swimlanes: an edge past the nodes between in its lane
+                return std::wstring(L"swimlane-beta TD\nsubgraph L1\na --> b --> c\na --> c\nend\n");
+            }(),
+            L"eventmodeling\ndata D {\n" + repeat(L"  " + std::wstring(40, L'x') + L" ", 80) + L"\n}\n" + repeat(L"tf 01 rmo R [[D]]\n", 200),
+            [&] {  // swimlanes: many lanes, long chains back and forth
+                std::wstring s = L"swimlane-beta LR\n";
+                for (int l = 0; l < 40; ++l) s += L"subgraph L" + std::to_wstring(l) + L"\n" + repeat(L"n" + std::to_wstring(l) + L"x --> n" + std::to_wstring(l) + L"y\n", 1) + L"end\n";
+                for (int k = 0; k < 400; ++k) s += L"n" + std::to_wstring(k % 40) + L"y --> n" + std::to_wstring((k * 7) % 40) + L"x\n";
+                return s;
+            }(),
             [&] {  // blocks nested as deep as allowed: sizes double each level
                 std::wstring s = L"block-beta\n";
                 for (int i = 0; i < 20; ++i) s += L"block:b" + std::to_wstring(i) + L"\ncolumns 2\nx" + std::to_wstring(i) + L" y" + std::to_wstring(i) + L"\n";
@@ -1875,7 +2024,11 @@ int main(int argc, char** ansi_argv) {
                 std::printf("FAIL: hostile input %s... (%.0f ms)\n", WideToUtf8(h.substr(0, 40)).c_str(), ms);
                 ++failures;
             } else {
-                std::printf("  hostile %.0f ms %s\n", ms, scene ? "drawn" : WideToUtf8(error).c_str());
+                std::printf("  hostile %.0f ms %s (%s...)\n", ms, scene ? "drawn" : WideToUtf8(error).c_str(), [&] {
+                    std::string head = WideToUtf8(h.substr(0, 24));
+                    std::replace(head.begin(), head.end(), '\n', ' ');
+                    return head;
+                }().c_str());
             }
         }
         // Fuzz: random flowcharts from fragments.
@@ -2349,6 +2502,223 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated architecture, sankey, block, requirement and C4 diagrams in %.0f ms\n", iterations / 4, NowMs() - ar0);
+        // Well-formed random tree views, fishbones and cynefin diagrams.
+        const double tv0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            std::wstring src;
+            const int count = 1 + static_cast<int>(rnd() % 15);
+            switch (it % 3) {
+            case 0: {
+                src = L"treeView-beta\n";
+                int depth = 0;
+                for (int k = 0; k < count; ++k) {
+                    depth = std::max(0, depth + static_cast<int>(rnd() % 3) - 1);
+                    src += std::wstring(static_cast<size_t>(depth) * 4, L' ') + L"n" + std::to_wstring(k) + (rnd() % 3 == 0 ? L"/" : L"") +
+                           (rnd() % 5 == 0 ? L" :::highlight" : L"") + (rnd() % 5 == 0 ? L" ## note" : L"") + (rnd() % 6 == 0 ? L" icon(folder)" : L"") + L"\n";
+                }
+                break;
+            }
+            case 1: {
+                src = L"ishikawa-beta\nEffect of it all\n";
+                int depth = 1;
+                for (int k = 0; k < count; ++k) {
+                    depth = std::clamp(depth + static_cast<int>(rnd() % 3) - 1, 1, 5);
+                    src += std::wstring(static_cast<size_t>(depth) * 2, L' ') + L"cause number " + std::to_wstring(k) + L"\n";
+                }
+                break;
+            }
+            default: {
+                static const wchar_t* kCyn[] = {L"complex", L"complicated", L"clear", L"chaotic", L"confusion"};
+                src = L"cynefin-beta\n";
+                for (int k = 0; k < count; ++k) {
+                    if (rnd() % 3 == 0) src += std::wstring(kCyn[rnd() % 5]) + L" --> " + kCyn[rnd() % 5] + (rnd() & 1 ? L" : \"move\"" : L"") + L"\n";
+                    else src += std::wstring(kCyn[rnd() % 5]) + L"\n  \"item " + std::to_wstring(k) + L"\"\n";
+                }
+                break;
+            }
+            }
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 300)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated tree views, fishbones and cynefin diagrams in %.0f ms\n", iterations / 4, NowMs() - tv0);
+        // Venn diagrams: sets, unions of them with sizes that may not fit,
+        // text nodes, styles.
+        const double vn0 = NowMs();
+        for (int it = 0; it < iterations / 8; ++it) {
+            const int sets = 1 + static_cast<int>(rnd() % 7);
+            std::wstring src = L"venn-beta\n";
+            for (int k = 0; k < sets; ++k) {
+                src += L"  set S" + std::to_wstring(k) + (rnd() % 3 == 0 ? L"[\"set " + std::to_wstring(k) + L"\"]" : L"");
+                if (rnd() % 2) src += L": " + std::to_wstring(rnd() % 60);
+                src += L"\n";
+                if (rnd() % 3 == 0) src += L"    text t" + std::to_wstring(k) + L"\n";
+            }
+            for (int u = 0, unions = sets > 1 ? static_cast<int>(rnd() % 8) : 0; u < unions; ++u) {
+                src += L"  union ";
+                const int first = static_cast<int>(rnd() % static_cast<uint32_t>(sets));
+                const int count = 2 + static_cast<int>(rnd() % static_cast<uint32_t>(sets - 1));
+                for (int k = 0; k < count; ++k) src += (k ? L"," : L"") + std::wstring(L"S") + std::to_wstring((first + k) % sets);
+                if (rnd() % 2) src += L": " + std::to_wstring(rnd() % 20) + L"." + std::to_wstring(rnd() % 10);
+                src += L"\n";
+                if (rnd() % 2) src += L"    text u" + std::to_wstring(u) + L"[\"a label\"]\n";
+            }
+            if (rnd() % 3 == 0) src += L"  style S0 fill:#" + std::to_wstring(100 + rnd() % 900) + L", color: blue\n";
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 300)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated venn diagrams in %.0f ms\n", iterations / 8, NowMs() - vn0);
+        // Wardley maps: components, links of every kind, pipelines, trends,
+        // notes, annotations.
+        const double wm0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            auto coord = [&] { return std::to_wstring(rnd() % 10) + L"." + std::to_wstring(rnd() % 100); };
+            std::wstring src = L"wardley-beta\n";
+            if (rnd() % 2) src += L"title Map " + std::to_wstring(it) + L"\n";
+            if (rnd() % 3 == 0) src += L"evolution A -> B" + std::wstring(rnd() % 2 ? L"@0.5" : L"") + L" -> C\n";
+            const int count = 1 + static_cast<int>(rnd() % 12);
+            static const wchar_t* kStrategy[] = {L"", L" (build)", L" (buy)", L" (outsource)", L" (market)"};
+            for (int k = 0; k < count; ++k) {
+                const bool anchor = rnd() % 5 == 0;
+                src += (anchor ? L"anchor N" : L"component N") + std::to_wstring(k) + L" [0." + std::to_wstring(rnd() % 100) + L", 0." + std::to_wstring(rnd() % 100) + L"]";
+                if (!anchor) {
+                    if (rnd() % 4 == 0) src += L" label [" + std::to_wstring(rnd() % 30) + L", -" + std::to_wstring(rnd() % 30) + L"]";
+                    src += kStrategy[rnd() % 5];
+                    if (rnd() % 5 == 0) src += L" inertia";
+                }
+                src += L"\n";
+            }
+            static const wchar_t* kArrow[] = {L" -> ", L" --> ", L" -.-> ", L" > ", L" +> ", L" +< ", L" +<> ", L" +'why'> ", L" "};
+            for (int k = 0, links = static_cast<int>(rnd() % 15); k < links; ++k) {
+                src += L"N" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + kArrow[rnd() % 8] + L"N" + std::to_wstring(rnd() % static_cast<uint32_t>(count));
+                if (rnd() % 4 == 0) src += L"; label";
+                src += L"\n";
+            }
+            if (rnd() % 3 == 0) src += L"pipeline N0 {\n  component P1 [0.2]\n  component P2 [0." + std::to_wstring(rnd() % 100) + L"]\n}\nP1 -> N0\n";
+            if (rnd() % 2) src += L"evolve N" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + L" " + coord() + L"\n";
+            if (rnd() % 3 == 0) src += L"note \"n\" [0.5, 0.5]\nannotation 2, [0.1, 0.2] \"two\"\nannotations [0.9, 0.1]\naccelerator Up [0.5, 0.5]\n";
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 300)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated wardley maps in %.0f ms\n", iterations / 4, NowMs() - wm0);
+        // Railroad diagrams: random grammars in the four notations.
+        const double rr0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            // A random expression in the dialect's own syntax.
+            const int dialect = it % 4;
+            std::function<std::wstring(int)> expr = [&](int depth) -> std::wstring {
+                const int pick = depth > 3 ? static_cast<int>(rnd() % 3) : static_cast<int>(rnd() % 7);
+                auto sub = [&] { return expr(depth + 1); };
+                switch (dialect) {
+                case 0:
+                    switch (pick) {
+                    case 0: return L"terminal(\"t" + std::to_wstring(rnd() % 9) + L"\")";
+                    case 1: return L"nonterminal(\"n\")";
+                    case 2: return L"special(\"s\")";
+                    case 3: return L"sequence(" + sub() + L", " + sub() + L")";
+                    case 4: return L"choice(" + sub() + L", " + sub() + L", " + sub() + L")";
+                    case 5: return L"optional(" + sub() + L")";
+                    default: return (rnd() % 2 ? L"oneOrMore(" : L"zeroOrMore(") + sub() + L")";
+                    }
+                case 1:
+                    switch (pick) {
+                    case 0: return L"\"t\"";
+                    case 1: return L"name";
+                    case 2: return L"? special ?";
+                    case 3: return sub() + L" , " + sub() + L"*";
+                    case 4: return L"( " + sub() + L" | " + sub() + L" )";
+                    case 5: return L"[ " + sub() + L" ]";
+                    default: return L"{ " + sub() + L" }" + (rnd() % 2 ? L" - x" : L"+");
+                    }
+                case 2:
+                    switch (pick) {
+                    case 0: return L"\"t\"";
+                    case 1: return L"name";
+                    case 2: return L"%x41-5A";
+                    case 3: return sub() + L" " + sub();
+                    case 4: return L"( " + sub() + L" / " + sub() + L" )";
+                    case 5: return L"[ " + sub() + L" ]";
+                    default: return std::wstring(rnd() % 2 ? L"1*" : L"2") + L"( " + sub() + L" )";
+                    }
+                default:
+                    switch (pick) {
+                    case 0: return L"'t'";
+                    case 1: return L"Name";
+                    case 2: return L".";
+                    case 3: return sub() + L" " + sub();
+                    case 4: return L"( " + sub() + L" / " + sub() + L" )";
+                    case 5: return std::wstring(rnd() % 2 ? L"&" : L"!") + L"Name";
+                    default: return L"( " + sub() + L" )" + (rnd() % 2 ? L"*" : L"+");
+                    }
+                }
+            };
+            static const wchar_t* kHead[] = {L"railroad-beta", L"railroad-ebnf-beta", L"railroad-abnf-beta", L"railroad-peg-beta"};
+            static const wchar_t* kDefine[] = {L" = ", L" = ", L" = ", L" <- "};
+            std::wstring src = std::wstring(kHead[dialect]) + L"\n";
+            for (int r = 0, rules = 1 + static_cast<int>(rnd() % 4); r < rules; ++r) src += L"rule" + std::to_wstring(r) + kDefine[dialect] + expr(0) + L" ;\n";
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 300)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated railroad diagrams in %.0f ms\n", iterations / 4, NowMs() - rr0);
+        // Event models: frames of every kind, namespaces, sources, data.
+        const double em0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            static const wchar_t* kKinds[] = {L"ui", L"cmd", L"evt", L"rmo", L"pcr", L"command", L"event", L"readmodel", L"processor"};
+            std::wstring src = L"eventmodeling\ndata Shape {\n  a: 1\n  b: two words\n}\n";
+            const int count = 1 + static_cast<int>(rnd() % 12);
+            for (int k = 0; k < count; ++k) {
+                src += std::wstring(rnd() % 6 == 0 ? L"rf " : L"tf ") + std::to_wstring(k + 1) + L" " + kKinds[rnd() % 9] + L" " + (rnd() % 3 == 0 ? L"Ns" + std::to_wstring(rnd() % 3) + L"." : L"") + L"Frame" + std::to_wstring(k);
+                if (k > 0 && rnd() % 3 == 0) src += L" ->> " + std::to_wstring(1 + rnd() % static_cast<uint32_t>(k));
+                if (rnd() % 4 == 0) src += L" [[Shape]]";
+                else if (rnd() % 4 == 0) src += L" { x: " + std::to_wstring(rnd() % 100) + L" }";
+                src += L"\n";
+            }
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 300)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated event models in %.0f ms\n", iterations / 4, NowMs() - em0);
+        // Swimlanes: nodes in random lanes, edges any way.
+        const double sw0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            static const wchar_t* kDir[] = {L"TD", L"LR", L"BT", L"RL"};
+            std::wstring src = std::wstring(L"swimlane-beta ") + kDir[it % 4] + L"\n";
+            const int lanes = 1 + static_cast<int>(rnd() % 4), count = 2 + static_cast<int>(rnd() % 10);
+            for (int l = 0; l < lanes; ++l) {
+                src += L"subgraph Lane" + std::to_wstring(l) + L"\n";
+                for (int k = l; k < count; k += lanes) src += L"  n" + std::to_wstring(k) + (k % 3 == 0 ? L"{d}" : L"[box]") + L"\n";
+                src += L"end\n";
+            }
+            for (int k = 0, edges = static_cast<int>(rnd() % 14); k < edges; ++k) {
+                src += L"n" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + (rnd() % 3 == 0 ? L" -->|label| n" : L" --> n") + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + L"\n";
+            }
+            if (rnd() % 4 == 0) src += L"loose1 --> n0\n";
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 300)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated swimlanes in %.0f ms\n", iterations / 4, NowMs() - sw0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();

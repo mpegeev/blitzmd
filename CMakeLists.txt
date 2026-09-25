@@ -75,6 +75,7 @@ add_library(mdview_core STATIC
     src/core/mermaid_class.cpp
     src/core/mermaid_state.cpp
     src/core/mermaid_er.cpp
+    src/core/mermaid_eventmodeling.cpp
     src/core/mermaid_pie.cpp
     src/core/mermaid_journey.cpp
     src/core/mermaid_gantt.cpp
@@ -92,6 +93,12 @@ add_library(mdview_core STATIC
     src/core/mermaid_block.cpp
     src/core/mermaid_c4.cpp
     src/core/mermaid_architecture.cpp
+    src/core/mermaid_treeview.cpp
+    src/core/mermaid_ishikawa.cpp
+    src/core/mermaid_cynefin.cpp
+    src/core/mermaid_venn.cpp
+    src/core/mermaid_railroad.cpp
+    src/core/mermaid_wardley.cpp
     src/core/render.cpp
     src/core/icons.cpp
     src/core/zoom.cpp
