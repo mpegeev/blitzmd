@@ -521,7 +521,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap };
+enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4 };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -549,6 +549,10 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (EqualsNoCase(*name, L"packet-beta") || EqualsNoCase(*name, L"packet")) return Kind::Packet;
     if (EqualsNoCase(*name, L"radar-beta") || EqualsNoCase(*name, L"radar")) return Kind::Radar;
     if (EqualsNoCase(*name, L"treemap-beta") || EqualsNoCase(*name, L"treemap")) return Kind::Treemap;
+    if (EqualsNoCase(*name, L"requirementDiagram")) return Kind::Requirement;
+    if (EqualsNoCase(*name, L"sankey-beta") || EqualsNoCase(*name, L"sankey")) return Kind::Sankey;
+    if (EqualsNoCase(*name, L"block-beta") || EqualsNoCase(*name, L"block")) return Kind::Block;
+    if (*name == L"C4Context" || *name == L"C4Container" || *name == L"C4Component" || *name == L"C4Dynamic" || *name == L"C4Deployment") return Kind::C4;
     return Kind::Unknown;
 }
 
@@ -597,6 +601,10 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         case Kind::Packet: Packet(src, nullptr); return true;
         case Kind::Radar: RadarChart(src, nullptr); return true;
         case Kind::Treemap: Treemap(src, nullptr); return true;
+        case Kind::Requirement: RequirementDiagram(src, nullptr); return true;
+        case Kind::Sankey: SankeyDiagram(src, nullptr); return true;
+        case Kind::Block: BlockDiagram(src, nullptr); return true;
+        case Kind::C4: C4Diagram(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -628,6 +636,10 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         case Kind::Packet: return Packet(src, &builder);
         case Kind::Radar: return RadarChart(src, &builder);
         case Kind::Treemap: return Treemap(src, &builder);
+        case Kind::Requirement: return RequirementDiagram(src, &builder);
+        case Kind::Sankey: return SankeyDiagram(src, &builder);
+        case Kind::Block: return BlockDiagram(src, &builder);
+        case Kind::C4: return C4Diagram(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;

@@ -328,7 +328,11 @@ std::shared_ptr<DiagramScene> SceneBuilder::FinishFitted(float margin) {
     if (x0 > x1) x0 = y0 = x1 = y1 = 0;
     // Everything moved to start at the margin.
     const float dx = margin - x0, dy = margin - y0;
-    for (DiagramScene::Shape& sh : s.shapes) sh.box = D2D1::RectF(sh.box.left + dx, sh.box.top + dy, sh.box.right + dx, sh.box.bottom + dy);
+    for (DiagramScene::Shape& sh : s.shapes) {
+        sh.box = D2D1::RectF(sh.box.left + dx, sh.box.top + dy, sh.box.right + dx, sh.box.bottom + dy);
+        sh.grad_from = D2D1::Point2F(sh.grad_from.x + dx, sh.grad_from.y + dy);
+        sh.grad_to = D2D1::Point2F(sh.grad_to.x + dx, sh.grad_to.y + dy);
+    }
     for (D2D1_POINT_2F& p : s.points) p = D2D1::Point2F(p.x + dx, p.y + dy);
     for (DiagramScene::Text& t : s.texts) {
         t.origin = D2D1::Point2F(t.origin.x + dx, t.origin.y + dy);
@@ -410,6 +414,14 @@ void SceneBuilder::End(DgColor fill, DgColor stroke, float stroke_width, uint8_t
     s.box = D2D1::RectF(x0, y0, x1, y1);
     scene_->items.push_back({false, static_cast<uint32_t>(scene_->shapes.size())});
     scene_->shapes.push_back(s);
+}
+
+void SceneBuilder::ShadeLast(DgColor to, D2D1_POINT_2F from, D2D1_POINT_2F to_point) {
+    if (scene_->shapes.empty()) return;
+    DiagramScene::Shape& s = scene_->shapes.back();
+    s.fill_to = to;
+    s.grad_from = from;
+    s.grad_to = to_point;
 }
 
 void SceneBuilder::Polygon(const std::vector<D2D1_POINT_2F>& pts, DgColor fill, DgColor stroke, float stroke_width,
@@ -665,7 +677,20 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
                 }
             }
             if (!geo) break;
-            if (fill) rt->FillGeometry(geo.Get(), paint(sh.fill));
+            if (fill && sh.fill_to.role != kDgNone) {
+                // Shaded: a linear gradient from fill to fill_to.
+                const D2D1_GRADIENT_STOP stops[2] = {{0.f, ToColor(Resolve(sh.fill, dark))}, {1.f, ToColor(Resolve(sh.fill_to, dark))}};
+                ComPtr<ID2D1GradientStopCollection> collection;
+                ComPtr<ID2D1LinearGradientBrush> shade;
+                if (SUCCEEDED(rt->CreateGradientStopCollection(stops, 2, &collection)) &&
+                    SUCCEEDED(rt->CreateLinearGradientBrush(D2D1::LinearGradientBrushProperties(sh.grad_from, sh.grad_to), collection.Get(), &shade))) {
+                    rt->FillGeometry(geo.Get(), shade.Get());
+                } else {
+                    rt->FillGeometry(geo.Get(), paint(sh.fill));
+                }
+            } else if (fill) {
+                rt->FillGeometry(geo.Get(), paint(sh.fill));
+            }
             if (stroke) rt->DrawGeometry(geo.Get(), paint(sh.stroke), sh.stroke_width, stroke_style(sh.dash, sh.stroke_width));
             break;
         }

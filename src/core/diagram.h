@@ -91,6 +91,9 @@ struct DiagramScene {
         DgColor fill, stroke;
         float stroke_width = 1;
         uint8_t dash = 0;               // 0 solid, 1 dashed, 2 dotted
+        // A path's fill shading into fill_to from grad_from to grad_to (else plain).
+        DgColor fill_to;
+        D2D1_POINT_2F grad_from{}, grad_to{};
     };
     struct Text {
         ComPtr<IDWriteTextLayout> layout;
@@ -142,6 +145,8 @@ public:
     void End(DgColor fill, DgColor stroke, float stroke_width = 1, uint8_t dash = 0);
     void Polygon(const std::vector<D2D1_POINT_2F>& pts, DgColor fill, DgColor stroke, float stroke_width = 1,
                  uint8_t dash = 0);
+    // The last path's fill shades into `to` along from -> to_point.
+    void ShadeLast(DgColor to, D2D1_POINT_2F from, D2D1_POINT_2F to_point);
 
     struct Measured {
         ComPtr<IDWriteTextLayout> layout;

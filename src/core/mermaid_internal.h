@@ -143,5 +143,9 @@ std::shared_ptr<DiagramScene> Kanban(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> Packet(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> RadarChart(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> Treemap(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> RequirementDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> SankeyDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> BlockDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> C4Diagram(const Source& src, SceneBuilder* builder);
 
 }  // namespace mdv::mermaid
