@@ -731,10 +731,10 @@ float Viewer::MaxScroll() const { return std::max(0.f, layout_.doc_height() - Vi
 Block* Viewer::LeafAtY(float y) const {
     if (!doc_) return nullptr;
     const auto& leaves = doc_->leaves;
-    auto it = std::partition_point(leaves.begin(), leaves.end(),
-                                   [y](const Block* b) { return !b->visible || b->y + b->h <= y; });
-    // partition_point assumes monotonic order; hidden leaves sit at their
-    // parent's position, which keeps the sequence sorted.
+    auto it = std::partition_point(leaves.begin(), leaves.end(), [y](const Block* b) { return b->y + b->h <= y; });
+    // partition_point assumes monotonic order; hidden leaves sit where their
+    // hidden block starts, with no height (LayoutEngine::Park), which keeps
+    // the sequence sorted.
     while (it != leaves.end() && !(*it)->visible) ++it;
     return it == leaves.end() ? nullptr : *it;
 }
@@ -1247,7 +1247,9 @@ Viewer::Hit Viewer::HitTest(float x, float y) const {
         if (after && y >= after->y) leaf = after;
         else if (before && after) leaf = (y - (before->y + before->h) < after->y - y) ? before : after;
         else leaf = after ? after : before;
-        if (!leaf && !doc_->leaves.empty()) leaf = doc_->leaves.back();
+        for (auto it = doc_->leaves.rbegin(); !leaf && it != doc_->leaves.rend(); ++it) {
+            if ((*it)->visible) leaf = *it;  // below the end: the last visible leaf
+        }
     }
     if (!leaf) return hit;
     hit.leaf = leaf;

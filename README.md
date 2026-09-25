@@ -253,6 +253,7 @@ $t = "out\build\x64-release\mdview_test.exe"
 & $t spec tests\spec\commonmark-spec.txt    # тесты CommonMark 0.31.2
 & $t render samples\gfm\02-github-readme.md out.png --width 900 [--dark] [--zoom 1.5]
 & $t pages  samples\gfm\05-tables.md page   # постраничная разбивка как при печати
+& $t details samples\gfm\08-edge-cases.md   # порядок блоков у свёрнутых <details>, summary в конце при прокрутке
 & $t bench  samples\gfm\09-large-document.md
 & $t fuzz   2000                            # случайные документы: разбор + разметка + отрисовка
 & $t plugin out\build\x64-release\mdview.wlx64 README.md shot.png "поиск"   # сам DLL, как TC
