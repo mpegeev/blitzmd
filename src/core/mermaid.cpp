@@ -521,7 +521,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt };
+enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -540,6 +540,10 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (EqualsNoCase(*name, L"pie")) return Kind::Pie;
     if (EqualsNoCase(*name, L"journey")) return Kind::Journey;
     if (EqualsNoCase(*name, L"gantt")) return Kind::Gantt;
+    if (EqualsNoCase(*name, L"timeline")) return Kind::Timeline;
+    if (EqualsNoCase(*name, L"mindmap")) return Kind::Mindmap;
+    if (EqualsNoCase(*name, L"quadrantChart")) return Kind::Quadrant;
+    if (EqualsNoCase(*name, L"xychart-beta") || EqualsNoCase(*name, L"xychart")) return Kind::XyChart;
     return Kind::Unknown;
 }
 
@@ -579,6 +583,10 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         case Kind::Pie: PieChart(src, nullptr); return true;
         case Kind::Journey: Journey(src, nullptr); return true;
         case Kind::Gantt: Gantt(src, nullptr); return true;
+        case Kind::Timeline: Timeline(src, nullptr); return true;
+        case Kind::Mindmap: Mindmap(src, nullptr); return true;
+        case Kind::Quadrant: QuadrantChart(src, nullptr); return true;
+        case Kind::XyChart: XyChart(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -601,6 +609,10 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         case Kind::Pie: return PieChart(src, &builder);
         case Kind::Journey: return Journey(src, &builder);
         case Kind::Gantt: return Gantt(src, &builder);
+        case Kind::Timeline: return Timeline(src, &builder);
+        case Kind::Mindmap: return Mindmap(src, &builder);
+        case Kind::Quadrant: return QuadrantChart(src, &builder);
+        case Kind::XyChart: return XyChart(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;

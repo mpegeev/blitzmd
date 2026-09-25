@@ -134,5 +134,9 @@ std::shared_ptr<DiagramScene> ErDiagram(const Source& src, SceneBuilder* builder
 std::shared_ptr<DiagramScene> PieChart(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> Journey(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> Gantt(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> Timeline(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> Mindmap(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> QuadrantChart(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> XyChart(const Source& src, SceneBuilder* builder);
 
 }  // namespace mdv::mermaid

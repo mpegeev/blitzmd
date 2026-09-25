@@ -38,6 +38,21 @@ constexpr uint32_t kLight[kDgRoleCount] = {
     0xFFFF86FF, 0xFF20FFFF, 0xFFFF2020, 0xFFFF20FF, 0xFF20FF8F, 0xFFFF5353,
     // fillType0..7
     0xFFECECFF, 0xFFFFFFDE, 0xFFFFECFE, 0xFFDEFFE0, 0xFFECFFFE, 0xFFFFDEE0, 0xFFFFEFEC, 0xFFDEFBFF,
+    // cScale0..11, text on them, their inverse (default theme)
+    0xFF8686FF, 0xFFFFFF78, 0xFFD7FF86, 0xFFC286FF, 0xFFFF86FF, 0xFFFF86C2,
+    0xFFFF8686, 0xFFFFC286, 0xFFC2FF86, 0xFF86FFC2, 0xFF86FFFF, 0xFF86C2FF,
+    0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0xFF000000, 0xFF000000,
+    0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000,
+    0xFFFFFFB9, 0xFFABABFF, 0xFFD0B9FF, 0xFFDCFFB9, 0xFFB9FFB9, 0xFFB9FFDC,
+    0xFFB9FFFF, 0xFFB9DCFF, 0xFFDCB9FF, 0xFFFFB9DC, 0xFFFFB9B9, 0xFFFFDCB9,
+    // git0..7 and text on them
+    0xFF0000EC, 0xFFDEDE00, 0xFF9DEC00, 0xFF0076EC, 0xFF00ECEC, 0xFF00EC76, 0xFFEC00EC, 0xFFEC0000,
+    0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFFFFFFFF, 0xFF000000, 0xFF000000, 0xFF000000, 0xFF000000,
+    // xychart plot colors
+    0xFFECECFF, 0xFF8493A6, 0xFFFFC3A0, 0xFFDCDDE1, 0xFFB8E994,
+    0xFFD1A36F, 0xFFC3CDE6, 0xFFFFB6C1, 0xFF496078, 0xFFF8F3E3,
+    // quadrant chart fills (quadrant 1 to 4) and borders
+    0xFFECECFF, 0xFFF1F1FF, 0xFFF6F6FF, 0xFFFBFBFF, 0xFFC7C7F1,
 };
 constexpr uint32_t kDark[kDgRoleCount] = {
     0x00000000,  // none
@@ -68,6 +83,21 @@ constexpr uint32_t kDark[kDgRoleCount] = {
     0xFF995A01, 0xFF154706, 0xFF161722, 0xFF00296F, 0xFF01629C, 0xFF010029,
     // fillType0..7
     0xFF1F2020, 0xFF474949, 0xFF1F1F20, 0xFF474749, 0xFF1F201F, 0xFF474947, 0xFF201F20, 0xFF494749,
+    // cScale0..11, text on them, their inverse (dark theme)
+    0xFF1F2020, 0xFF0B0000, 0xFF4D1037, 0xFF3F5258, 0xFF4F2F1B, 0xFF6E0A0A,
+    0xFF3B0048, 0xFF995A01, 0xFF154706, 0xFF161722, 0xFF00296F, 0xFF01629C,
+    0xFFD3D3D3, 0xFFD3D3D3, 0xFFD3D3D3, 0xFFD3D3D3, 0xFFD3D3D3, 0xFFD3D3D3,
+    0xFFD3D3D3, 0xFFD3D3D3, 0xFFD3D3D3, 0xFFD3D3D3, 0xFFD3D3D3, 0xFFD3D3D3,
+    0xFFE0DFDF, 0xFFF4FFFF, 0xFFB2EFC8, 0xFFC0ADA7, 0xFFB0D0E4, 0xFF91F5F5,
+    0xFFC4FFB7, 0xFF66A5FE, 0xFFEAB8F9, 0xFFE9E8DD, 0xFFFFD690, 0xFFFE9D63,
+    // git0..7 and text on them
+    0xFF797D7D, 0xFFA12273, 0xFF6A8993, 0xFF9B5C35, 0xFFCB1313, 0xFF65007B, 0xFFCC7801, 0xFF31A50E,
+    0xFF2C2C2C, 0xFFD3D3D3, 0xFFD3D3D3, 0xFF2C2C2C, 0xFFD3D3D3, 0xFFD3D3D3, 0xFFD3D3D3, 0xFFD3D3D3,
+    // xychart plot colors
+    0xFF3498DB, 0xFF2ECC71, 0xFFE74C3C, 0xFFF1C40F, 0xFFBDC3C7,
+    0xFFFFFFFF, 0xFF34495E, 0xFF9B59B6, 0xFF1ABC9C, 0xFFE67E22,
+    // quadrant chart fills (quadrant 1 to 4) and borders
+    0xFF1F2020, 0xFF242525, 0xFF292A2A, 0xFF2E2F2F, 0xFFCCCCCC,
 };
 
 D2D1_COLOR_F ToColor(uint32_t argb) {
@@ -86,6 +116,13 @@ uint32_t Resolve(const DgColor& c, bool dark) {
     if (c.role == kDgTint) return dark ? (c.argb & 0xFFFFFF) | (std::min(c.argb >> 24, 0x40u) << 24) : c.argb;
     if (c.role >= kDgRoleCount) return 0;
     const uint32_t* table = dark ? kDark : kLight;
+    if (c.role >= kDgScaleBright) {
+        // (Mermaid's CSS filter: brightness(120%).)
+        const uint32_t v = table[kDgScale + c.role - kDgScaleBright];
+        uint32_t out = 0xFF000000;
+        for (int shift = 0; shift <= 16; shift += 8) out |= std::min(((v >> shift) & 0xFF) * 6 / 5, 255u) << shift;
+        return out;
+    }
     if (c.role < kDgCategory || c.role >= kDgCategorySolid) return table[c.role];
     // Categories as Mermaid paints pie slices: at 70% over the page.
     const uint32_t v = table[c.role], page = table[kDgPage];
@@ -401,6 +438,13 @@ void SceneBuilder::Text(Measured m, D2D1_POINT_2F origin, DgColor color, uint32_
     scene_->texts.push_back(std::move(t));
 }
 
+void SceneBuilder::TextUp(Measured m, D2D1_POINT_2F origin, DgColor color, uint32_t src_start, uint32_t src_length) {
+    if (!m.layout) return;
+    std::swap(m.w, m.h);
+    Text(std::move(m), origin, color, src_start, src_length);
+    scene_->texts.back().up = true;
+}
+
 // ---------------------------------------------------------------------------
 // Drawing
 // ---------------------------------------------------------------------------
@@ -441,6 +485,11 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
         rt->SetTransform(world);
         return;
     }
+    // Nothing outside the scene's box (values past an axis, a long legend...).
+    rt->SetTransform(world);
+    rt->PushAxisAlignedClip(D2D1::RectF(dest.left - 2, dest.top - 2, dest.left + s.width * k + 2, dest.top + s.height * k + 2),
+                            D2D1_ANTIALIAS_MODE_ALIASED);
+    rt->SetTransform(place * world);
     struct Stroke {
         uint8_t dash;
         float width;
@@ -490,10 +539,19 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
                     }
                 }
                 if (kind >= 0 && highlight_brushes[kind]) {
-                    rt->FillRectangle(D2D1::RectF(box.left - 3, box.top, box.right + 3, box.bottom), highlight_brushes[kind]);
+                    const bool up = t.up;
+                    rt->FillRectangle(up ? D2D1::RectF(box.left, box.top - 3, box.right, box.bottom + 3) : D2D1::RectF(box.left - 3, box.top, box.right + 3, box.bottom),
+                                      highlight_brushes[kind]);
                 }
             }
-            rt->DrawTextLayout(t.origin, t.layout.Get(), paint(t.color), D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+            if (t.up) {
+                // Its lines along the box's height, upwards from the bottom left.
+                rt->SetTransform(D2D1::Matrix3x2F::Rotation(-90.f) * D2D1::Matrix3x2F::Translation(box.left, box.bottom) * place * world);
+                rt->DrawTextLayout(D2D1::Point2F(0, 0), t.layout.Get(), paint(t.color), D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+                rt->SetTransform(place * world);
+            } else {
+                rt->DrawTextLayout(t.origin, t.layout.Get(), paint(t.color), D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
+            }
             continue;
         }
         const DiagramScene::Shape& sh = s.shapes[item.index];
@@ -561,6 +619,7 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
         }
         }
     }
+    rt->PopAxisAlignedClip();
     rt->SetTransform(world);
 }
 
