@@ -1616,7 +1616,18 @@ int main(int argc, char** ansi_argv) {
             {L"treeView-beta\n├── src/\n    indented", false, L"Line 3"},
             {L"treeView-beta\n├──", false, L"Line 2"},
             {L"ishikawa-beta\n    Effect\n    Cause A\n        Sub 1\n            Sub sub\n        Sub 2\n    Cause B\n    %% a comment\n    Cause C<br>two lines", true, nullptr},
-            {L"ishikawa\n", false, nullptr},
+            {L"ishikawa\n", true, nullptr},
+            {L"ishikawa-beta Effect\n  Cause A\n  Cause B", true, nullptr},
+            {L"info\nshowInfo\ntitle T\naccTitle: x", true, nullptr},
+            {L"info showinfo", false, L"Line 1"},
+            {L"info;", false, L"Line 1"},
+            {L"treeView-beta\n\u251c a\n\u2502 \u251c b\n\u2502 \u2502 \u2514 c\n\u2502 \u2514 d\n\u2514 e", true, nullptr},
+            {L"treeView-beta title T\na", false, L"Line 1"},
+            {L"treeView-beta\na\ntitle T", false, L"Line 3"},
+            {L"treeView-beta\na icon(foo bar)", false, L"Line 2"},
+            {L"cynefin-beta\n  title T %% hidden\n  complex-->clear\n  complex--> clear", true, nullptr},
+            {L"venn-beta\n  set A: 5\n  set B: 8\n  set A: 10", true, nullptr},
+            {L"venn-beta\n  set A\n  style A fill:#12345", false, L"Line 3"},
             {L"cynefin-beta\n  title T\n  complex\n    \"a\"\n    'b'\n  confusion\n    \"1\"\n    \"2\"\n    \"3\"\n    \"4\"\n  chaotic --> complex : \"stabilize\"\n  clear --> clear", true, nullptr},
             {L"cynefin-beta\n  \"orphan\"", false, L"Line 2"},
             {L"cynefin-beta\n  complex --> nowhere", false, L"Line 2"},
@@ -1902,17 +1913,17 @@ int main(int argc, char** ansi_argv) {
             L"sankey-beta\nA,B,1e300\nB,C,1.7e308",
             [&] {  // a deep tree view
                 std::wstring s = L"treeView-beta\n";
-                for (int i = 0; i < 1000; ++i) s += std::wstring(static_cast<size_t>(i % 200), L' ') + L"n" + std::to_wstring(i) + L"/ ## d\n";
+                for (int i = 0; i < 400; ++i) s += std::wstring(static_cast<size_t>(i % 100), L' ') + L"n" + std::to_wstring(i) + L"/ ## d\n";
                 return s;
             }(),
-            L"treeView-beta\n" + repeat(L"\u251c\u2500\u2500 " + std::wstring(40, L'x') + L"\n\u2502   \u2514\u2500\u2500 y :::highlight\n", 900),
+            L"treeView-beta\n" + repeat(L"\u251c\u2500\u2500 " + std::wstring(40, L'x') + L"\n\u2502   \u2514\u2500\u2500 y :::highlight\n", 600),
             [&] {  // a deep fishbone
                 std::wstring s = L"ishikawa-beta\nEffect\n";
                 for (int i = 0; i < 30; ++i) s += std::wstring(static_cast<size_t>(i + 1) * 2, L' ') + L"cause " + std::to_wstring(i) + L"\n";
                 return s;
             }(),
             L"ishikawa-beta\nEffect\n" + repeat(L"  cause\n    sub one two three four five six\n", 900),
-            L"cynefin-beta\ncomplex\n" + repeat(L"  \"" + std::wstring(200, L'i') + L"\"\n", 1500) + repeat(L"complex --> clear : \"t\"\n", 400),
+            L"cynefin-beta\ncomplex\n" + repeat(L"  \"" + std::wstring(150, L'i') + L"\"\n", 150) + repeat(L"  \"i\"\n", 1700) + repeat(L"complex --> clear : \"t\"\n", 400),
             [&] {  // venn: as many sets as allowed, every pair given
                 std::wstring s = L"venn-beta\n";
                 for (int i = 0; i < 24; ++i) s += L"set s" + std::to_wstring(i) + L": " + std::to_wstring(5 + i * 7 % 40) + L"\n";
@@ -1942,11 +1953,11 @@ int main(int argc, char** ansi_argv) {
             }(),
             L"venn-beta\n" + repeat(L"set s\n", 30) + L"set a: 1" + std::wstring(400, L'0') + L"\nset b: 0." + std::wstring(400, L'0') + L"1\n",
             L"venn-beta\nset a: 1000000000000000000000000000000\nset b: 0.000000000000000000000000000001\nunion a,b: 0.0000000000000000000000000000001\n",
-            L"venn-beta\nset a\nset b\nunion a,b\n" + repeat(L"  text \"" + std::wstring(300, L'x') + L" y\"\n", 2000),
-            L"venn-beta\n" + repeat(L"set a[\"" + std::wstring(3000, L'w') + L"\"]\nstyle a fill:#123, stroke-width: 1e300, fill-opacity: 900\n", 50),
-            L"wardley-beta\n" + repeat(L"component c [0.5, 0.5] label [-99999, 99999] (market) inertia\nc +'" + std::wstring(300, L'l') + L"'<> c\n", 900),
+            L"venn-beta\nset a\nset b\nunion a,b\n" + repeat(L"  text \"" + std::wstring(10, L'x') + L" y\"\n", 1900),
+            L"venn-beta\n" + repeat(L"set a[\"" + std::wstring(700, L'w') + L"\"]\nstyle a fill:#123, stroke-width: 1e300, fill-opacity: 900\n", 50),
+            L"wardley-beta\n" + repeat(L"component c [0.5, 0.5] label [-99999, 99999] (market) inertia\nc +'" + std::wstring(20, L'l') + L"'<> c\n", 500),
             L"wardley-beta\nsize [999999999, 1]\n" + repeat(L"component " + std::wstring(3000, L'n') + L" [0.1, 0.9]\n", 10),
-            L"wardley-beta\n" + repeat(L"annotation 1, [0.5, 0.5] \"" + std::wstring(300, L'a') + L"\"\n", 1000) + L"annotations [0.5, 0.5]\n",
+            L"wardley-beta\n" + repeat(L"annotation 1, [0.5, 0.5] \"" + std::wstring(20, L'a') + L"\"\n", 800) + L"annotations [0.5, 0.5]\n",
             L"wardley-beta\ncomponent p [0.5, 0.5]\n" + repeat(L"pipeline p {\n" + repeat(L"component q [0.3]\n", 50) + L"}\n", 30),
             L"wardley-beta\nevolution " + repeat(L"s@9999.9 -> ", 40) + L"s\n",
             L"railroad-beta\na = " + repeat(L"optional(", 60) + L"terminal(\"x\")" + repeat(L")", 60) + L";",

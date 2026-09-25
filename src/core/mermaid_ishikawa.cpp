@@ -32,12 +32,13 @@ public:
         std::vector<Open> stack;
         int base = -1;
         const std::wstring_view text = src_.text;
-        size_t next = text.find(L'\n', c_.pos());
-        while (next != std::wstring_view::npos) {
-            const size_t line = next + 1;
-            next = text.find(L'\n', line);
+        // Lines, the first from the header's end (text there is a node too).
+        for (size_t line = c_.pos(); line <= text.size();) {
+            const size_t next = text.find(L'\n', line);
             const size_t end = next == std::wstring_view::npos ? text.size() : next;
-            size_t s = line;
+            const size_t from = line;
+            line = next == std::wstring_view::npos ? text.size() + 1 : next + 1;
+            size_t s = from;
             while (s < end && IsSpace(text[s])) ++s;
             const std::wstring_view body = Trim(text.substr(s, end - s));
             if (body.empty() || body.starts_with(L"%%")) continue;
@@ -51,7 +52,7 @@ public:
                 continue;
             }
             // (Levels from the first cause's indent.)
-            const int raw = static_cast<int>(s - line);
+            const int raw = static_cast<int>(s - from);
             if (base < 0) base = raw;
             const int level = std::max(raw - base + 1, 1);
             while (stack.size() > 1 && stack.back().level >= level) stack.pop_back();
@@ -59,7 +60,6 @@ public:
             causes[static_cast<size_t>(stack.back().node)].children.push_back(index);
             stack.push_back({level, index});
         }
-        if (causes.empty()) c_.Fail(Tr(L"Expected the effect", L"Ожидалось следствие"));
     }
 
     std::vector<Cause> causes;  // [0]: the effect
@@ -103,6 +103,7 @@ public:
 
     std::shared_ptr<DiagramScene> Build() {
         const std::vector<Cause>& all = p_.causes;
+        if (all.empty()) return b_.Finish(1, 1);  // (nothing, as Mermaid draws it)
         const std::vector<int>& causes = all[0].children;
         // Sides: causes in turn above and below; bones as long as their
         // share of what hangs off them (a third of the base at least).

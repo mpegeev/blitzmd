@@ -289,7 +289,19 @@ public:
         for (;;) {
             const Token t = Take();
             switch (t.kind) {
-            case Tok::Eof: return;
+            case Tok::Eof: {
+                // Mermaid's khroma can't make a set's text color from a
+                // fill it can't read (when no color is given): an error.
+                for (const auto& [key, at] : fill_at_) {
+                    const auto& st = styles.at(key);
+                    uint32_t argb = 0;
+                    const auto color = st.find(L"color");
+                    if (ParseCssColor(st.at(L"fill"), &argb) || (color != st.end() && ParseCssColor(color->second, &argb))) continue;
+                    if (std::none_of(subsets.begin(), subsets.end(), [&](const Subset& s) { return s.sets.size() == 1 && s.sets[0] == key; })) continue;
+                    Fail(at, Tr(L"Unsupported color format: ", L"Непонятный формат цвета: ") + st.at(L"fill"));
+                }
+                return;
+            }
             case Tok::Newline: break;
             case Tok::Title: title = t.text; break;
             case Tok::Set: {
@@ -326,7 +338,8 @@ public:
             }
             case Tok::Style: {
                 const std::vector<Text> ids = Identifiers();
-                std::map<std::wstring, std::wstring>& style = styles[Key(Sorted(ids))];
+                const std::wstring key = Key(Sorted(ids));
+                std::map<std::wstring, std::wstring>& style = styles[key];
                 for (;;) {
                     const Token field = Take();
                     if (field.kind != Tok::Ident) Fail(field.pos, Tr(L"Expected a style property", L"Ожидалось свойство стиля"));
@@ -342,6 +355,7 @@ public:
                         }
                         if (value.empty()) Fail(Peek().pos, Tr(L"Expected a value", L"Ожидалось значение"));
                     }
+                    if (field.text.raw == L"fill") fill_at_[key] = field.pos;
                     style[field.text.raw] = std::move(value);
                     if (Peek().kind != Tok::Comma) break;
                     Take();
@@ -375,6 +389,12 @@ public:
 
     Text title;
     std::vector<Subset> subsets;
+    std::vector<size_t> drawn;  // subsets in the order declared, again when declared again
+
+private:
+    std::map<std::wstring, size_t> fill_at_;  // style keys with a fill: where it is set
+
+public:
     std::vector<TextNode> texts;
     std::map<std::wstring, std::map<std::wstring, std::wstring>> styles;  // by key: property, value
 
@@ -432,16 +452,21 @@ private:
         s.name = ids[0];
         current_ = s.sets;
         if (s.sets.size() == 1) known_.insert(s.sets[0]);
-        // A subset declared again: its size and label now, its place as before.
-        for (Subset& old : subsets) {
+        // A subset declared again: laid out once (its size and label now),
+        // drawn again (as Mermaid draws each).
+        if (drawn.size() >= kMaxAreas * 4) Fail(at, Tr(L"Too many sets and unions", L"Слишком много множеств и объединений"));
+        for (size_t k = 0; k < subsets.size(); ++k) {
+            Subset& old = subsets[k];
             if (old.sets == s.sets) {
                 old.size = s.size;
                 if (!label.raw.empty()) old.label = label;
+                drawn.push_back(k);
                 return;
             }
         }
         if (subsets.size() >= kMaxAreas) Fail(at, Tr(L"Too many sets and unions", L"Слишком много множеств и объединений"));
         if (s.sets.size() == 1 && ++singles_ > kMaxSets) Fail(at, Tr(L"Too many sets", L"Слишком много множеств"));
+        drawn.push_back(subsets.size());
         subsets.push_back(std::move(s));
     }
 
@@ -1268,13 +1293,26 @@ public:
         for (const Subset& s : data) {
             if (s.sets.size() == 1 && s.size == 0) empty.insert(s.sets[0]);
         }
-        std::erase_if(data, [&](const Subset& s) { return std::any_of(s.sets.begin(), s.sets.end(), [&](const std::wstring& n) { return empty.contains(n); }); });
-        if (!data.empty()) Draw(data, title_h);
+        // What is drawn, in order: as declared, then the pairs added.
+        std::vector<size_t> order = p_.drawn;
+        for (size_t k = declared; k < data.size(); ++k) order.push_back(k);
+        std::vector<Subset> kept;
+        std::vector<int> moved(data.size(), -1);
+        for (size_t k = 0; k < data.size(); ++k) {
+            if (std::any_of(data[k].sets.begin(), data[k].sets.end(), [&](const std::wstring& n) { return empty.contains(n); })) continue;
+            moved[k] = static_cast<int>(kept.size());
+            kept.push_back(std::move(data[k]));
+        }
+        std::vector<size_t> shown;
+        for (const size_t k : order) {
+            if (moved[k] >= 0) shown.push_back(static_cast<size_t>(moved[k]));
+        }
+        if (!kept.empty()) Draw(kept, shown, title_h);
         return b_.Finish(kWidth, kHeight);
     }
 
 private:
-    void Draw(const std::vector<Subset>& data, float title_h) {
+    void Draw(const std::vector<Subset>& data, const std::vector<size_t>& shown, float title_h) {
         // The sets in JavaScript's key order.
         std::vector<std::wstring> names;
         std::vector<double> sizes;
@@ -1333,7 +1371,7 @@ private:
         auto color = [&](const std::wstring* v, uint32_t* argb) { return v && ParseCssColor(*v, argb); };
         const auto y = [&](double v) { return static_cast<float>(v) + title_h; };
         int nth = 0;  // circles so far
-        for (size_t k = 0; k < data.size(); ++k) {
+        for (const size_t k : shown) {
             const Subset& s = data[k];
             const Area& a = areas[k];
             const std::wstring key = Parser::Key(s.sets);

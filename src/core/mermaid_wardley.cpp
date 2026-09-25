@@ -217,10 +217,7 @@ private:
             size_t e = p_;
             while (e < s_.size() && Digit(s_[e])) ++e;
             if (e < s_.size() && s_[e] == L'.') --e;
-            if (e > p_) {
-                if (e - p_ > 9) mermaid::Fail(p_, Tr(L"The number is too large", L"Слишком большое число"));
-                return Make(T::Int, e - p_);
-            }
+            if (e > p_) return Make(T::Int, e - p_);
         }
         if (c == L'"' || c == L'\'') {
             // Quoted, with \ escapes (lines and all).
@@ -395,7 +392,7 @@ public:
             case T::KwAnnotations: {
                 ++i_;
                 Placed box;
-                Position(&box, L"Annotations box", true);
+                Position(&box, L"Annotations box", true, !annotations_box);
                 if (!annotations_box) annotations_box = box;
                 break;
             }
@@ -516,7 +513,7 @@ private:
     }
     // [visibility, evolution] of a note, annotation, accelerator (whole
     // numbers too for annotations).
-    void Position(Placed* p, const wchar_t* what, bool ints = false) {
+    void Position(Placed* p, const wchar_t* what, bool ints = false, bool check = true) {
         Expect(T::Lbr, Tr(L"Expected \"[\"", L"Ожидалось «[»"));
         auto value = [&] { return ints && Is(T::Int) ? IntValue() : Number(); };
         const size_t at_v = toks_[i_].text.pos;
@@ -525,6 +522,7 @@ private:
         const size_t at_e = toks_[i_].text.pos;
         const double e = value();
         Expect(T::Rbr, Tr(L"Expected \"]\"", L"Ожидалось «]»"));
+        if (!check) return;
         p->x = Percent(e, at_e, std::wstring(what) + L" evolution");
         p->y = Percent(v, at_v, std::wstring(what) + L" visibility");
     }
@@ -683,6 +681,9 @@ using M = SceneBuilder::Measured;
 constexpr float kPad = 48, kRadius = 6, kLabelOffset = 8, kAxisFont = 12, kLabelFont = 10;
 constexpr float kSquare = kRadius * 1.6f;
 
+// (In the dark theme Mermaid keeps white fills, black anchor names and
+// black stage lines on its grey panel; here they follow the theme, readable
+// on the page.)
 class Builder {
 public:
     Builder(const Parser& p, SceneBuilder& b) : p_(p), b_(b) {}

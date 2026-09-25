@@ -38,6 +38,8 @@ public:
     void Parse() {
         c_.SkipStatementGap();
         if (!c_.EatKeyword(L"treeView-beta")) c_.Fail(Tr(L"Expected \"treeView-beta\"", L"Ожидалось «treeView-beta»"));
+        c_.SkipBlanks();
+        if (c_.Peek() != L'\n' && c_.Peek() != L'\r' && c_.Peek() != L'\0' && !c_.Rest().starts_with(L"%%")) c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
         c_.SkipToLineEnd();
         nodes.push_back(TreeNode{L"/", 0, 0, true});  // the root, as Mermaid draws it
         nodes[0].level = -1;
@@ -58,7 +60,8 @@ public:
             for (size_t k = 0; k < line.size(); ++k) {
                 if (!IsBoxChar(line[k])) continue;
                 boxes = true;
-                if (IsBranchChar(line[k]) && k > 0 && segment == 0) segment = Column(line, k);
+                if (!IsBranchChar(line[k])) continue;
+                if (k > 0 && segment == 0) segment = Column(line, k);
                 break;
             }
         }
@@ -74,6 +77,7 @@ public:
             }
             if (Trim(line).empty() || Trim(line).starts_with(L"%%")) continue;
             if (Meta(line)) {
+                if (nodes.size() > 1) Fail(s, Tr(L"A title or accessibility line after the nodes", L"Заголовок или описание после узлов"));
                 const std::wstring_view t = Trim(line);
                 description = t.starts_with(L"accDescr") && t.find(L'{') != std::wstring_view::npos && t.find(L'}') == std::wstring_view::npos;
                 continue;
@@ -183,12 +187,21 @@ private:
                 while (e < line.size() && (line[e] == L' ' || line[e] == L'\t')) ++e;
                 const size_t s = e;
                 while (e < line.size() && (IsWordChar(line[e]) || line[e] == L'-')) ++e;
-                if (line.substr(s, e - s) == L"highlight") n.highlight = true;
+                n.highlight = line.substr(s, e - s) == L"highlight";  // (the last class counts)
                 k = e;
             } else if (rest.starts_with(L"icon(")) {
                 const size_t close = line.find(L')', a);
                 if (close == std::wstring_view::npos) Fail(base + a, Tr(L"Expected ')'", L"Ожидалась «)»"));
                 n.icon = std::wstring(line.substr(a + 5, close - a - 5));
+                {
+                    // [\w-]*(:[\w-]+)?
+                    const size_t colon = n.icon.find(L':');
+                    auto word = [](std::wstring_view w) { return std::all_of(w.begin(), w.end(), [](wchar_t ch) { return IsWordChar(ch) || ch == L'-'; }); };
+                    const std::wstring_view ic = n.icon;
+                    if (!(colon == std::wstring::npos ? word(ic) : word(ic.substr(0, colon)) && colon + 1 < ic.size() && word(ic.substr(colon + 1)))) {
+                        Fail(base + a, Tr(L"Unexpected text", L"Непонятный текст"));
+                    }
+                }
                 n.has_icon = true;
                 if (n.icon.empty()) n.icon = L"none";
                 k = close + 1;
@@ -299,7 +312,9 @@ public:
         for (size_t i = 0; i < n; ++i) {
             const TreeNode& nd = p_.nodes[i];
             Row& r = rows_[i];
-            r.label = b_.Measure(ParseLabel(nd.name, false), 0, nd.directory, 16 / unit, false);
+            RichText t;
+            t.text = nd.name;
+            r.label = b_.Measure(t, 0, nd.directory, 16 / unit, false);
             r.icon = Icon(nd);
             r.icon_name = nd.icon;
             r.label_x = r.x + kPadX + (r.icon ? kIconSize + kIconGap : 0.f);
@@ -325,7 +340,8 @@ public:
         for (size_t i = 0; i < n; ++i) {
             const TreeNode& nd = p_.nodes[i];
             if (nd.description.empty()) continue;
-            RichText d = ParseLabel(nd.description, false);
+            RichText d;
+            d.text = nd.description;
             d.spans.push_back({0, static_cast<uint32_t>(d.text.size()), false, true});
             descs[i] = b_.Measure(d, 0, false, 16 / unit, false);
             width = std::max(width, desc_x + descs[i].w + kPadX);
@@ -335,6 +351,7 @@ public:
             if (!p_.nodes[i].highlight) continue;
             const Row& r = rows_[i];
             const float w = width - r.x + 8;
+            width = std::max(width, r.x + w + 2);
             b_.Rect(D2D1::RectF(r.x, r.y + 1, r.x + w, r.y + Height() - 1), 3, Argb(0x26FFC107), Argb(0xFFFFC107), 1.f);
         }
         for (size_t i = 0; i < n; ++i) {
@@ -396,17 +413,58 @@ std::shared_ptr<DiagramScene> TreeView(const Source& src, SceneBuilder* builder)
 std::shared_ptr<DiagramScene> InfoDiagram(const Source& src, SceneBuilder* builder) {
     Cursor c(src.text, src.body);
     c.SkipStatementGap();
-    if (!c.EatKeyword(L"info")) c.Fail(Tr(L"Expected \"info\"", L"Ожидалось «info»"));
-    c.SkipBlanks();
-    c.EatKeyword(L"showInfo");
-    c.SkipStatementGap();
-    if (!c.AtEnd()) c.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
+    if (!c.EatKeyword(L"info", true)) c.Fail(Tr(L"Expected \"info\"", L"Ожидалось «info»"));
+    // info, then showInfo, then title and accessibility lines (each on its
+    // own line), comments anywhere.
+    auto gap = [&] {
+        for (;;) {
+            c.SkipBlanks();
+            if (c.Rest().starts_with(L"%%")) c.SkipToLineEnd();
+            if (c.Peek() == L'\r' || c.Peek() == L'\n') {
+                c.Advance();
+                continue;
+            }
+            return;
+        }
+    };
+    auto line_end = [&] {
+        c.SkipBlanks();
+        if (c.Rest().starts_with(L"%%")) c.SkipToLineEnd();
+        if (!c.AtEnd() && c.Peek() != L'\n' && c.Peek() != L'\r') c.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
+    };
+    gap();
+    if (c.EatKeyword(L"showInfo", true)) gap();
+    while (!c.AtEnd()) {
+        if (c.EatKeyword(L"title", true)) {
+            c.SkipToLineEnd();
+        } else if (c.EatKeyword(L"accTitle", true)) {
+            c.SkipBlanks();
+            if (!c.Eat(L':')) c.Fail(Tr(L"Expected \":\"", L"Ожидалось «:»"));
+            c.SkipToLineEnd();
+        } else if (c.EatKeyword(L"accDescr", true)) {
+            c.SkipBlanks();
+            if (c.Eat(L'{')) {
+                while (!c.AtEnd() && c.Peek() != L'}') c.Advance();
+                if (!c.Eat(L'}')) c.Fail(Tr(L"Expected \"}\"", L"Ожидалось «}»"));
+            } else if (c.Eat(L':')) {
+                c.SkipToLineEnd();
+            } else {
+                c.Fail(Tr(L"Expected \":\"", L"Ожидалось «:»"));
+            }
+        } else {
+            c.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
+        }
+        line_end();
+        gap();
+    }
     if (!builder) return nullptr;
+    // Mermaid's: a 400 x 100 box, the version centred on x 100, its
+    // baseline at 40.
     RichText t;
     t.text = L"v11.17.2";
     const SceneBuilder::Measured m = builder->Measure(t, 0, false, 32 / builder->size());
-    builder->Text(m, D2D1::Point2F(0, 0), Role(kDgText));
-    return builder->FinishFitted(8);
+    builder->Text(m, D2D1::Point2F(100 - m.w / 2, 40 - 1.17f * 32), Role(kDgText));
+    return builder->Finish(400, 100);
 }
 
 }  // namespace mdv::mermaid
