@@ -1662,6 +1662,9 @@ int main(int argc, char** ansi_argv) {
             {L"eventmodeling\ntf 01 foo A", false, L"Line 2"},
             {L"eventmodeling\ndata D { a }", false, L"Line 2"},
             {L"eventmodeling", true, nullptr},
+            {L"swimlane-beta LR\n  subgraph Customer\n    A[Place order] --> B{Paid?}\n  end\n  subgraph Shop\n    C --> D\n  end\n  B -->|yes| C\n  B -.->|no| E\n  E --> A\n  D --> D", true, nullptr},
+            {L"swimlane-beta\n  subgraph Dev\n    subgraph Inner\n      a --> b\n    end\n  end\n  b --> Dev", true, nullptr},
+            {L"swimlane-beta XX\n  a --> b", false, L"Line 1"},
             {L"requirementDiagram\naccDescr {\n  multi line\n}\nrequirement \"**Bold** name\" {\nverifymethod: analysis\nid: 2\nid: 3\n}\nelement c {\n}\nc:::thick\n\"**Bold** name\" - traces -> \"**Bold** name\"", true, nullptr},
             {L"C4Dynamic\naccDescr {\n multi\n}\nContainer(c1,\"C1\")\nContainer(c2,\"C2\")\nRelIndex(1, c1, c2, \"first\")\nRel_Back(c2, c1, \"back\")\nUpdateRelStyle(c2, c1, \"red\", \"blue\", \"1e40\", \"-0x20\")\nSystem(c1, \"Again\")\nBoundary(b,\"B\") {\n  Person(p, \"P\")\n}", true, nullptr},
             {L"block-beta\ncolumns 3\na([\"Stadium\"]) e:::hot f:2\nclassDef hot fill:#f96\nx<[\" \"]>(y)", true, nullptr},
@@ -1951,6 +1954,12 @@ int main(int argc, char** ansi_argv) {
             L"eventmodeling\n" + repeat(L"tf 01 ui N" + std::wstring(3000, L'n') + L".A ->> 01 { " + std::wstring(3000, L'd') + L" }\n", 60),
             L"eventmodeling\n" + repeat(L"tf 99 evt S.E ->> 99 ->> 99 ->> 99\ntf 98 cmd C.D\n", 1000),
             L"eventmodeling\ndata D {\n" + repeat(L"  " + std::wstring(40, L'x') + L" ", 90) + L"\n}\n" + repeat(L"tf 01 rmo R [[D]]\n", 200),
+            [&] {  // swimlanes: many lanes, long chains back and forth
+                std::wstring s = L"swimlane-beta LR\n";
+                for (int l = 0; l < 40; ++l) s += L"subgraph L" + std::to_wstring(l) + L"\n" + repeat(L"n" + std::to_wstring(l) + L"x --> n" + std::to_wstring(l) + L"y\n", 1) + L"end\n";
+                for (int k = 0; k < 400; ++k) s += L"n" + std::to_wstring(k % 40) + L"y --> n" + std::to_wstring((k * 7) % 40) + L"x\n";
+                return s;
+            }(),
             [&] {  // blocks nested as deep as allowed: sizes double each level
                 std::wstring s = L"block-beta\n";
                 for (int i = 0; i < 20; ++i) s += L"block:b" + std::to_wstring(i) + L"\ncolumns 2\nx" + std::to_wstring(i) + L" y" + std::to_wstring(i) + L"\n";
@@ -2657,6 +2666,29 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%d generated event models in %.0f ms\n", iterations / 4, NowMs() - em0);
+        // Swimlanes: nodes in random lanes, edges any way.
+        const double sw0 = NowMs();
+        for (int it = 0; it < iterations / 4; ++it) {
+            static const wchar_t* kDir[] = {L"TD", L"LR", L"BT", L"RL"};
+            std::wstring src = std::wstring(L"swimlane-beta ") + kDir[it % 4] + L"\n";
+            const int lanes = 1 + static_cast<int>(rnd() % 4), count = 2 + static_cast<int>(rnd() % 10);
+            for (int l = 0; l < lanes; ++l) {
+                src += L"subgraph Lane" + std::to_wstring(l) + L"\n";
+                for (int k = l; k < count; k += lanes) src += L"  n" + std::to_wstring(k) + (k % 3 == 0 ? L"{d}" : L"[box]") + L"\n";
+                src += L"end\n";
+            }
+            for (int k = 0, edges = static_cast<int>(rnd() % 14); k < edges; ++k) {
+                src += L"n" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + (rnd() % 3 == 0 ? L" -->|label| n" : L" --> n") + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + L"\n";
+            }
+            if (rnd() % 4 == 0) src += L"loose1 --> n0\n";
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            if (!scene || !sane(*scene)) {
+                std::printf("FAIL: generated %s: %s\n", WideToUtf8(src.substr(0, 300)).c_str(), WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        std::printf("%d generated swimlanes in %.0f ms\n", iterations / 4, NowMs() - sw0);
         // The layered layout on random clustered graphs: members inside their
         // box, nothing else in it, boxes apart unless nested.
         const double c0 = NowMs();

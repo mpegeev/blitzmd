@@ -583,7 +583,7 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     const size_t start = c.pos();
     while (!c.AtEnd() && (IsWordChar(c.Peek()) || c.Peek() == L'-')) c.Advance();
     *name = std::wstring(src.text.substr(start, c.pos() - start));
-    if (EqualsNoCase(*name, L"flowchart") || EqualsNoCase(*name, L"graph") || EqualsNoCase(*name, L"flowchart-elk")) {
+    if (EqualsNoCase(*name, L"flowchart") || EqualsNoCase(*name, L"graph") || EqualsNoCase(*name, L"flowchart-elk") || *name == L"swimlane-beta") {
         return Kind::Flowchart;
     }
     if (EqualsNoCase(*name, L"sequenceDiagram")) return Kind::Sequence;

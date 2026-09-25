@@ -128,7 +128,8 @@ public:
 
     void Parse() {
         c_.SkipStatementGap();
-        if (!c_.EatKeyword(L"flowchart-elk") && !c_.EatKeyword(L"flowchart") && !c_.EatKeyword(L"graph")) {
+        swimlane = c_.EatKeyword(L"swimlane-beta");
+        if (!swimlane && !c_.EatKeyword(L"flowchart-elk") && !c_.EatKeyword(L"flowchart") && !c_.EatKeyword(L"graph")) {
             c_.Fail(Tr(L"Expected \"flowchart\"", L"Ожидалось «flowchart»"));
         }
         c_.SkipBlanks();
@@ -154,6 +155,7 @@ public:
     }
 
     RankDir dir = RankDir::TB;
+    bool swimlane = false;  // swimlane-beta: top-level subgraphs are lanes
     std::vector<Node> nodes;
     std::vector<Edge> edges;
     std::vector<Cluster> clusters;
@@ -887,6 +889,7 @@ public:
     Builder(Parser& p, SceneBuilder& b, const Source& src) : p_(p), b_(b), src_(src) {}
 
     std::shared_ptr<DiagramScene> Build() {
+        if (p_.swimlane) return BuildLanes();
         MeasureAll();
         Classify();
         AssignEdges();
@@ -924,6 +927,242 @@ public:
 
 private:
     int Parent(int c) const { return p_.clusters[static_cast<size_t>(c)].parent; }
+
+    // Swimlanes (Mermaid's swimlane layout, simplified): ranks and orders
+    // from the layered layout of the whole graph; each top-level subgraph a
+    // lane (a column top to bottom, a row left to right) as wide as its
+    // widest rank, nodes side by side in it; lanes with a title band; edges
+    // at right angles with rounded corners.
+    std::shared_ptr<DiagramScene> BuildLanes() {
+        MeasureAll();
+        constexpr float kNodeGap = 50, kLayerGap = 50, kLaneGap = 100, kInset = 20;
+        const bool lr = p_.dir == RankDir::LR || p_.dir == RankDir::RL;
+        const bool reverse = p_.dir == RankDir::BT || p_.dir == RankDir::RL;
+        const size_t n = p_.nodes.size();
+        auto along_size = [&](size_t i) { return lr ? placed_[i].w : placed_[i].h; };
+        auto across_size = [&](size_t i) { return lr ? placed_[i].h : placed_[i].w; };
+        // Ranks and orders.
+        LayeredGraph g;
+        g.dir = RankDir::TB;
+        for (size_t i = 0; i < n; ++i) {
+            LayeredGraph::Node gn;
+            gn.w = across_size(i);
+            gn.h = along_size(i);
+            g.nodes.push_back(gn);
+        }
+        for (const Edge& e : p_.edges) {
+            if (e.from.cluster || e.to.cluster || e.from.index == e.to.index) continue;
+            LayeredGraph::Edge ge;
+            ge.from = e.from.index;
+            ge.to = e.to.index;
+            ge.minlen = std::max(1, e.length);
+            g.edges.push_back(ge);
+        }
+        const LayeredLayout lay = LayoutLayered(g);
+        if (lay.too_large) TooLarge();
+        std::vector<float> ranks;
+        for (size_t i = 0; i < n; ++i) ranks.push_back(lay.centers[i].y);
+        std::sort(ranks.begin(), ranks.end());
+        ranks.erase(std::unique(ranks.begin(), ranks.end(), [](float a, float b) { return std::fabs(a - b) < 0.5f; }), ranks.end());
+        std::vector<int> layer(n, 0);
+        for (size_t i = 0; i < n; ++i) {
+            layer[i] = static_cast<int>(std::lower_bound(ranks.begin(), ranks.end(), lay.centers[i].y - 0.5f) - ranks.begin());
+        }
+        const int layers = static_cast<int>(ranks.size());
+        // Lanes: the top-level subgraphs in order (nodes in none: a column
+        // of their own first, with no lane drawn).
+        std::vector<int> lane_of(n, -1);
+        for (size_t i = 0; i < n; ++i) {
+            for (int c = p_.nodes[i].cluster; c >= 0; c = Parent(c)) lane_of[i] = c;
+        }
+        std::vector<int> columns;  // lanes used, -1 for none
+        if (std::find(lane_of.begin(), lane_of.end(), -1) != lane_of.end()) columns.push_back(-1);
+        for (size_t c = 0; c < p_.clusters.size(); ++c) {
+            if (Parent(static_cast<int>(c)) < 0 && std::find(lane_of.begin(), lane_of.end(), static_cast<int>(c)) != lane_of.end()) columns.push_back(static_cast<int>(c));
+        }
+        auto column_of = [&](size_t i) { return static_cast<size_t>(std::find(columns.begin(), columns.end(), lane_of[i]) - columns.begin()); };
+        // Nodes of each rank in each lane, in the layout's order.
+        std::vector<std::vector<std::vector<size_t>>> cells(static_cast<size_t>(layers), std::vector<std::vector<size_t>>(columns.size()));
+        std::vector<size_t> by_x(n);
+        for (size_t i = 0; i < n; ++i) by_x[i] = i;
+        std::stable_sort(by_x.begin(), by_x.end(), [&](size_t a, size_t b) { return lay.centers[a].x < lay.centers[b].x; });
+        for (const size_t i : by_x) cells[static_cast<size_t>(layer[i])][column_of(i)].push_back(i);
+        std::vector<float> lane_w(columns.size(), 0), layer_h(static_cast<size_t>(layers), 0);
+        for (int l = 0; l < layers; ++l) {
+            for (size_t c = 0; c < columns.size(); ++c) {
+                const auto& ids = cells[static_cast<size_t>(l)][c];
+                float total = ids.empty() ? 0.f : kNodeGap * static_cast<float>(ids.size() - 1);
+                for (const size_t i : ids) {
+                    total += across_size(i);
+                    layer_h[static_cast<size_t>(l)] = std::max(layer_h[static_cast<size_t>(l)], along_size(i));
+                }
+                lane_w[c] = std::max(lane_w[c], total);
+            }
+        }
+        // Titles: a band at the lanes' start (read upwards in a row).
+        std::vector<SceneBuilder::Measured> titles(columns.size());
+        float band = 0;
+        for (size_t c = 0; c < columns.size(); ++c) {
+            if (columns[c] < 0) continue;
+            const Cluster& cl = p_.clusters[static_cast<size_t>(columns[c])];
+            titles[c] = b_.Measure(ParseLabel(cl.title.raw, cl.title.markdown));
+            band = std::max(band, titles[c].h + (lr ? 8.f : 0.f));
+            lane_w[c] = std::max(lane_w[c], titles[c].w - kLaneGap + 20);
+        }
+        // Where things are, across (lanes) and along (ranks).
+        std::vector<float> lane_mid(columns.size());
+        float cursor = 0;
+        for (size_t c = 0; c < columns.size(); ++c) {
+            lane_mid[c] = cursor + kLaneGap / 2 + lane_w[c] / 2;
+            cursor += lane_w[c] + kLaneGap;
+        }
+        const float across_total = cursor;
+        std::vector<float> layer_mid(static_cast<size_t>(layers));
+        float along = band + kInset;
+        for (int l = 0; l < layers; ++l) {
+            layer_mid[static_cast<size_t>(l)] = along + layer_h[static_cast<size_t>(l)] / 2;
+            along += layer_h[static_cast<size_t>(l)] + kLayerGap;
+        }
+        const float content_end = along - kLayerGap + kInset, content_start = band + kInset;
+        auto flip = [&](float a) { return reverse ? content_start + content_end - kInset - a : a; };
+        std::vector<D2D1_POINT_2F> canon(n);  // (across, along)
+        for (int l = 0; l < layers; ++l) {
+            for (size_t c = 0; c < columns.size(); ++c) {
+                const auto& ids = cells[static_cast<size_t>(l)][c];
+                float total = ids.empty() ? 0.f : kNodeGap * static_cast<float>(ids.size() - 1);
+                for (const size_t i : ids) total += across_size(i);
+                float at = lane_mid[c] - total / 2;
+                for (const size_t i : ids) {
+                    canon[i] = D2D1::Point2F(at + across_size(i) / 2, flip(layer_mid[static_cast<size_t>(l)]));
+                    at += across_size(i) + kNodeGap;
+                }
+            }
+        }
+        // (across, along) to the page, inside the margin and under the title.
+        float top = kMargin;
+        SceneBuilder::Measured heading;
+        if (!src_.title.empty()) {
+            heading = b_.Measure(ParseLabel(src_.title, false), 0, false, 1.125f);
+            top += heading.h + 8;
+        }
+        auto page = [&](D2D1_POINT_2F q) { return lr ? D2D1::Point2F(kMargin + q.y, top + q.x) : D2D1::Point2F(kMargin + q.x, top + q.y); };
+        for (size_t i = 0; i < n; ++i) placed_[i].center = page(canon[i]);
+        const float width = 2 * kMargin + (lr ? content_end : across_total), height = top + kMargin + (lr ? across_total : content_end);
+        if (heading.layout) b_.Text(heading, D2D1::Point2F((width - heading.w) / 2, kMargin), Role(kDgText), src_.title_pos, src_.title_len);
+        // The lanes.
+        for (size_t c = 0; c < columns.size(); ++c) {
+            if (columns[c] < 0) continue;
+            const float a0 = lane_mid[c] - (lane_w[c] + kLaneGap) / 2, a1 = lane_mid[c] + (lane_w[c] + kLaneGap) / 2;
+            const D2D1_POINT_2F p0 = page(D2D1::Point2F(a0, 0)), p1 = page(D2D1::Point2F(a1, content_end)), pb = page(D2D1::Point2F(a1, band));
+            const Cluster& cl = p_.clusters[static_cast<size_t>(columns[c])];
+            const DgColor fill = cl.style.fill.role != kDgNone ? cl.style.fill : Role(kDgClusterFill);
+            const DgColor stroke = cl.style.stroke.role != kDgNone ? cl.style.stroke : Role(kDgClusterStroke);
+            const D2D1_RECT_F all = D2D1::RectF(std::min(p0.x, p1.x), std::min(p0.y, p1.y), std::max(p0.x, p1.x), std::max(p0.y, p1.y));
+            b_.Rect(all, 0, fill, stroke);
+            const D2D1_RECT_F head = lr ? D2D1::RectF(all.left, all.top, pb.x, all.bottom) : D2D1::RectF(all.left, all.top, all.right, pb.y);
+            b_.Rect(head, 0, fill, stroke);
+            const SceneBuilder::Measured& m = titles[c];
+            const float cx = (head.left + head.right) / 2, cy = (head.top + head.bottom) / 2;
+            if (lr) b_.TextUp(m, D2D1::Point2F(cx - m.h / 2, cy - m.w / 2), Role(kDgText), cl.title.pos, cl.title.len);
+            else b_.Text(m, D2D1::Point2F(cx - m.w / 2, cy - m.h / 2), Role(kDgText), cl.title.pos, cl.title.len);
+        }
+        // Edges at right angles: down a lane, across into another, around
+        // (before the nodes) back up.
+        std::vector<std::pair<size_t, D2D1_POINT_2F>> labels;
+        std::vector<int> incoming(n, 0);
+        for (const Edge& e : p_.edges) {
+            if (!e.from.cluster && !e.to.cluster && e.from.index != e.to.index && e.stroke != 3) ++incoming[static_cast<size_t>(e.to.index)];
+        }
+        for (size_t ei = 0; ei < p_.edges.size(); ++ei) {
+            const Edge& e = p_.edges[ei];
+            if (e.from.cluster || e.to.cluster || e.from.index == e.to.index || e.stroke == 3) continue;
+            const size_t a = static_cast<size_t>(e.from.index), z = static_cast<size_t>(e.to.index);
+            const D2D1_POINT_2F ca = canon[a], cz = canon[z];
+            const int la = layer[a], lz = layer[z];
+            std::vector<D2D1_POINT_2F> q{ca};
+            if (la < lz) {
+                if (std::fabs(ca.x - cz.x) >= 0.5f) {
+                    if (column_of(a) == column_of(z)) {
+                        const float mid = flip(layer_mid[static_cast<size_t>(la)] + layer_h[static_cast<size_t>(la)] / 2 + kLayerGap / 2);
+                        q.push_back(D2D1::Point2F(ca.x, mid));
+                        q.push_back(D2D1::Point2F(cz.x, mid));
+                    } else if (incoming[z] > 1) {
+                        // (Into a node others reach too: across in the gap
+                        // before it, where they meet.)
+                        const float mid = flip(layer_mid[static_cast<size_t>(lz)] - layer_h[static_cast<size_t>(lz)] / 2 - kLayerGap / 2);
+                        q.push_back(D2D1::Point2F(ca.x, mid));
+                        q.push_back(D2D1::Point2F(cz.x, mid));
+                    } else {
+                        q.push_back(D2D1::Point2F(cz.x, ca.y));
+                    }
+                }
+            } else if (la > lz) {
+                const float out = std::min(ca.x - across_size(a) / 2, cz.x - across_size(z) / 2) - kInset;
+                q.push_back(D2D1::Point2F(out, ca.y));
+                q.push_back(D2D1::Point2F(out, cz.y));
+            }
+            q.push_back(cz);
+            std::vector<D2D1_POINT_2F> pts;
+            for (const D2D1_POINT_2F& k : q) pts.push_back(page(k));
+            pts.front() = Clip(e.from, pts[1]);
+            pts.back() = Clip(e.to, pts[pts.size() - 2]);
+            DropDoubledEnds(&pts);
+            Style st = p_.default_link;
+            if (auto it = p_.link_styles.find(ei); it != p_.link_styles.end()) st.Merge(it->second);
+            const DgColor color = st.stroke.role != kDgNone ? st.stroke : Role(kDgLine);
+            const float lw = st.stroke_width >= 0 ? st.stroke_width : (e.stroke == 1 ? 3.5f : 2.f);
+            const uint8_t dash = e.stroke == 2 ? 2 : (st.dash == 1 ? 1 : 0);
+            const D2D1_POINT_2F tip_end = pts.back(), tip_start = pts.front(), before_end = pts[pts.size() - 2], after_start = pts[1];
+            if (e.end != Marker::None) pts.back() = Retreat(pts.back(), before_end, MarkerLength(e.end));
+            if (e.start != Marker::None) pts.front() = Retreat(pts.front(), after_start, MarkerLength(e.start));
+            Corners(pts);
+            b_.End(Role(kDgNone), color, lw, dash);
+            AddMarker(b_, e.end, tip_end, before_end, color, lw);
+            AddMarker(b_, e.start, tip_start, after_start, color, lw);
+            if (edge_labels_[ei].layout) {
+                // On the middle of its longest stretch.
+                size_t best = 1;
+                float longest = -1;
+                for (size_t k = 1; k < pts.size(); ++k) {
+                    const float d = std::hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y);
+                    if (d > longest) {
+                        longest = d;
+                        best = k;
+                    }
+                }
+                labels.push_back({ei, D2D1::Point2F((pts[best].x + pts[best - 1].x) / 2, (pts[best].y + pts[best - 1].y) / 2)});
+            }
+        }
+        for (const auto& [ei, c] : labels) {
+            const SceneBuilder::Measured& m = edge_labels_[ei];
+            Style st = p_.default_link;
+            if (auto it = p_.link_styles.find(ei); it != p_.link_styles.end()) st.Merge(it->second);
+            b_.Rect(D2D1::RectF(c.x - m.w / 2 - 2, c.y - m.h / 2, c.x + m.w / 2 + 2, c.y + m.h / 2), 0, Role(kDgLabelBg), Role(kDgNone));
+            b_.Text(m, D2D1::Point2F(c.x - m.w / 2, c.y - m.h / 2), st.color.role != kDgNone ? st.color : Role(kDgText), p_.edges[ei].label.pos,
+                    p_.edges[ei].label.len);
+        }
+        DrawNodes();
+        return b_.Finish(width, height);
+    }
+
+    // A path through `pts`, its corners rounded (5, as Mermaid's).
+    void Corners(const std::vector<D2D1_POINT_2F>& pts) {
+        b_.Begin(pts[0]);
+        for (size_t k = 1; k + 1 < pts.size(); ++k) {
+            const D2D1_POINT_2F a = pts[k - 1], c = pts[k], z = pts[k + 1];
+            const float din = std::hypot(c.x - a.x, c.y - a.y), dout = std::hypot(z.x - c.x, z.y - c.y);
+            const float r = std::min({5.f, din / 2, dout / 2});
+            if (r <= 0.01f) {
+                b_.LineTo(c);
+                continue;
+            }
+            const D2D1_POINT_2F ui = D2D1::Point2F((c.x - a.x) / din, (c.y - a.y) / din), uo = D2D1::Point2F((z.x - c.x) / dout, (z.y - c.y) / dout);
+            const D2D1_POINT_2F in = D2D1::Point2F(c.x - ui.x * r, c.y - ui.y * r), out = D2D1::Point2F(c.x + uo.x * r, c.y + uo.y * r);
+            b_.LineTo(in);
+            b_.CubicTo(D2D1::Point2F(in.x + ui.x * r * 0.55f, in.y + ui.y * r * 0.55f), D2D1::Point2F(out.x - uo.x * r * 0.55f, out.y - uo.y * r * 0.55f), out);
+        }
+        b_.LineTo(pts.back());
+    }
 
     int Depth(int cluster) const {
         int d = 0;
