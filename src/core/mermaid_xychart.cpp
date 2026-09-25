@@ -27,6 +27,7 @@ struct Plot {
     bool bar = false;
     Text name;
     std::vector<double> values;
+    std::vector<Text> labels;  // a line's per point (may be empty)
 };
 
 class Parser {
@@ -60,20 +61,36 @@ private:
             title = c_.Peek() == L'"' ? Quoted() : Here(c_.LineRest());
             return;
         }
-        if (c_.EatStr(L"x-axis")) return AxisStmt(&x, true);
-        if (c_.EatStr(L"y-axis")) return AxisStmt(&y, false);
-        for (const wchar_t* kw : {L"accTitle", L"accDescr"}) {
-            if (c_.EatKeyword(kw)) {
+        if (c_.EatKeyword(L"x-axis")) return AxisStmt(&x, true);
+        if (c_.EatKeyword(L"y-axis")) return AxisStmt(&y, false);
+        if (c_.EatKeyword(L"accDescr")) {
+            c_.SkipBlanks();
+            if (c_.Eat(L'{')) {
+                while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
+                c_.Eat(L'}');
+            } else {
                 c_.LineRest();
-                return;
             }
+            return;
+        }
+        if (c_.EatKeyword(L"accTitle")) {
+            c_.LineRest();
+            return;
         }
         Plot p;
         if (c_.EatKeyword(L"bar")) p.bar = true;
         else if (!c_.EatKeyword(L"line")) c_.Fail(Tr(L"Expected bar, line or an axis", L"Ожидалось bar, line или ось"));
         c_.SkipBlanks();
-        if (c_.Peek() == L'"') p.name = Quoted();
-        else if (c_.Peek() != L'[') p.name = Word();
+        if (c_.Peek() == L'"') {
+            p.name = Quoted();
+        } else if (c_.Peek() != L'[') {
+            // (A name runs up to the '[', digits and '-' in it too; its
+            // words run together, as Mermaid's lexer drops the spaces.)
+            const size_t start = c_.pos();
+            while (!c_.AtStatementEnd() && c_.Peek() != L'[') c_.Advance();
+            p.name = Here(Trim(src_.text.substr(start, c_.pos() - start)));
+            std::erase_if(p.name.raw, [](wchar_t ch) { return IsSpace(ch); });
+        }
         c_.SkipBlanks();
         if (!c_.Eat(L'[')) c_.Fail(Tr(L"Expected '['", L"Ожидалась «[»"));
         for (;;) {
@@ -82,6 +99,9 @@ private:
             if (!p.values.empty() && !c_.Eat(L',')) c_.Fail(Tr(L"Expected ',' or ']'", L"Ожидалась «,» или «]»"));
             c_.SkipBlanks();
             p.values.push_back(Number());
+            // A point's label: 10 "low".
+            c_.SkipBlanks();
+            p.labels.push_back(c_.Peek() == L'"' ? Quoted() : Text{});
             if (++values_ > kMaxNodes) c_.Fail(Tr(L"Too many values", L"Слишком много значений"));
         }
         if (plots.size() >= kMaxEdges) c_.Fail(Tr(L"Too many plots", L"Слишком много графиков"));
@@ -242,24 +262,26 @@ public:
     std::shared_ptr<DiagramScene> Build() {
         size_t n = 0;
         for (const Plot& pl : p_.plots) n = std::max(n, pl.values.size());
-        const bool band = !p_.x.categories.empty();
-        // The value axis: given, or from the data.
+        // One value and no axis: a single category, as Mermaid shows it.
+        const bool single = p_.x.categories.empty() && !p_.x.range && n <= 1;
+        const bool band = !p_.x.categories.empty() || single;
+        const size_t categories = single ? 1 : p_.x.categories.size();
+        // The value axis: given, or from the values drawn.
         double vmin = p_.y.min, vmax = p_.y.max;
         if (!p_.y.range) {
             vmin = 1e300;
             vmax = -1e300;
             for (const Plot& pl : p_.plots) {
-                for (double v : pl.values) {
-                    vmin = std::min(vmin, v);
-                    vmax = std::max(vmax, v);
+                const size_t drawn = band ? std::min(pl.values.size(), categories) : pl.values.size();
+                for (size_t i = 0; i < drawn; ++i) {
+                    vmin = std::min(vmin, pl.values[i]);
+                    vmax = std::max(vmax, pl.values[i]);
                 }
             }
             if (vmin > vmax) vmin = vmax = 0;
         }
-        if (vmax == vmin) {
-            vmin -= 1;
-            vmax += 1;
-        }
+        // (All values the same: one tick, in the middle, as d3 has it.)
+        const bool flat = vmax == vmin;
         // The other axis: categories, a range, or 1 to n.
         double xmin = p_.x.range ? p_.x.min : 1, xmax = p_.x.range ? p_.x.max : static_cast<double>(std::max<size_t>(n, 1));
         if (xmax == xmin) xmax = xmin + 1;
@@ -273,9 +295,8 @@ public:
             return b_.Measure(t, 0, false, px / unit);
         };
         std::vector<M> cat_labels, vlabels, xlabels;
-        if (band) {
-            for (const Text& c : p_.x.categories) cat_labels.push_back(b_.Measure(ParseLabel(c.raw, false), 0, false, 14 / unit));
-        }
+        if (single) cat_labels.push_back(measure(L"1", 14));
+        for (const Text& c : p_.x.categories) cat_labels.push_back(b_.Measure(ParseLabel(c.raw, false), 0, false, 14 / unit));
         for (double t : vticks) vlabels.push_back(measure(JsNumber(t), 14));
         for (double t : xticks) xlabels.push_back(measure(JsNumber(t), 14));
         const std::vector<M>& xl = band ? cat_labels : xlabels;
@@ -303,10 +324,18 @@ public:
         }
         const float title_h = title_m.layout ? title_m.h + 20 : 0.f;
         const bool vertical = !p_.horizontal;
-        // The category (x) axis's depth and the value axis's, then the plot.
+        // (A legend taking too much of the width is left out, as Mermaid does.)
+        if (legend_w > kW / 3) {
+            legend_w = 0;
+            for (M& m : names) m = M{};
+        }
+        // The category (x) axis's depth and the value axis's, then the plot;
+        // labels too big to leave room for it left out, as Mermaid does.
         auto depth = [&](float label, bool has_title, const M& t) { return kLine + kTick + label + 2 * kPad + (has_title ? t.h + 2 * kPad : 0.f); };
-        const float x_depth = depth(vertical ? xl_h : xl_w, xt.layout != nullptr, xt);
-        const float v_depth = depth(vertical ? vl_w : vl_h, vt.layout != nullptr, vt);
+        show_x_ = (vertical ? xl_h : xl_w) <= (vertical ? kH : kW) * 0.3f;
+        show_v_ = (vertical ? vl_w : vl_h) <= (vertical ? kW : kH) * 0.3f;
+        const float x_depth = depth(show_x_ ? (vertical ? xl_h : xl_w) : 0.f, xt.layout != nullptr, xt);
+        const float v_depth = depth(show_v_ ? (vertical ? vl_w : vl_h) : 0.f, vt.layout != nullptr, vt);
         D2D1_RECT_F plot;
         if (vertical) plot = D2D1::RectF(v_depth, title_h, kW - legend_w, kH - x_depth);
         else plot = D2D1::RectF(x_depth, title_h + v_depth, kW - legend_w, kH);
@@ -314,7 +343,7 @@ public:
         // value axis by half a label, the category axis to fit its bars.
         const bool bars = std::any_of(p_.plots.begin(), p_.plots.end(), [](const Plot& pl) { return pl.bar; });
         const float along = vertical ? plot.right - plot.left : plot.bottom - plot.top;
-        const size_t count = band ? p_.x.categories.size() : xticks.size();
+        const size_t count = band ? categories : xticks.size();
         float outer = std::min((vertical ? xl_w : xl_h) / 2, 0.2f * along);
         float tick_distance = count > 0 ? (along - 2 * outer) / static_cast<float>(count) : along;
         if (bars && 0.7f * tick_distance > 2 * outer) {
@@ -325,15 +354,15 @@ public:
         const float v_inset = (vertical ? vl_h : vl_w) / 2;
         // Position along the category axis (pixels from its start).
         auto cat_at = [&](double i) {  // i: a category's index
-            const size_t k = std::max<size_t>(p_.x.categories.size(), 1);
+            const size_t k = std::max<size_t>(categories, 1);
             return k == 1 ? along / 2 : outer + static_cast<float>(i) * (along - 2 * outer) / static_cast<float>(k - 1);
         };
         auto num_at = [&](double v) {
-            return outer + static_cast<float>((v - xmin) / (xmax - xmin)) * (along - 2 * outer);
+            return outer + static_cast<float>(std::clamp((v - xmin) / (xmax - xmin), -10.0, 10.0)) * (along - 2 * outer);
         };
         const float vlen = (vertical ? plot.bottom - plot.top : plot.right - plot.left) - 2 * v_inset;
         auto val_at = [&](double v) {  // from the axis's low end
-            return v_inset + static_cast<float>((v - vmin) / (vmax - vmin)) * vlen;
+            return v_inset + static_cast<float>(flat ? 0.5 : std::clamp((v - vmin) / (vmax - vmin), -10.0, 10.0)) * vlen;
         };
         // To scene points: `a` along the category axis, `v` along the values.
         auto point = [&](float a, float v) {
@@ -344,7 +373,7 @@ public:
         for (size_t k = 0; k < p_.plots.size(); ++k) {
             const Plot& pl = p_.plots[k];
             const DgColor color = Role(static_cast<uint8_t>(kDgPlot + k % 10));
-            const size_t shown = band ? std::min(pl.values.size(), p_.x.categories.size()) : pl.values.size();
+            const size_t shown = band ? std::min(pl.values.size(), categories) : pl.values.size();
             auto a_of = [&](size_t i) {
                 if (band) return cat_at(static_cast<double>(i));
                 const double step = pl.values.size() > 1 ? (xmax - xmin) / static_cast<double>(pl.values.size() - 1) : 0;
@@ -361,6 +390,14 @@ public:
                 b_.Begin(point(a_of(0), val_at(pl.values[0])));
                 for (size_t i = 1; i < shown; ++i) b_.LineTo(point(a_of(i), val_at(pl.values[i])));
                 b_.End(Role(kDgNone), color, 2.f);
+                // Points' labels: above them (right of them sideways), in the line's color.
+                for (size_t i = 0; i < shown && i < pl.labels.size(); ++i) {
+                    if (pl.labels[i].raw.empty()) continue;
+                    const M m = b_.Measure(ParseLabel(pl.labels[i].raw, false), 0, false, 12 / unit);
+                    const D2D1_POINT_2F q = point(a_of(i), val_at(pl.values[i]));
+                    const D2D1_POINT_2F at = vertical ? D2D1::Point2F(q.x - m.w / 2, q.y - 10 - m.h) : D2D1::Point2F(q.x + 10, q.y - m.h / 2);
+                    b_.Text(m, at, color, pl.labels[i].pos, pl.labels[i].len);
+                }
             }
         }
         // The axes: lines, ticks, labels, titles.
@@ -381,15 +418,15 @@ public:
         for (size_t i = 0; i < xl.size(); ++i) {
             const float a = band ? cat_at(static_cast<double>(i)) : num_at(xticks[i]);
             const M& m = xl[i];
-            const Text* src = band ? &p_.x.categories[i] : nullptr;
+            const Text* src = band && !single ? &p_.x.categories[i] : nullptr;
             if (vertical) {
                 const float x = plot.left + a, y = plot.bottom + kLine;
                 Tick(D2D1::Point2F(x, y), D2D1::Point2F(x, y + kTick), ink);
-                b_.Text(m, D2D1::Point2F(x - m.w / 2, y + kTick + kPad), ink, src ? src->pos : 0, src ? src->len : 0);
+                if (show_x_) b_.Text(m, D2D1::Point2F(x - m.w / 2, y + kTick + kPad), ink, src ? src->pos : 0, src ? src->len : 0);
             } else {
                 const float x = plot.left - kLine, y = plot.top + a;
                 Tick(D2D1::Point2F(x, y), D2D1::Point2F(x - kTick, y), ink);
-                b_.Text(m, D2D1::Point2F(x - kTick - kPad - m.w, y - m.h / 2), ink, src ? src->pos : 0, src ? src->len : 0);
+                if (show_x_) b_.Text(m, D2D1::Point2F(x - kTick - kPad - m.w, y - m.h / 2), ink, src ? src->pos : 0, src ? src->len : 0);
             }
         }
         for (size_t i = 0; i < vlabels.size(); ++i) {
@@ -398,11 +435,11 @@ public:
             if (vertical) {
                 const float x = plot.left - kLine, y = plot.bottom - v;
                 Tick(D2D1::Point2F(x, y), D2D1::Point2F(x - kTick, y), ink);
-                b_.Text(m, D2D1::Point2F(x - kTick - kPad - m.w, y - m.h / 2), ink);
+                if (show_v_) b_.Text(m, D2D1::Point2F(x - kTick - kPad - m.w, y - m.h / 2), ink);
             } else {
                 const float x = plot.left + v, y = plot.top - kLine;
                 Tick(D2D1::Point2F(x, y), D2D1::Point2F(x, y - kTick), ink);
-                b_.Text(m, D2D1::Point2F(x - m.w / 2, y - kTick - kPad - m.h), ink);
+                if (show_v_) b_.Text(m, D2D1::Point2F(x - m.w / 2, y - kTick - kPad - m.h), ink);
             }
         }
         if (xt.layout) {
@@ -449,6 +486,7 @@ private:
     const Parser& p_;
     SceneBuilder& b_;
     const Source& src_;
+    bool show_x_ = true, show_v_ = true;  // the axes' labels
 };
 
 }  // namespace
