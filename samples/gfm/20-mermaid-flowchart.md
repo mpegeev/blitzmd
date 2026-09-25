@@ -103,14 +103,13 @@ flowchart TD
 
 ## Not drawn
 
-A diagram type mdview doesn't draw yet stays code, with a note:
+A diagram type mdview doesn't draw (ZenUML comes from a Mermaid plugin) stays code, with a note:
 
 ```mermaid
-C4Context
-    title System Context diagram
-    Person(customer, "Customer")
-    System(shop, "Online shop")
-    Rel(customer, shop, "Buys from")
+zenuml
+    title Order service
+    @Actor Client
+    Client->OrderService.create()
 ```
 
 So does a diagram with an error in it:

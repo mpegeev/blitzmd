@@ -77,6 +77,9 @@ private:
 
 bool IsWordChar(wchar_t c);
 
+// A number as JavaScript writes it (3, 0.5, 1e+21, Infinity).
+std::wstring JsNumber(double v);
+
 // "Line 3: message".
 std::wstring FormatError(std::wstring_view source, const ParseError& e);
 
@@ -144,5 +147,10 @@ std::shared_ptr<DiagramScene> Kanban(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> Packet(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> RadarChart(const Source& src, SceneBuilder* builder);
 std::shared_ptr<DiagramScene> Treemap(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> RequirementDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> SankeyDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> BlockDiagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> C4Diagram(const Source& src, SceneBuilder* builder);
+std::shared_ptr<DiagramScene> ArchitectureDiagram(const Source& src, SceneBuilder* builder);
 
 }  // namespace mdv::mermaid

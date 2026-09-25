@@ -1,6 +1,7 @@
 #include "core/mermaid.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cwctype>
 #include <new>
@@ -93,6 +94,31 @@ Source Preprocess(std::wstring_view text) {
     }
     src.main_branch = ConfigValue(text, 0, L"mainBranchName");
     return src;
+}
+
+// A number as JavaScript writes it (3, 0.5, 1e+21).
+std::wstring JsNumber(double v) {
+    if (std::isnan(v)) return L"NaN";
+    if (std::isinf(v)) return v > 0 ? L"Infinity" : L"-Infinity";
+    if (v == 0) return L"0";
+    char buf[64];
+    const auto r = std::to_chars(buf, buf + sizeof(buf), v, std::chars_format::scientific);
+    const std::string sci(buf, r.ptr);
+    const size_t e = sci.find('e');
+    const bool neg = sci[0] == '-';
+    std::string digits = sci.substr(neg ? 1 : 0, e - (neg ? 1 : 0));
+    digits.erase(std::remove(digits.begin(), digits.end(), '.'), digits.end());
+    const int exp = std::atoi(sci.c_str() + e + 1);
+    std::string out;
+    if (exp >= -6 && exp < 21) {
+        const size_t n = static_cast<size_t>(std::max(exp, 0)) + 1;
+        if (exp >= 0) out = digits.size() > n ? digits.substr(0, n) + "." + digits.substr(n) : digits + std::string(n - digits.size(), '0');
+        else out = "0." + std::string(static_cast<size_t>(-exp - 1), '0') + digits;
+    } else {
+        out = digits.substr(0, 1) + (digits.size() > 1 ? "." + digits.substr(1) : "") + (exp < 0 ? "e-" : "e+") + std::to_string(std::abs(exp));
+    }
+    if (neg) out.insert(out.begin(), '-');
+    return std::wstring(out.begin(), out.end());
 }
 
 void Cursor::SkipBlanks() {
@@ -548,7 +574,7 @@ namespace {
 
 using namespace mermaid;
 
-enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap };
+enum class Kind { Unknown, Flowchart, Sequence, Class, State, Er, Pie, Journey, Gantt, Timeline, Mindmap, Quadrant, XyChart, GitGraph, Kanban, Packet, Radar, Treemap, Requirement, Sankey, Block, C4, Architecture };
 
 // The diagram's type from its first keyword; `name` receives the keyword.
 Kind DetectKind(const Source& src, std::wstring* name) {
@@ -576,6 +602,11 @@ Kind DetectKind(const Source& src, std::wstring* name) {
     if (EqualsNoCase(*name, L"packet-beta") || EqualsNoCase(*name, L"packet")) return Kind::Packet;
     if (EqualsNoCase(*name, L"radar-beta") || EqualsNoCase(*name, L"radar")) return Kind::Radar;
     if (EqualsNoCase(*name, L"treemap-beta") || EqualsNoCase(*name, L"treemap")) return Kind::Treemap;
+    if (EqualsNoCase(*name, L"requirementDiagram")) return Kind::Requirement;
+    if (EqualsNoCase(*name, L"sankey-beta") || EqualsNoCase(*name, L"sankey")) return Kind::Sankey;
+    if (EqualsNoCase(*name, L"block-beta") || EqualsNoCase(*name, L"block")) return Kind::Block;
+    if (*name == L"C4Context" || *name == L"C4Container" || *name == L"C4Component" || *name == L"C4Dynamic" || *name == L"C4Deployment") return Kind::C4;
+    if (*name == L"architecture-beta" || *name == L"architecture") return Kind::Architecture;  // (the parser wants "-beta")
     return Kind::Unknown;
 }
 
@@ -624,6 +655,11 @@ bool CheckMermaid(std::wstring_view source, std::wstring* error) {
         case Kind::Packet: Packet(src, nullptr); return true;
         case Kind::Radar: RadarChart(src, nullptr); return true;
         case Kind::Treemap: Treemap(src, nullptr); return true;
+        case Kind::Requirement: RequirementDiagram(src, nullptr); return true;
+        case Kind::Sankey: SankeyDiagram(src, nullptr); return true;
+        case Kind::Block: BlockDiagram(src, nullptr); return true;
+        case Kind::C4: C4Diagram(src, nullptr); return true;
+        case Kind::Architecture: ArchitectureDiagram(src, nullptr); return true;
         default:
             if (error) *error = UnsupportedMessage(name);
             return false;
@@ -655,6 +691,11 @@ std::shared_ptr<DiagramScene> LayoutMermaid(std::wstring_view source, IDWriteFac
         case Kind::Packet: return Packet(src, &builder);
         case Kind::Radar: return RadarChart(src, &builder);
         case Kind::Treemap: return Treemap(src, &builder);
+        case Kind::Requirement: return RequirementDiagram(src, &builder);
+        case Kind::Sankey: return SankeyDiagram(src, &builder);
+        case Kind::Block: return BlockDiagram(src, &builder);
+        case Kind::C4: return C4Diagram(src, &builder);
+        case Kind::Architecture: return ArchitectureDiagram(src, &builder);
         default:
             if (error) *error = UnsupportedMessage(name);
             return nullptr;

@@ -69,7 +69,19 @@ autolink `www.` / `https://` / e-mail), изображения, HTML-сущно�
   - kanban: колонки с карточками (тикет, исполнитель, приоритет цветной кромкой);
   - packet-beta: поля пакета по 32 бита в строке с номерами битов;
   - radar-beta: оси, шкала кругами или многоугольниками, сглаженные кривые, легенда;
-  - treemap-beta: вложенные разделы и листья, раскладка «squarified», как у d3.
+  - treemap-beta: вложенные разделы и листья, раскладка «squarified», как у d3;
+  - requirementDiagram: требования шести видов и элементы с полями, связи (`contains`, `copies`,
+    `derives`, `satisfies`, `verifies`, `refines`, `traces`), послойная раскладка, стили;
+  - sankey-beta: потоки из CSV между узлами по столбцам, раскладка как у d3-sankey, полосы
+    с переходом цвета от источника к цели;
+  - block-beta: блоки по сетке (`columns`, ширина в столбцах, `space`), вложенные блоки, все
+    формы узлов и блочные стрелки, связи с подписями, стили;
+  - C4 (`C4Context`, `C4Container`, `C4Component`, `C4Dynamic`, `C4Deployment`): люди, системы,
+    контейнеры и компоненты (внешние, базы, очереди), границы, связи с технологией, цвета C4;
+  - architecture-beta: сервисы значками (database, disk, server, internet, cloud; значки из
+    внешних наборов — «?», как у Mermaid без них), соединения, вложенные группы, связи между
+    сторонами со стрелками и подписями, `{group}`, `align`. Раскладка — по сетке, которую задают
+    стороны связей (у Mermaid — «силовая» с этой же сеткой как ограничением).
   Диаграммы масштабируются и открываются на всё окно, как картинки; копирование даёт исходный
   текст, поиск подсвечивает подписи. Неподдержанный тип или ошибка — блок кода с пометкой о причине.
   Темы Mermaid (`%%{init: {theme: ...}}%%`, `themeVariables`) не применяются: цвета всегда
@@ -245,6 +257,7 @@ out\build\x64-release\emoji_test.exe          # таблица эмодзи-ко
 & $t mermaid samples\gfm\25-mermaid-charts.md     # и для pie, journey, gantt
 & $t mermaid samples\gfm\26-mermaid-more.md       # и для timeline, mindmap, quadrantChart, xychart
 & $t mermaid samples\gfm\27-mermaid-git-kanban.md # и для gitGraph, kanban, packet, radar, treemap
+& $t mermaid samples\gfm\28-mermaid-c4-architecture.md # и для requirement, sankey, block, C4, architecture
 & $t mmd diagram.mmd out.png [--dark]          # одна диаграмма Mermaid в PNG
 & $t tex "\frac{a}{b}"                        # дерево разобранной формулы
 ```
@@ -286,7 +299,7 @@ src/core/layout.*     разметка: DirectWrite, точная у видим�
 src/core/render.*     отрисовка Direct2D (темы GitHub Primer)
 src/core/images.*     WIC, SVG, фоновая загрузка по http(s) с кешем
 src/core/zoom.*       масштаб картинок и диаграмм в их рамке и на всё окно, кнопки масштаба
-src/core/mermaid*     диаграммы Mermaid: разбор (flowchart, sequence, class, state, er), построение сцены
+src/core/mermaid*     диаграммы Mermaid: разбор (по файлу на тип: flowchart, sequence, class...), построение сцены
 src/core/graphlayout.* послойная раскладка графов (Sugiyama) с кластерами
 src/core/diagram.*    сцена диаграммы: фигуры, пути, текст DirectWrite; отрисовка по теме
 src/core/viewer.*     окно Lister: прокрутка, выделение, ссылки, поиск, меню
