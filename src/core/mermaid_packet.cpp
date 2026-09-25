@@ -8,6 +8,9 @@
 namespace mdv::mermaid {
 namespace {
 
+constexpr int kBitsPerRow = 32;
+constexpr long long kMaxRows = 1000;
+
 struct Field {
     long long start = 0, end = 0;  // bits, inclusive
     std::wstring label;
@@ -44,11 +47,19 @@ private:
             title_len = static_cast<uint32_t>(t.size());
             return;
         }
-        for (const wchar_t* kw : {L"accTitle", L"accDescr"}) {
-            if (c_.EatKeyword(kw)) {
+        if (c_.EatKeyword(L"accDescr")) {
+            c_.SkipBlanks();
+            if (c_.Eat(L'{')) {
+                while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
+                c_.Eat(L'}');
+            } else {
                 c_.LineRest();
-                return;
             }
+            return;
+        }
+        if (c_.EatKeyword(L"accTitle")) {
+            c_.LineRest();
+            return;
         }
         // start-end: "label" | start: "label" | +count: "label"
         const size_t at = c_.pos();
@@ -73,22 +84,30 @@ private:
         c_.SkipBlanks();
         if (!c_.Eat(L':')) c_.Fail(Tr(L"Expected ':'", L"Ожидалось «:»"));
         c_.SkipBlanks();
-        if (!c_.Eat(L'"')) c_.Fail(Tr(L"Expected a \"label\"", L"Ожидалась «подпись»"));
+        // "label" or 'label', with \ escapes.
+        const wchar_t quote = c_.Peek();
+        if (quote != L'"' && quote != L'\'') c_.Fail(Tr(L"Expected a \"label\"", L"Ожидалась «подпись»"));
+        c_.Advance();
         const size_t s = c_.pos();
-        while (!c_.AtEnd() && c_.Peek() != L'"' && c_.Peek() != L'\n') c_.Advance();
-        if (!c_.Eat(L'"')) c_.Fail(Tr(L"Unclosed quote", L"Не закрыта кавычка"));
-        f.label = std::wstring(src_.text.substr(s, c_.pos() - 1 - s));
+        while (!c_.AtEnd() && c_.Peek() != quote && c_.Peek() != L'\n') {
+            if (c_.Peek() == L'\\' && c_.Peek(1) != L'\0' && c_.Peek(1) != L'\n') c_.Advance();
+            f.label.push_back(c_.Peek());
+            c_.Advance();
+        }
+        const size_t e = c_.pos();
+        if (!c_.Eat(quote)) c_.Fail(Tr(L"Unclosed quote", L"Не закрыта кавычка"));
         if (f.label.size() > kMaxLabel) Error(at, Tr(L"Text too long", L"Слишком длинный текст"));
         f.pos = static_cast<uint32_t>(s);
-        f.len = static_cast<uint32_t>(f.label.size());
-        if (f.end >= 32 * 1000) Error(at, Tr(L"The packet is too long", L"Пакет слишком длинный"));
+        f.len = static_cast<uint32_t>(e - s);
+        if (f.end >= kBitsPerRow * kMaxRows) Error(at, Tr(L"The packet is too long", L"Пакет слишком длинный"));
         fields.push_back(std::move(f));
     }
 
     long long Number() {
         const size_t start = c_.pos();
         long long v = 0;
-        while (c_.Peek() >= L'0' && c_.Peek() <= L'9' && c_.pos() - start < 9) {
+        while (c_.Peek() >= L'0' && c_.Peek() <= L'9') {
+            if (c_.pos() - start >= 9) c_.Fail(Tr(L"The number is too large", L"Слишком большое число"));
             v = v * 10 + (c_.Peek() - L'0');
             c_.Advance();
         }
@@ -107,7 +126,6 @@ private:
 
 using M = SceneBuilder::Measured;
 
-constexpr int kBitsPerRow = 32;
 constexpr float kBitW = 32, kRowH = 32, kGapX = 5, kRowStep = 47;
 
 std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Source& src) {
@@ -127,9 +145,10 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
             b.Rect(D2D1::RectF(x0, y, x1, y + kRowH), 0, Role(kDgActivationFill), Role(kDgText), 1.f);
             const M label = b.Measure(ParseLabel(f.label, false), 0, false, 12 / unit);
             b.Text(label, D2D1::Point2F((x0 + x1) / 2 - label.w / 2, y + kRowH / 2 - label.h / 2), Role(kDgText), f.pos, f.len);
-            // Bit numbers: the first at the left, the last at the right.
+            // Bit numbers: the first at the left, the last at the right (one
+            // bit's in the middle).
             const M first = tiny(std::to_wstring(s));
-            b.Text(first, D2D1::Point2F(x0, y - first.h + 2), Role(kDgText));
+            b.Text(first, D2D1::Point2F(e == s ? (x0 + x1) / 2 - first.w / 2 : x0, y - first.h + 2), Role(kDgText));
             if (e != s) {
                 const M last = tiny(std::to_wstring(e));
                 b.Text(last, D2D1::Point2F(x1 - last.w, y - last.h + 2), Role(kDgText));

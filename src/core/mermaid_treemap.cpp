@@ -1,9 +1,12 @@
 // Mermaid treemaps: a tree by indentation ("Section" / "Leaf": value), laid
-// out as d3's squarified treemap, biggest first: sections with their name
-// and total in a header, leaves with a big name and their value, each
-// section in the next of the theme's cScale colors.
+// out as d3's squarified treemap (1000 by 400, biggest first, padded as
+// Mermaid pads it): sections with their name and total in a header, leaves
+// with their name and value as big as fits, in the theme's cScale colors
+// handed out by name as Mermaid's ordinal scales do; classDef styles.
 #include <algorithm>
 #include <cmath>
+#include <map>
+#include <unordered_map>
 
 #include "core/mermaid_internal.h"
 
@@ -16,6 +19,7 @@ struct Node {
     double value = 0;       // a leaf's own, a section's sum
     bool leaf = false;
     int parent = -1, indent = 0;
+    std::wstring cls;       // :::class
     std::vector<int> children;
 };
 
@@ -33,43 +37,73 @@ public:
             if (c_.AtEnd()) break;
             size_t line = c_.pos();
             while (line > 0 && src_.text[line - 1] != L'\n') --line;
-            int indent = 0;
-            for (size_t k = line; k < c_.pos(); ++k) indent += src_.text[k] == L'\t' ? 4 : 1;
-            if (c_.EatKeyword(L"classDef") || c_.EatKeyword(L"title") || c_.EatKeyword(L"accTitle") || c_.EatKeyword(L"accDescr")) {
+            const int indent = static_cast<int>(c_.pos() - line);  // (a tab counts one, as in Mermaid)
+            if (c_.EatKeyword(L"classDef")) {
+                c_.SkipBlanks();
+                const size_t s = c_.pos();
+                while (IsWordChar(c_.Peek())) c_.Advance();
+                const std::wstring name(src_.text.substr(s, c_.pos() - s));
+                if (name.empty()) c_.Fail(Tr(L"Expected a class name", L"Ожидалось имя класса"));
+                c_.SkipBlanks();
+                classes[name].Apply(c_.LineRest());
+                continue;
+            }
+            if (c_.EatKeyword(L"title")) {
+                c_.SkipBlanks();
+                const std::wstring_view t = c_.WholeLine();
+                title = std::wstring(t);
+                title_pos = static_cast<uint32_t>(t.data() - src_.text.data());
+                title_len = static_cast<uint32_t>(t.size());
+                continue;
+            }
+            if (c_.EatKeyword(L"accDescr")) {
+                c_.SkipBlanks();
+                if (c_.Eat(L'{')) {
+                    while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
+                    c_.Eat(L'}');
+                } else {
+                    c_.LineRest();
+                }
+                continue;
+            }
+            if (c_.EatKeyword(L"accTitle")) {
                 c_.LineRest();
                 continue;
             }
             Line(indent);
         }
         // Sums, children before parents.
-        for (size_t i = nodes.size(); i-- > 1;) {
+        for (size_t i = nodes.size(); i-- > 0;) {
             if (nodes[i].leaf) continue;
             nodes[i].value = 0;
             for (int ch : nodes[i].children) nodes[i].value += nodes[static_cast<size_t>(ch)].value;
         }
-        nodes[0].value = 0;
-        for (int ch : nodes[0].children) nodes[0].value += nodes[static_cast<size_t>(ch)].value;
     }
 
     std::vector<Node> nodes;
+    std::map<std::wstring, Style> classes;
+    std::wstring title;
+    uint32_t title_pos = 0, title_len = 0;
 
 private:
-    // "Name" or "Name": value (:::class after it).
+    // "Name" or "Name": value (or , value), 'quoted' too; :::class after it.
     void Line(int indent) {
         Node n;
         n.indent = indent;
         const size_t at = c_.pos();
-        if (!c_.Eat(L'"')) c_.Fail(Tr(L"Expected a \"name\"", L"Ожидалось «имя»"));
+        const wchar_t quote = c_.Peek();
+        if (quote != L'"' && quote != L'\'') c_.Fail(Tr(L"Expected a \"name\"", L"Ожидалось «имя»"));
+        c_.Advance();
         const size_t s = c_.pos();
-        while (!c_.AtEnd() && c_.Peek() != L'"' && c_.Peek() != L'\n') c_.Advance();
-        if (!c_.Eat(L'"')) c_.Fail(Tr(L"Unclosed quote", L"Не закрыта кавычка"));
+        while (!c_.AtEnd() && c_.Peek() != quote && c_.Peek() != L'\n') c_.Advance();
+        if (!c_.Eat(quote)) c_.Fail(Tr(L"Unclosed quote", L"Не закрыта кавычка"));
         const std::wstring_view name = src_.text.substr(s, c_.pos() - 1 - s);
         if (name.size() > kMaxLabel) c_.Fail(Tr(L"Text too long", L"Слишком длинный текст"));
         n.text = std::wstring(name);
         n.pos = static_cast<uint32_t>(s);
         n.len = static_cast<uint32_t>(name.size());
         c_.SkipBlanks();
-        if (c_.Eat(L':')) {
+        if (!c_.Rest().starts_with(L":::") && (c_.Eat(L':') || c_.Eat(L','))) {
             c_.SkipBlanks();
             const size_t v = c_.pos();
             while ((c_.Peek() >= L'0' && c_.Peek() <= L'9') || c_.Peek() == L'.' || c_.Peek() == L',') c_.Advance();
@@ -81,8 +115,10 @@ private:
             n.leaf = true;
         }
         c_.SkipBlanks();
-        while (c_.EatStr(L":::")) {
-            while (IsWordChar(c_.Peek()) || c_.Peek() == L'-') c_.Advance();
+        if (c_.EatStr(L":::")) {
+            const size_t k = c_.pos();
+            while (IsWordChar(c_.Peek())) c_.Advance();
+            n.cls = std::wstring(src_.text.substr(k, c_.pos() - k));
         }
         c_.SkipBlanks();
         if (!c_.AtStatementEnd()) c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
@@ -104,8 +140,10 @@ private:
 
 using M = SceneBuilder::Measured;
 
-constexpr float kW = 960, kH = 360;
-constexpr float kPad = 10, kHeader = 25;
+constexpr float kW = 1000, kH = 400;     // Mermaid's nodeWidth and nodeHeight times 10
+constexpr float kInner = 10;             // between siblings
+constexpr float kSide = 10, kHeader = 25;  // a section's padding, and its header
+constexpr float kTitle = 30;
 
 // d3's squarified treemap: children (biggest first) in rows that keep their
 // boxes nearest to the golden ratio.
@@ -173,15 +211,34 @@ void Squarify(const std::vector<Node>& nodes, const std::vector<int>& kids, D2D1
     }
 }
 
+// A color at an opacity (a theme role, or a style's explicit one).
+DgColor Fade(DgColor c, float opacity) {
+    if (c.role == kDgArgb) return Argb((c.argb & 0xFFFFFF) | (static_cast<uint32_t>(static_cast<float>(c.argb >> 24) * opacity + 0.5f) << 24));
+    return RoleAt(c.role, static_cast<uint8_t>(255 * opacity + 0.5f));
+}
+
 class Builder {
 public:
-    Builder(const Parser& p, SceneBuilder& b) : p_(p), b_(b), rect_(p.nodes.size()), color_(p.nodes.size(), 0) {}
+    Builder(const Parser& p, SceneBuilder& b, const Source& src)
+        : p_(p), b_(b), src_(src), rect_(p.nodes.size()), color_(p.nodes.size(), -1), label_(p.nodes.size(), 0) {}
 
     std::shared_ptr<DiagramScene> Build() {
-        Lay(0, D2D1::RectF(0, 0, kW, kH));
-        int next = 0;
-        Color(0, &next);
-        for (size_t i = 1; i < p_.nodes.size(); ++i) Draw(i);
+        const bool own = !p_.title.empty();
+        const std::wstring& title = own ? p_.title : src_.title;
+        const float top = title.empty() ? 0.f : kTitle;
+        rect_[0] = D2D1::RectF(0, top, kW, top + kH);
+        Position(0, 0);
+        for (D2D1_RECT_F& r : rect_) r = D2D1::RectF(std::round(r.left), std::round(r.top), std::round(r.right), std::round(r.bottom));
+        Colors();
+        for (size_t i = 1; i < p_.nodes.size(); ++i) {
+            if (!p_.nodes[i].leaf && !p_.nodes[i].children.empty()) Section(i);
+        }
+        Leaves();
+        if (!title.empty()) {
+            const M m = b_.Measure(ParseLabel(title, false), 0, false, 14 / b_.size());
+            b_.Text(m, D2D1::Point2F(kW / 2 - m.w / 2, kTitle / 2 - m.h / 2), Role(kDgText), own ? p_.title_pos : src_.title_pos,
+                    own ? p_.title_len : src_.title_len);
+        }
         return b_.FinishFitted(8);
     }
 
@@ -193,73 +250,163 @@ private:
         return s;
     }
 
-    void Lay(size_t i, D2D1_RECT_F r) {
+    bool Branch(size_t i) const { return !p_.nodes[i].children.empty(); }
+
+    // d3's treemap positioning: a node inset by half the inner padding
+    // (`inset`), its children tiled inside its own padding (a section's
+    // header on top).
+    void Position(size_t i, float inset) {
+        D2D1_RECT_F r = rect_[i];
+        r = D2D1::RectF(r.left + inset, r.top + inset, r.right - inset, r.bottom - inset);
+        if (r.right < r.left) r.left = r.right = (r.left + r.right) / 2;
+        if (r.bottom < r.top) r.top = r.bottom = (r.top + r.bottom) / 2;
         rect_[i] = r;
-        const Node& n = p_.nodes[i];
-        if (n.children.empty()) return;
-        // Inside a section: its header on top, padding around.
-        D2D1_RECT_F in = i == 0 ? r : D2D1::RectF(r.left + kPad, r.top + kHeader + 4, r.right - kPad, r.bottom - kPad);
-        if (in.right < in.left) in.right = in.left;
-        if (in.bottom < in.top) in.bottom = in.top;
-        const std::vector<int> kids = Sorted(n.children);
+        if (!Branch(i)) return;
+        const float p = kInner / 2;
+        D2D1_RECT_F in = D2D1::RectF(r.left + kSide - p, r.top + kHeader + kSide - p, r.right - kSide + p, r.bottom - kSide + p);
+        if (in.right < in.left) in.left = in.right = (in.left + in.right) / 2;
+        if (in.bottom < in.top) in.top = in.bottom = (in.top + in.bottom) / 2;
+        const std::vector<int> kids = Sorted(p_.nodes[i].children);
         std::vector<D2D1_RECT_F> out(p_.nodes.size());
         Squarify(p_.nodes, kids, in, &out);
         for (int k : kids) {
-            // (Padding between siblings.)
-            D2D1_RECT_F cr = out[static_cast<size_t>(k)];
-            if (i != 0 || kids.size() > 1) cr = D2D1::RectF(cr.left + kPad / 2, cr.top + kPad / 2, std::max(cr.left + kPad / 2, cr.right - kPad / 2),
-                                                            std::max(cr.top + kPad / 2, cr.bottom - kPad / 2));
-            Lay(static_cast<size_t>(k), cr);
+            rect_[static_cast<size_t>(k)] = out[static_cast<size_t>(k)];
+            Position(static_cast<size_t>(k), p);
         }
     }
 
-    // Sections take the colors in turn (biggest first, depth first); leaves
-    // their section's.
-    void Color(size_t i, int* next) {
+    // Mermaid's ordinal scales by name: fills (and borders) handed out to
+    // sections breadth first, the diagram's own first (none), 13 in turn;
+    // text colors to sections, then to leaves depth first, 12 in turn.
+    void Colors() {
+        std::unordered_map<std::wstring, int> fills, labels;
+        auto fill = [&](const std::wstring& name) { return fills.emplace(name, static_cast<int>(fills.size())).first->second % 13 - 1; };
+        auto label = [&](const std::wstring& name) { return labels.emplace(name, static_cast<int>(labels.size())).first->second % 12; };
+        std::vector<size_t> queue{0};
+        for (size_t q = 0; q < queue.size(); ++q) {
+            const size_t i = queue[q];
+            if (!Branch(i)) continue;
+            color_[i] = i == 0 ? -1 : fill(p_.nodes[i].text);
+            if (i == 0) fills.emplace(L"", 0);
+            if (i != 0) label_[i] = label(p_.nodes[i].text);
+            for (int k : Sorted(p_.nodes[i].children)) queue.push_back(static_cast<size_t>(k));
+        }
+        Depth(0, label);
+    }
+
+    template <typename F>
+    void Depth(size_t i, F& label) {
         for (int k : Sorted(p_.nodes[i].children)) {
             const size_t c = static_cast<size_t>(k);
-            color_[c] = p_.nodes[c].leaf ? color_[i] : (*next)++ % 12;
-            if (!p_.nodes[c].leaf) Color(c, next);
+            if (Branch(c)) Depth(c, label);
+            else label_[c] = label(p_.nodes[c].text);
         }
     }
 
-    void Draw(size_t i) {
+    Style StyleOf(const Node& n) const {
+        if (auto it = p_.classes.find(n.cls); !n.cls.empty() && it != p_.classes.end()) return it->second;
+        return Style{};
+    }
+
+    // A section: see-through in its color, its border fainter; the name
+    // (cut short to fit) and total in the header.
+    void Section(size_t i) {
         const Node& n = p_.nodes[i];
         const D2D1_RECT_F r = rect_[i];
-        if (r.right - r.left < 1 || r.bottom - r.top < 1) return;
-        const uint8_t role = static_cast<uint8_t>(kDgScale + color_[i]);
-        const float unit = b_.size();
-        std::wstring value = FormatValue(n.value);
-        if (!n.leaf) {
-            b_.Rect(r, 0, RoleAt(role, 150), Role(role), 1.f);
+        const Style st = StyleOf(n);
+        const int c = color_[i];
+        const DgColor fill = st.fill.role != kDgNone ? st.fill : c >= 0 ? Role(static_cast<uint8_t>(kDgScale + c)) : Role(kDgNone);
+        const DgColor stroke = st.stroke.role != kDgNone ? st.stroke : c >= 0 ? Role(static_cast<uint8_t>(kDgScalePeer + c)) : Role(kDgNone);
+        b_.Rect(r, 0, fill.role != kDgNone ? Fade(fill, 0.6f) : fill, stroke.role != kDgNone ? Fade(stroke, 0.4f) : stroke,
+                st.stroke_width >= 0 ? st.stroke_width : 2.f);
+        const DgColor ink = st.color.role != kDgNone ? st.color : Role(static_cast<uint8_t>(kDgScaleText + label_[i]));
+        const float unit = b_.size(), w = r.right - r.left;
+        const bool value = n.value > 0;
+        const float room = std::max(15.f, value ? w - 10 - 30 - 10 - 6 : w - 12);
+        const RichText name = ParseLabel(n.text, false);
+        M m = b_.Measure(name, 0, true, 12 / unit, false);
+        if (m.w > room) {
+            // As Mermaid: shortened with "..." (or left out) till it fits.
+            auto cut = [&](size_t k) {
+                RichText t;
+                t.text = name.text.substr(0, k) + L"...";
+                return b_.Measure(t, 0, true, 12 / unit, false);
+            };
+            size_t lo = 0, hi = name.text.size();
+            while (lo + 1 < hi) {
+                const size_t mid = (lo + hi) / 2;
+                if (cut(mid).w <= room) lo = mid;
+                else hi = mid;
+            }
+            m = cut(lo);
+            if (m.w > room) m = M{};
+        }
+        if (m.layout) b_.Text(m, D2D1::Point2F(r.left + 6, r.top + kHeader / 2 - m.h / 2), ink, n.pos, n.len);
+        if (value) {
             RichText v;
-            v.text = value;
-            const M vm = b_.Measure(v, 0, false, 11 / unit, false);
-            const M name = b_.Measure(ParseLabel(n.text, false), std::max(r.right - r.left - vm.w - 16, 1.f), true, 12 / unit, false);
-            b_.Text(name, D2D1::Point2F(r.left + 6, r.top + 4), Role(static_cast<uint8_t>(kDgScaleText + color_[i])), n.pos, n.len);
-            if (r.right - r.left > name.w + vm.w + 16) b_.Text(vm, D2D1::Point2F(r.right - 6 - vm.w, r.top + 5), Role(static_cast<uint8_t>(kDgScaleText + color_[i])));
-            return;
+            v.text = FormatValue(n.value);
+            v.spans.push_back({0, static_cast<uint32_t>(v.text.size()), false, true});
+            const M vm = b_.Measure(v, 0, false, 10 / unit, false);
+            b_.Text(vm, D2D1::Point2F(r.right - 10 - vm.w, r.top + kHeader / 2 - vm.h / 2), ink);
         }
-        b_.Rect(r, 0, RoleAt(role, 200), RoleAt(role, 255), 2.f);
-        // The name as big as fits (up to 38px), the value under it.
-        const float w = r.right - r.left, h = r.bottom - r.top;
-        float px = 38;
-        M name;
-        for (;;) {
-            name = b_.Measure(ParseLabel(n.text, false), 0, false, px / unit);
-            if ((name.w <= w - 8 && name.h * 1.6f <= h) || px <= 8) break;
-            px = std::max(8.f, px * 0.85f);
+    }
+
+    // Leaves: see-through in their section's color with its border; the
+    // name as big as fits (from 38px, or 16 with many leaves) and the value
+    // under it, sized and left out by Mermaid's rules.
+    void Leaves() {
+        std::vector<size_t> leaves;
+        Collect(0, &leaves);
+        const bool many = leaves.size() > 20;
+        const float base = many ? 16.f : 38.f, base_value = many ? 14.f : 28.f, least = many ? 4.f : 8.f, least_value = many ? 4.f : 6.f;
+        const float pad = many ? 2.f : 4.f, threshold = many ? 8.f : 10.f, spacing = many ? 1.f : 2.f;
+        const float unit = b_.size();
+        for (const size_t i : leaves) {
+            const Node& n = p_.nodes[i];
+            const D2D1_RECT_F r = rect_[i];
+            const Style st = StyleOf(n);
+            const int c = color_[static_cast<size_t>(n.parent)];
+            const DgColor own = c >= 0 ? Role(static_cast<uint8_t>(kDgScale + c)) : Role(kDgNone);
+            const DgColor fill = st.fill.role != kDgNone ? st.fill : own, stroke = st.stroke.role != kDgNone ? st.stroke : own;
+            b_.Rect(r, 0, fill.role != kDgNone ? Fade(fill, 0.3f) : fill, stroke, st.stroke_width >= 0 ? st.stroke_width : 3.f);
+            const float w = r.right - r.left, h = r.bottom - r.top, room_w = w - 2 * pad, room_h = h - 2 * pad;
+            if (room_w < threshold || room_h < threshold) continue;
+            const RichText name = ParseLabel(n.text, false);
+            // (Widths scale with the size: one measure, then arithmetic.)
+            const float width_at_base = b_.Measure(name, 0, false, base / unit).w;
+            auto width_at = [&](float px) { return width_at_base * px / base; };
+            auto value_px = [&](float px) { return std::max(least_value, std::min(base_value, std::round(px * 0.6f))); };
+            float px = base;
+            while (width_at(px) > room_w && px > least) --px;
+            float vpx = value_px(px);
+            while (px + spacing + vpx > room_h && px > least) {
+                --px;
+                vpx = value_px(px);
+                if (vpx < least_value && px == least) break;
+            }
+            if (many ? (px < least || room_h < least) : (width_at(px) > room_w || px < least || room_h < px)) continue;
+            const DgColor ink = st.color.role != kDgNone ? st.color : Role(static_cast<uint8_t>(kDgScaleText + label_[i]));
+            const M m = b_.Measure(name, 0, false, px / unit);
+            const float cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
+            b_.Text(m, D2D1::Point2F(cx - m.w / 2, cy - m.h / 2), ink, n.pos, n.len);
+            if (n.value > 0) {
+                RichText v;
+                v.text = FormatValue(n.value);
+                const M vm = b_.Measure(v, 0, false, vpx / unit);
+                const float vtop = cy + px / 2 + spacing;
+                if (vm.w <= room_w && vtop - r.top + vpx <= h - 4) {
+                    b_.Text(vm, D2D1::Point2F(cx - vm.w / 2, vtop), ink);
+                }
+            }
         }
-        RichText v;
-        v.text = value;
-        const M vm = b_.Measure(v, 0, false, std::max(px * 0.55f, 8.f) / unit);
-        const float total = name.h + vm.h;
-        const DgColor ink = Role(static_cast<uint8_t>(kDgScaleText + color_[i]));
-        if (name.w <= w && total <= h + 2) {
-            b_.Text(name, D2D1::Point2F((r.left + r.right) / 2 - name.w / 2, (r.top + r.bottom) / 2 - total / 2), ink, n.pos, n.len);
-            b_.Text(vm, D2D1::Point2F((r.left + r.right) / 2 - vm.w / 2, (r.top + r.bottom) / 2 - total / 2 + name.h), ink);
-        } else if (name.w <= w && name.h <= h) {
-            b_.Text(name, D2D1::Point2F((r.left + r.right) / 2 - name.w / 2, (r.top + r.bottom) / 2 - name.h / 2), ink, n.pos, n.len);
+    }
+
+    // Leaves depth first (d3's leaves()).
+    void Collect(size_t i, std::vector<size_t>* out) const {
+        for (int k : Sorted(p_.nodes[i].children)) {
+            const size_t c = static_cast<size_t>(k);
+            if (Branch(c)) Collect(c, out);
+            else out->push_back(c);
         }
     }
 
@@ -277,8 +424,10 @@ private:
 
     const Parser& p_;
     SceneBuilder& b_;
+    const Source& src_;
     std::vector<D2D1_RECT_F> rect_;
-    std::vector<int> color_;
+    std::vector<int> color_;  // sections: cScale index, -1 none
+    std::vector<int> label_;  // text color index
 };
 
 }  // namespace
@@ -287,7 +436,7 @@ std::shared_ptr<DiagramScene> Treemap(const Source& src, SceneBuilder* builder) 
     Parser p(src);
     p.Parse();
     if (!builder) return nullptr;
-    return Builder(p, *builder).Build();
+    return Builder(p, *builder, src).Build();
 }
 
 }  // namespace mdv::mermaid
