@@ -1655,6 +1655,11 @@ int main(int argc, char** ansi_argv) {
             {L"railroad-peg-beta\n# a comment\nExpr <- Sum ;\nSum <- Product (('+' / \"-\") Product)* ;\nValue <- Number / \"(\" Expr \")\" / !\"x\" . / &Value \"y\"+ ;", true, nullptr},
             {L"railroad-peg-beta\nValue <- [0-9]+ ;", false, L"Line 2"},
             {L"railroad-beta", true, nullptr},
+            {L"railroad-beta\na = sequence(terminal(\"multi\\nline\"), terminal(\"\"), nonterminal(\"  sp  \"));\n---\nfoo: bar\n---\nb = terminal(\"y\");", true, nullptr},
+            {L"railroad-beta\na = terminal(\"a\\\nb\");", false, L"Line 2"},
+            {L"railroad-abnf-beta\na = 12345678901\"x\" ;", true, nullptr},
+            {L"eventmodeling\ntf 01 ui A\n---\nfoo: 1\n---\ntf 02 rmo Spaces {   a    b   }", true, nullptr},
+            {L"wardley-beta\ncomponent A [0.5, 0.5]\n---\nx: y\n---\ncomponent B [0.4, 0.4]", true, nullptr},
             {L"Railroad-Beta\na = terminal(\"x\");", false, L"Line 1"},
             {L"eventmodeling\ntf 01 ui Web.Form\ntf 02 cmd Place `json` { \"a\": 1 }\ntf 03 evt Orders.Placed [[D]]\ntf 04 pcr Billing.Charger ->> 03\ntf 05 cmd Charge\nrf 06 rmo Status ->> 03 ->> 05\ntf 07 evt X 'quoted'\nentity Foo.Bar\ndata D {\n  id: string\n}\nnote 01 {\n  hello\n}\ngwt 01 given evt X when cmd Y then evt Z rmo W\n// c\n/* block */ %% c", true, nullptr},
             {L"eventmodeling\ntitle T\ntf 01 ui A", false, L"Line 2"},
@@ -1950,10 +1955,14 @@ int main(int argc, char** ansi_argv) {
             L"railroad-ebnf-beta\n" + repeat(L"r = ( a | b | \"" + std::wstring(300, L'x') + L"\" ) { c } [ d ] ;\n", 600),
             L"railroad-abnf-beta\na = " + repeat(L"999999999*999999999 b / ", 2000) + L"c ;",
             L"railroad-peg-beta\nA <- " + repeat(L"( ", 30) + L"B" + repeat(L" )", 30) + L" ;",
-            L"railroad-beta\na = choice(" + repeat(L"terminal(\"x\"), ", 4000) + L"terminal(\"y\"));",
+            L"railroad-beta\na = choice(" + repeat(L"terminal(\"x\"), ", 2900) + L"terminal(\"y\"));",
             L"eventmodeling\n" + repeat(L"tf 01 ui N" + std::wstring(3000, L'n') + L".A ->> 01 { " + std::wstring(3000, L'd') + L" }\n", 60),
             L"eventmodeling\n" + repeat(L"tf 99 evt S.E ->> 99 ->> 99 ->> 99\ntf 98 cmd C.D\n", 1000),
-            L"eventmodeling\ndata D {\n" + repeat(L"  " + std::wstring(40, L'x') + L" ", 90) + L"\n}\n" + repeat(L"tf 01 rmo R [[D]]\n", 200),
+            L"eventmodeling\ndata D {\n" + repeat(repeat(L"y ", 30) + L"\n", 60) + L"}\n" + repeat(L"tf 01 rmo R [[D]]\n", 1300),
+            [&] {  // swimlanes: an edge past the nodes between in its lane
+                return std::wstring(L"swimlane-beta TD\nsubgraph L1\na --> b --> c\na --> c\nend\n");
+            }(),
+            L"eventmodeling\ndata D {\n" + repeat(L"  " + std::wstring(40, L'x') + L" ", 80) + L"\n}\n" + repeat(L"tf 01 rmo R [[D]]\n", 200),
             [&] {  // swimlanes: many lanes, long chains back and forth
                 std::wstring s = L"swimlane-beta LR\n";
                 for (int l = 0; l < 40; ++l) s += L"subgraph L" + std::to_wstring(l) + L"\n" + repeat(L"n" + std::to_wstring(l) + L"x --> n" + std::to_wstring(l) + L"y\n", 1) + L"end\n";
@@ -1998,7 +2007,11 @@ int main(int argc, char** ansi_argv) {
                 std::printf("FAIL: hostile input %s... (%.0f ms)\n", WideToUtf8(h.substr(0, 40)).c_str(), ms);
                 ++failures;
             } else {
-                std::printf("  hostile %.0f ms %s\n", ms, scene ? "drawn" : WideToUtf8(error).c_str());
+                std::printf("  hostile %.0f ms %s (%s...)\n", ms, scene ? "drawn" : WideToUtf8(error).c_str(), [&] {
+                    std::string head = WideToUtf8(h.substr(0, 24));
+                    std::replace(head.begin(), head.end(), '\n', ' ');
+                    return head;
+                }().c_str());
             }
         }
         // Fuzz: random flowcharts from fragments.

@@ -776,7 +776,7 @@ public:
         AddMissingAreas();
         double work = 0;
         for (const Area& a : areas_) work += a.sets.size() < 3 ? 1.0 : std::pow(static_cast<double>(a.sets.size()), 3);
-        max_evals_ = static_cast<size_t>(std::max(100.0, 3e8 / std::max(work, 1.0)));
+        max_evals_ = static_cast<size_t>(std::max(100.0, 1e8 / std::max(work, 1.0)));
         std::vector<Circle> circles = Greedy();
         if (areas_.size() >= 8) {
             std::vector<Circle> mds = ConstrainedMds();

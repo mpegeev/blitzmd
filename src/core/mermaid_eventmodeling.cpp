@@ -66,6 +66,10 @@ private:
         for (;;) {
             while (p_ < s_.size() && std::iswspace(s_[p_])) ++p_;
             if (p_ >= s_.size()) return Token{T::Eof, {}, Text{L"", static_cast<uint32_t>(p_), 0}};
+            if (const size_t n = YamlBlockLength(s_, p_)) {
+                p_ += n;
+                continue;
+            }
             if (Starts(L"%%")) {
                 if (Starts(L"%%{")) {
                     const size_t e = s_.find(L"}%%", p_ + 3);
@@ -457,14 +461,30 @@ private:
                 break;
             }
         }
+        // (The same name and data measure the same: once.)
+        const std::wstring key = html + L'\x1' + (code ? L"1" + *code : L"0") + (f.data_ref.empty() ? L"" : L"\x1r");
+        if (const auto it = contents_.find(key); it != contents_.end()) {
+            box->code = it->second.code;
+            box->has_code = it->second.has_code;
+            return {it->second.w, it->second.h};
+        }
+        const std::pair<float, float> size = Measured(f, html, code, box);
+        if (contents_.size() < 10000) contents_[key] = Content_{size.first, size.second, box->code, box->has_code};
+        return size;
+    }
+
+    std::pair<float, float> Measured(const Frame& f, std::wstring html, const std::optional<std::wstring>& code, Box* box) {
         std::vector<std::wstring> lines = Lines(html);
         if (code) {
-            // (HTML collapses its line ends; spaces are kept.)
-            std::wstring flat;
-            for (const wchar_t c : *code) flat.push_back(c == L'\n' || c == L'\r' ? L' ' : c);
-            box->code = Join(Wrap(flat), L"\n");
+            const std::vector<std::wstring> wrapped = Wrap(*code);
+            // Shown: HTML turns its line ends into spaces.
+            box->code.clear();
+            for (const std::wstring& l : wrapped) {
+                if (!box->code.empty()) box->code += L'\n';
+                for (const wchar_t c : l) box->code.push_back(c == L'\n' || c == L'\r' ? L' ' : c);
+            }
             box->has_code = true;
-            std::wstring shown = Join(Wrap(flat), L"<br/>");
+            std::wstring shown = Join(wrapped, L"<br/>");
             for (size_t k = shown.find(L' '); k != std::wstring::npos; k = shown.find(L' ', k + 6)) shown.replace(k, 1, L"&nbsp;");
             if (!f.data_ref.empty()) shown += L"<br/>";
             html += L"<br/><br/><code style=\"text-align: left; display: block;max-width:430px\">" + shown + L"</code>";
@@ -475,15 +495,30 @@ private:
         return {code ? w / 3 : w, static_cast<float>(lines.size()) * kLineH};
     }
 
+    // Lines of Mermaid's HTML: split at <br/> (and <br>, <br />).
     static std::vector<std::wstring> Lines(const std::wstring& html) {
         std::vector<std::wstring> out;
         size_t s = 0;
-        for (size_t k = html.find(L"<br/>"); k != std::wstring::npos; k = html.find(L"<br/>", s)) {
-            out.push_back(html.substr(s, k - s));
-            s = k + 5;
+        for (size_t k = 0; k < html.size();) {
+            const size_t n = BreakAt(html, k);
+            if (n) {
+                out.push_back(html.substr(s, k - s));
+                k += n;
+                s = k;
+            } else {
+                ++k;
+            }
         }
         out.push_back(html.substr(s));
         return out;
+    }
+    // The length of a <br> tag at `k` (any case, <br/>, <br />), or 0.
+    static size_t BreakAt(const std::wstring& s, size_t k) {
+        if (k + 3 > s.size() || s[k] != L'<' || std::towlower(s[k + 1]) != L'b' || std::towlower(s[k + 2]) != L'r') return 0;
+        size_t e = k + 3;
+        while (e < s.size() && std::iswspace(s[e])) ++e;
+        if (e < s.size() && s[e] == L'/') ++e;
+        return e < s.size() && s[e] == L'>' ? e + 1 - k : 0;
     }
     static std::wstring Join(const std::vector<std::wstring>& parts, const wchar_t* with) {
         std::wstring out;
@@ -491,48 +526,67 @@ private:
         return out;
     }
 
+    // Width of bold 16px text as SVG measures it (line ends as spaces).
     float Width(const std::wstring& s) {
         if (s.empty()) return 0;
+        if (const auto it = widths_.find(s); it != widths_.end()) return it->second;
         RichText t;
         t.text = s;
-        return b_.Measure(t, 0, true, kFont / b_.size()).w;
+        for (wchar_t& c : t.text) {
+            if (c == L'\n' || c == L'\r' || c == L'\t') c = L' ';
+        }
+        t.spans.push_back({0, static_cast<uint32_t>(t.text.size()), true, false});
+        const float w = b_.Measure(t, 0, true, kFont / b_.size()).w;
+        if (widths_.size() < 100000) widths_[s] = w;
+        return w;
     }
 
-    // Mermaid's wrapLabel: words into lines of at most 430 (bold 16px),
-    // words too long broken.
+    // Mermaid's wrapLabel (bold 16px, at most 430): words (split at
+    // spaces, empty ones dropped) into lines; a word too long broken with
+    // hyphens; a label with <br> left as it is (its lines).
     std::vector<std::wstring> Wrap(const std::wstring& text) {
         if (const auto it = wrapped_.find(text); it != wrapped_.end()) return it->second;
         std::vector<std::wstring> lines;
-        std::wstring line;
-        auto place = [&](const std::wstring& word) {
-            const float w = Width(word);
-            if (w <= kTextMax) {
-                line = word;
-                return;
+        bool has_break = false;
+        for (size_t k = 0; k < text.size() && !has_break; ++k) has_break = BreakAt(text, k) != 0;
+        if (text.empty() || has_break) {
+            lines = Lines(text);
+        } else {
+            std::vector<std::wstring> words;
+            for (size_t s = 0; s <= text.size();) {
+                size_t e = text.find(L' ', s);
+                if (e == std::wstring::npos) e = text.size();
+                if (e > s) words.push_back(text.substr(s, e - s));
+                s = e + 1;
             }
-            // (In pieces of about a line's worth of characters.)
-            const size_t per = std::max<size_t>(1, static_cast<size_t>(static_cast<float>(word.size()) * kTextMax / w));
-            size_t k = 0;
-            for (; k + per < word.size(); k += per) lines.push_back(word.substr(k, per));
-            line = word.substr(k);
-        };
-        size_t s = 0;
-        for (bool first = true;; first = false) {
-            size_t e = text.find(L' ', s);
-            if (e == std::wstring::npos) e = text.size();
-            const std::wstring word = text.substr(s, e - s);
-            if (first) {
-                place(word);
-            } else if (Width(line + L" " + word) <= kTextMax) {
-                line += L" " + word;
-            } else {
-                lines.push_back(line);
-                place(word);
+            std::wstring next;
+            for (size_t i = 0; i < words.size(); ++i) {
+                const std::wstring& word = words[i];
+                const float word_w = Width(word + L" "), next_w = Width(next);
+                if (word_w > kTextMax) {
+                    lines.push_back(next);
+                    std::wstring line;
+                    for (size_t k = 0; k < word.size(); ++k) {
+                        const std::wstring longer = line + word[k];
+                        if (Width(longer) >= kTextMax) {
+                            lines.push_back(k + 1 == word.size() ? longer : longer + L"-");
+                            line.clear();
+                        } else {
+                            line = longer;
+                        }
+                    }
+                    next = line;
+                } else if (next_w + word_w >= kTextMax) {
+                    lines.push_back(next);
+                    next = word;
+                } else {
+                    next = next.empty() ? word : next + L" " + word;
+                }
+                if (i + 1 == words.size()) lines.push_back(next);
+                if (lines.size() > 400) break;
             }
-            if (e >= text.size() || lines.size() > 200) break;
-            s = e + 1;
+            std::erase_if(lines, [](const std::wstring& l) { return l.empty(); });
         }
-        lines.push_back(line);
         wrapped_[text] = lines;
         return lines;
     }
@@ -547,33 +601,43 @@ private:
         else kind = 4;
         b_.Rect(D2D1::RectF(box.x, y, box.x + box.w, y + box.h), 3, Role(static_cast<uint8_t>(kDgEventModel + kind * 2)),
                 Role(static_cast<uint8_t>(kDgEventModel + kind * 2 + 1)));
-        // Its text: the name in bold, centred; the data below, left; both
-        // in the middle of the box.
-        RichText name;
-        name.text = Join(box.name, L"\n");
-        name.spans.push_back({0, static_cast<uint32_t>(name.text.size()), true, false});
-        M n = b_.Measure(name, 0, true, kFont / b_.size());
-        LineHeight(n, kFont * 1.15f);
-        M c;
-        float code_h = 0;
+        // Its text: the name in bold, centred; the data below, left, in
+        // 16px monospace; both in the middle of the box. (Laid out once per
+        // text: many frames may show the same.)
+        const std::wstring name_text = Join(box.name, L"\n");
+        auto named = names_.find(name_text);
+        if (named == names_.end()) {
+            RichText name;
+            name.text = name_text;
+            name.spans.push_back({0, static_cast<uint32_t>(name.text.size()), true, false});
+            M m = b_.Measure(name, 0, true, kFont / b_.size());
+            LineHeight(m, kFont * 1.15f);
+            named = names_.emplace(name_text, m).first;
+        }
+        const M& n = named->second;
+        const M* c = nullptr;
         if (box.has_code && !box.code.empty()) {
-            RichText code;
-            code.text = box.code;
-            RichText::Span s{0, static_cast<uint32_t>(code.text.size())};
-            s.mono = true;
-            code.spans.push_back(s);
-            c = b_.Measure(code, 0, false, 13.f / b_.size(), false);
-            LineHeight(c, 13 * 1.15f);
-            code_h = c.h;
+            auto coded = codes_.find(box.code);
+            if (coded == codes_.end()) {
+                RichText code;
+                code.text = box.code;
+                RichText::Span s{0, static_cast<uint32_t>(code.text.size())};
+                s.mono = true;
+                code.spans.push_back(s);
+                M m = b_.Measure(code, 0, false, kFont / b_.size(), false);
+                LineHeight(m, kFont * 1.15f);
+                coded = codes_.emplace(box.code, m).first;
+            }
+            c = &coded->second;
         }
         const float inner_x = box.x + kBoxPad, inner_w = box.w - 2 * kBoxPad;
-        const float total = n.h + (box.has_code ? kFont * 1.15f + code_h : 0);
+        const float total = n.h + (box.has_code ? kFont * 1.15f + (c ? c->h : 0.f) : 0);
         float top = y + kBoxPad + (box.h - 2 * kBoxPad - total) / 2;
         const uint32_t pos = f.entity.pos, len = f.entity.len;
         b_.Text(n, D2D1::Point2F(inner_x + (inner_w - n.w) / 2, top), Role(kDgText), pos, len);
-        if (c.layout) {
+        if (c && c->layout) {
             top += n.h + kFont * 1.15f;
-            b_.Text(c, D2D1::Point2F(inner_x, top), Role(kDgText));
+            b_.Text(*c, D2D1::Point2F(inner_x, top), Role(kDgText));
         }
     }
 
@@ -587,6 +651,14 @@ private:
     const Parser& p_;
     SceneBuilder& b_;
     std::map<std::wstring, std::vector<std::wstring>> wrapped_;
+    std::map<std::wstring, float> widths_;
+    std::map<std::wstring, M> names_, codes_;
+    struct Content_ {
+        float w = 0, h = 0;
+        std::wstring code;
+        bool has_code = false;
+    };
+    std::map<std::wstring, Content_> contents_;
 };
 
 }  // namespace

@@ -97,6 +97,29 @@ Source Preprocess(std::wstring_view text) {
 }
 
 // A number as JavaScript writes it (3, 0.5, 1e+21).
+// ---[\t ]*\r?\n(?:[\S\s]*?\r?\n)?---(?:\r?\n|(?!\S))
+size_t YamlBlockLength(std::wstring_view s, size_t pos) {
+    if (s.substr(pos, 3) != L"---") return 0;
+    size_t k = pos + 3;
+    while (k < s.size() && (s[k] == L' ' || s[k] == L'\t')) ++k;
+    if (k < s.size() && s[k] == L'\r') ++k;
+    if (k >= s.size() || s[k] != L'\n') return 0;
+    // The closing line: at the start of any later line.
+    for (size_t q = k + 1; q <= s.size();) {
+        if (s.substr(q, 3) == L"---") {
+            size_t e = q + 3;
+            if (e >= s.size()) return e - pos;
+            if (s[e] == L'\n') return e + 1 - pos;
+            if (s[e] == L'\r' && e + 1 < s.size() && s[e + 1] == L'\n') return e + 2 - pos;
+            if (std::iswspace(s[e])) return e - pos;
+        }
+        const size_t nl = s.find(L'\n', q);
+        if (nl == std::wstring_view::npos) break;
+        q = nl + 1;
+    }
+    return 0;
+}
+
 std::wstring JsNumber(double v) {
     if (std::isnan(v)) return L"NaN";
     if (std::isinf(v)) return v > 0 ? L"Infinity" : L"-Infinity";

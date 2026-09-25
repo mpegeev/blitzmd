@@ -1079,29 +1079,66 @@ private:
             const size_t a = static_cast<size_t>(e.from.index), z = static_cast<size_t>(e.to.index);
             const D2D1_POINT_2F ca = canon[a], cz = canon[z];
             const int la = layer[a], lz = layer[z];
-            std::vector<D2D1_POINT_2F> q{ca};
-            if (la < lz) {
-                if (std::fabs(ca.x - cz.x) >= 0.5f) {
-                    if (column_of(a) == column_of(z)) {
-                        const float mid = flip(layer_mid[static_cast<size_t>(la)] + layer_h[static_cast<size_t>(la)] / 2 + kLayerGap / 2);
-                        q.push_back(D2D1::Point2F(ca.x, mid));
-                        q.push_back(D2D1::Point2F(cz.x, mid));
-                    } else if (incoming[z] > 1) {
-                        // (Into a node others reach too: across in the gap
-                        // before it, where they meet.)
-                        const float mid = flip(layer_mid[static_cast<size_t>(lz)] - layer_h[static_cast<size_t>(lz)] / 2 - kLayerGap / 2);
-                        q.push_back(D2D1::Point2F(ca.x, mid));
-                        q.push_back(D2D1::Point2F(cz.x, mid));
-                    } else {
-                        q.push_back(D2D1::Point2F(cz.x, ca.y));
+            // Routes in order of preference; the first that passes no other
+            // node is taken (else the last).
+            using Route = std::vector<D2D1_POINT_2F>;
+            auto blocked = [&](const Route& r) {
+                for (size_t k = 1; k < r.size(); ++k) {
+                    const float x0 = std::min(r[k - 1].x, r[k].x), x1 = std::max(r[k - 1].x, r[k].x);
+                    const float y0 = std::min(r[k - 1].y, r[k].y), y1 = std::max(r[k - 1].y, r[k].y);
+                    for (size_t i = 0; i < n; ++i) {
+                        if (i == a || i == z) continue;
+                        const float hw = across_size(i) / 2 + 4, hh = along_size(i) / 2 + 4;
+                        if (x1 >= canon[i].x - hw && x0 <= canon[i].x + hw && y1 >= canon[i].y - hh && y0 <= canon[i].y + hh) return true;
                     }
                 }
-            } else if (la > lz) {
-                const float out = std::min(ca.x - across_size(a) / 2, cz.x - across_size(z) / 2) - kInset;
-                q.push_back(D2D1::Point2F(out, ca.y));
-                q.push_back(D2D1::Point2F(out, cz.y));
+                return false;
+            };
+            auto via = [&](float along) { return Route{ca, D2D1::Point2F(ca.x, along), D2D1::Point2F(cz.x, along), cz}; };
+            const float after = flip(layer_mid[static_cast<size_t>(la)] + layer_h[static_cast<size_t>(la)] / 2 + kLayerGap / 2);
+            const float before = flip(layer_mid[static_cast<size_t>(lz)] - layer_h[static_cast<size_t>(lz)] / 2 - kLayerGap / 2);
+            // Beside everything between the two (right, or left going back).
+            auto beside = [&](bool right) {
+                const int lo = std::min(la, lz), hi = std::max(la, lz);
+                float out = right ? std::max(ca.x + across_size(a) / 2, cz.x + across_size(z) / 2) : std::min(ca.x - across_size(a) / 2, cz.x - across_size(z) / 2);
+                const float x0 = std::min(ca.x, cz.x), x1 = std::max(ca.x, cz.x);
+                for (size_t i = 0; i < n; ++i) {
+                    if (layer[i] <= lo || layer[i] >= hi || canon[i].x + across_size(i) / 2 < x0 - 1 || canon[i].x - across_size(i) / 2 > x1 + 1) continue;
+                    out = right ? std::max(out, canon[i].x + across_size(i) / 2) : std::min(out, canon[i].x - across_size(i) / 2);
+                }
+                out += right ? kInset : -kInset;
+                return Route{ca, D2D1::Point2F(out, ca.y), D2D1::Point2F(out, cz.y), cz};
+            };
+            std::vector<Route> routes;
+            if (la < lz) {
+                if (std::fabs(ca.x - cz.x) < 0.5f) routes.push_back({ca, cz});
+                if (column_of(a) == column_of(z)) {
+                    routes.push_back(via(after));
+                } else if (incoming[z] > 1) {
+                    // (Into a node others reach too: across in the gap
+                    // before it, where they meet.)
+                    routes.push_back(via(before));
+                    routes.push_back({ca, D2D1::Point2F(cz.x, ca.y), cz});
+                } else {
+                    routes.push_back({ca, D2D1::Point2F(cz.x, ca.y), cz});
+                    routes.push_back(via(before));
+                }
+                routes.push_back(via(after));
+                routes.push_back(beside(true));
+            } else if (la == lz) {
+                routes.push_back({ca, cz});
+                routes.push_back(via(after));
+            } else {
+                routes.push_back(beside(false));
             }
-            q.push_back(cz);
+            const Route* chosen = &routes.back();
+            for (const Route& r : routes) {
+                if (!blocked(r)) {
+                    chosen = &r;
+                    break;
+                }
+            }
+            const Route q = *chosen;
             std::vector<D2D1_POINT_2F> pts;
             for (const D2D1_POINT_2F& k : q) pts.push_back(page(k));
             pts.front() = Clip(e.from, pts[1]);

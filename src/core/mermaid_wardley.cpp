@@ -90,6 +90,10 @@ private:
     Token Next() {
         for (;;) {
             if (p_ >= s_.size()) return Token{T::Eof, Text{L"", static_cast<uint32_t>(p_), 0}};
+            if (const size_t n = YamlBlockLength(s_, p_)) {
+                p_ += n;
+                continue;
+            }
             const wchar_t c = s_[p_];
             if (c == L' ' || c == L'\t') {
                 ++p_;
@@ -224,6 +228,8 @@ private:
             size_t e = p_ + 1;
             while (e < s_.size() && s_[e] != c) {
                 if (s_[e] == L'\\' && e + 1 < s_.size()) {
+                    // (\. : not a line end.)
+                    if (s_[e + 1] == L'\n' || s_[e + 1] == L'\r') mermaid::Fail(p_, Tr(L"Unclosed quote", L"Не закрыта кавычка"));
                     ++e;
                     const wchar_t k = s_[e];
                     v.push_back(k == L'n' ? L'\n' : k == L't' ? L'\t' : k == L'r' ? L'\r' : k == L'b' ? L'\b' : k == L'f' ? L'\f' : k == L'v' ? L'\v' : k == L'0' ? L'\0' : k);

@@ -101,7 +101,11 @@ private:
         if (q != L'"' && (q != L'\'' || d_ == Dialect::Abnf)) return 0;
         size_t e = at + 1;
         while (e < s_.size() && s_[e] != q) {
-            if (s_[e] == L'\\' && d_ != Dialect::Abnf) ++e;
+            if (s_[e] == L'\\' && d_ != Dialect::Abnf) {
+                // (\. : not a line end.)
+                if (e + 1 >= s_.size() || s_[e + 1] == L'\n' || s_[e + 1] == L'\r') return 0;
+                ++e;
+            }
             ++e;
         }
         return e < s_.size() ? e + 1 - at : 0;
@@ -119,6 +123,10 @@ private:
     }
     // Hidden: blanks, %% comments, /* */ (calls, EBNF), (* *) (EBNF), # (PEG), ; (ABNF).
     bool Skip() {
+        if (const size_t n = YamlBlockLength(s_, p_)) {
+            p_ += n;
+            return true;
+        }
         const wchar_t c = s_[p_];
         if (c == L' ' || c == L'\t' || c == L'\r' || c == L'\n') {
             ++p_;
@@ -227,10 +235,7 @@ private:
                 while (e < s_.size() && Digit(s_[e])) ++e;
                 return Make(T::Repeat, e - p_, p_, e);
             }
-            if (e > p_) {
-                if (e - p_ > 9) mermaid::Fail(p_, Tr(L"The number is too large", L"Слишком большое число"));
-                return Make(T::Exact, e - p_, p_, e);
-            }
+            if (e > p_) return Make(T::Exact, e - p_, p_, e);
         }
         if (d_ != Dialect::Abnf && d_ != Dialect::Peg) {
             if (const size_t n = BlockComment(L"/*", L"*/")) {
@@ -640,8 +645,10 @@ private:
         case Node::Terminal:
         case Node::NonTerminal:
         case Node::Special: {
-            n.w = Measure(Shown(n)).w + kPad * 2;
-            n.h = kTextH + kPad * 2;
+            // (No text: SVG measures nothing, not even a line.)
+            const std::wstring shown = Shown(n);
+            n.w = (shown.empty() ? 0 : Measure(shown).w) + kPad * 2;
+            n.h = (shown.empty() ? 0 : kTextH) + kPad * 2;
             n.up = n.h / 2;
             break;
         }
@@ -684,7 +691,19 @@ private:
         }
     }
 
-    static std::wstring Shown(const Node& n) { return n.kind == Node::Special ? L"? " + n.text.raw + L" ?" : n.text.raw; }
+    // The text as SVG shows it: line ends and tabs as spaces, runs of them
+    // one, none at the ends.
+    static std::wstring Shown(const Node& n) {
+        const std::wstring raw = n.kind == Node::Special ? L"? " + n.text.raw + L" ?" : n.text.raw;
+        std::wstring out;
+        for (const wchar_t c : raw) {
+            const bool blank = c == L' ' || c == L'\t' || c == L'\n' || c == L'\r';
+            if (!blank) out.push_back(c);
+            else if (!out.empty() && out.back() != L' ') out.push_back(L' ');
+        }
+        if (!out.empty() && out.back() == L' ') out.pop_back();
+        return out;
+    }
 
     // A path of lines and quarter arcs (SVG's A with radius kArc).
     class Path {
@@ -731,7 +750,9 @@ private:
             if (n.kind == Node::Terminal) b_.Rect(r, 10, Role(static_cast<uint8_t>(kDgFillType + 1)), Role(rr), static_cast<float>(kStroke));
             else if (n.kind == Node::NonTerminal) b_.Rect(r, 0, Role(kDgNodeFill), Role(kDgPrimaryBorder), static_cast<float>(kStroke));
             else b_.Rect(r, 0, Role(static_cast<uint8_t>(rr + 2)), Role(static_cast<uint8_t>(rr + 3)), static_cast<float>(kStroke), 1);
-            const M m = Measure(Shown(n));
+            const std::wstring shown = Shown(n);
+            if (shown.empty()) break;
+            const M m = Measure(shown);
             const double baseline = oy + n.h / 2 + 0.3 * kFont;
             const bool shown_as_is = n.kind != Node::Special;
             b_.Text(m, P(ox + n.w / 2 - m.w / 2, baseline - 1.17 * kFont), n.kind == Node::Terminal ? Role(static_cast<uint8_t>(rr + 1)) : Role(kDgText),

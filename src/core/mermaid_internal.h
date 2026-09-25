@@ -80,6 +80,10 @@ bool IsWordChar(wchar_t c);
 // A number as JavaScript writes it (3, 0.5, 1e+21, Infinity).
 std::wstring JsNumber(double v);
 
+// Langium grammars hide a YAML block (--- lines ---) anywhere: its length
+// at `pos`, or 0.
+size_t YamlBlockLength(std::wstring_view s, size_t pos);
+
 // "Line 3: message".
 std::wstring FormatError(std::wstring_view source, const ParseError& e);
 
