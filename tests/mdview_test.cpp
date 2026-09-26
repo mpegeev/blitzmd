@@ -109,6 +109,42 @@ double WorkingSetMb() {
     return static_cast<double>(pmc.WorkingSetSize) / (1024.0 * 1024.0);
 }
 
+// The `modal` test: a message-only window on the UI thread that closes the
+// viewer the way Total Commander's ListCloseWindow does, while one of the
+// viewer's modal loops (a menu, a message box) is running.
+struct ModalTest {
+    using CloseFn = void(__stdcall*)(HWND);
+    static inline CloseFn close = nullptr;
+    static inline HWND viewer = nullptr;
+    static constexpr UINT kClose = WM_APP, kEndMenu = WM_APP + 1;
+    static LRESULT CALLBACK Proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+        if (m == kClose) {
+            if (IsWindow(viewer)) close(viewer);
+            return 0;
+        }
+        if (m == kEndMenu) {
+            EndMenu();
+            return 0;
+        }
+        return DefWindowProcW(h, m, w, l);
+    }
+    // A visible dialog (message box) of the thread, or nullptr.
+    static HWND FindDialog(DWORD thread) {
+        HWND found = nullptr;
+        EnumThreadWindows(
+            thread,
+            [](HWND h, LPARAM lp) -> BOOL {
+                wchar_t cls[16] = {};
+                GetClassNameW(h, cls, 16);
+                if (wcscmp(cls, L"#32770") != 0 || !IsWindowVisible(h)) return TRUE;
+                *reinterpret_cast<HWND*>(lp) = h;
+                return FALSE;
+            },
+            reinterpret_cast<LPARAM>(&found));
+        return found;
+    }
+};
+
 // Records where a text layout puts its inline objects (nothing is drawn).
 class ObjectRecorder final : public IDWriteTextRenderer {
 public:
@@ -477,6 +513,152 @@ int main(int argc, char** ansi_argv) {
         FreeLibrary(dll);
         std::printf("plugin OK\n");
         return 0;
+    }
+    if (cmd == "modal" && argc >= 4) {
+        // modal <mdview.wlx64> <out-dir>: Total Commander closes the viewer
+        // while one of its modal loops runs: the context menu, and the "Run
+        // it?" prompt of a link to a script. The plugin must not touch the
+        // deleted viewer afterwards. A release build notices when the script
+        // runs anyway; touching the freed viewer after the menu shows up in an
+        // ASan build only.
+        HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
+        using SetParamsFn = void(__stdcall*)(void*);
+        using LoadFn = HWND(__stdcall*)(HWND, const wchar_t*, int);
+        auto set_params = dll ? reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams")) : nullptr;
+        auto load = dll ? reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW")) : nullptr;
+        ModalTest::close = dll ? reinterpret_cast<ModalTest::CloseFn>(GetProcAddress(dll, "ListCloseWindow")) : nullptr;
+        if (!set_params || !load || !ModalTest::close) {
+            std::fprintf(stderr, "cannot load plugin\n");
+            return 1;
+        }
+        const std::wstring dir = FullPath(argv[3]) + L"\\";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        DeleteFileW((dir + L"mdview.ini").c_str());
+        struct {
+            int size;
+            DWORD lo, hi;
+            char ini[MAX_PATH];
+        } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
+        strncpy_s(dp.ini, WideToUtf8(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        set_params(&dp);
+        auto write = [&](const wchar_t* name, const std::string& text) {
+            HANDLE f = CreateFileW((dir + name).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            if (f == INVALID_HANDLE_VALUE) return;
+            DWORD n = 0;
+            WriteFile(f, text.data(), static_cast<DWORD>(text.size()), &n, nullptr);
+            CloseHandle(f);
+        };
+        // A link to a script that fills the page: a click anywhere asks first.
+        std::string md = "[";
+        for (int i = 0; i < 400; ++i) md += "run this ";
+        md += "](script.bat)\n";
+        write(L"modal.md", md);
+        // The prompt is answered Yes after the viewer is gone: the script must
+        // not run then (it would leave ran.txt behind).
+        write(L"script.bat", "@echo ran>\"%~dp0ran.txt\"\r\n");
+        DeleteFileW((dir + L"ran.txt").c_str());
+
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"MdViewModalHost";
+        RegisterClassW(&wc);
+        WNDCLASSW hc{};
+        hc.lpfnWndProc = &ModalTest::Proc;
+        hc.hInstance = wc.hInstance;
+        hc.lpszClassName = L"MdViewModalHelper";
+        RegisterClassW(&hc);
+        HWND helper = CreateWindowExW(0, hc.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, hc.hInstance,
+                                      nullptr);
+        auto pump = [](int ms) {
+            const double end = NowMs() + ms;
+            MSG msg;
+            while (NowMs() < end) {
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                Sleep(5);
+            }
+        };
+        const DWORD ui = GetCurrentThreadId();
+        int failures = 0;
+        // Opens a viewer, lets `act` start a modal loop while `watch` (on
+        // another thread) waits for it, closes the viewer inside it and then
+        // ends the loop with `end` until `act` has returned.
+        auto scenario = [&](const char* name, auto&& act, auto&& in_loop, auto&& end) {
+            HWND host = CreateWindowExW(0, wc.lpszClassName, L"modal test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40,
+                                        1000, 760, nullptr, nullptr, wc.hInstance, nullptr);
+            SetForegroundWindow(host);
+            ModalTest::viewer = load(host, (dir + L"modal.md").c_str(), 0);
+            if (!ModalTest::viewer) {
+                std::printf("FAIL: %s: ListLoadW failed\n", name);
+                ++failures;
+                DestroyWindow(host);
+                return;
+            }
+            pump(300);
+            std::atomic<bool> seen{false}, done{false};
+            std::thread watch([&] {
+                for (int i = 0; i < 200 && !seen; ++i) {
+                    if (in_loop()) seen = true;
+                    else Sleep(25);
+                }
+                // Processed inside the modal loop (it retrieves messages), before
+                // what `end` posts to the same thread's queue.
+                if (seen) PostMessageW(helper, ModalTest::kClose, 0, 0);
+                while (!done) {
+                    end();
+                    Sleep(50);
+                }
+            });
+            act();
+            done = true;
+            watch.join();
+            if (!seen) {
+                std::printf("FAIL: %s: the modal loop was not seen\n", name);
+                ++failures;
+            } else if (IsWindow(ModalTest::viewer)) {
+                std::printf("FAIL: %s: the viewer was not closed\n", name);
+                ++failures;
+            } else {
+                std::printf("%s: closed inside the modal loop, survived\n", name);
+            }
+            if (IsWindow(ModalTest::viewer)) ModalTest::close(ModalTest::viewer);
+            DestroyWindow(host);
+            pump(100);
+        };
+        scenario(
+            "context menu",
+            [&] {
+                SetFocus(ModalTest::viewer);
+                SendMessageW(ModalTest::viewer, WM_CONTEXTMENU, reinterpret_cast<WPARAM>(ModalTest::viewer),
+                             MAKELPARAM(-1, -1));
+            },
+            [&] {
+                GUITHREADINFO gi{sizeof gi};
+                return GetGUIThreadInfo(ui, &gi) && (gi.flags & GUI_POPUPMENUMODE);
+            },
+            [&] { PostMessageW(helper, ModalTest::kEndMenu, 0, 0); });
+        scenario(
+            "link to a script",
+            [&] {
+                SendMessageW(ModalTest::viewer, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(500, 200));
+                SendMessageW(ModalTest::viewer, WM_LBUTTONUP, 0, MAKELPARAM(500, 200));
+            },
+            [&] { return ModalTest::FindDialog(ui) != nullptr; },
+            [&] {
+                if (HWND box = ModalTest::FindDialog(ui)) PostMessageW(box, WM_COMMAND, IDYES, 0);
+            });
+        pump(1500);  // a script started anyway has written its file by now
+        if (GetFileAttributesW((dir + L"ran.txt").c_str()) != INVALID_FILE_ATTRIBUTES) {
+            std::printf("FAIL: link to a script: it ran after the viewer was closed\n");
+            ++failures;
+        }
+        DestroyWindow(helper);
+        FreeLibrary(dll);
+        std::printf(failures ? "modal: %d FAILED\n" : "modal OK\n", failures);
+        return failures ? 1 : 0;
     }
     if (cmd == "zoom" && argc >= 5) {
         // zoom <mdview.wlx64> <file.md> <out-prefix>: zooms the first image of
