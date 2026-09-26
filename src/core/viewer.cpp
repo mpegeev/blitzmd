@@ -3,6 +3,7 @@
 #include <d2d1.h>
 #include <dwmapi.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <shlwapi.h>
 #include <windowsx.h>
 
@@ -97,6 +98,26 @@ bool IsImagePath(std::wstring_view p) {
         if (EqualsNoCase(ext, e)) return true;
     }
     return false;
+}
+
+// Opens exactly the file or folder `path` with its default verb. A path
+// string won't do: without an extension ShellExecute looks for `path` plus
+// each PATHEXT extension next to it and runs what it finds (a link to LICENSE
+// would run LICENSE.cmd); an item ID list names the item itself.
+bool OpenShellItem(HWND owner, const std::wstring& path) {
+    PIDLIST_ABSOLUTE pidl = nullptr;
+    if (FAILED(SHParseDisplayName(path.c_str(), nullptr, &pidl, 0, nullptr)) || !pidl) return false;
+    const std::wstring dir = DirectoryOf(path);
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof sei;
+    sei.fMask = SEE_MASK_IDLIST;
+    sei.hwnd = owner;
+    sei.lpIDList = pidl;
+    sei.lpDirectory = dir.empty() ? nullptr : dir.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+    const bool ok = ShellExecuteExW(&sei) != FALSE;
+    CoTaskMemFree(pidl);
+    return ok;
 }
 
 // Posted by the file watch (a thread-pool wait) to the viewer window.
@@ -1786,7 +1807,7 @@ void Viewer::NavigateTo(const std::wstring& path, const std::wstring& fragment) 
         if (MessageBoxW(self, msg.c_str(), L"mdview", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
         if (!Survived(self, this)) return;
     }
-    ShellExecuteW(hwnd_, L"open", path.c_str(), nullptr, DirectoryOf(path).c_str(), SW_SHOWNORMAL);
+    if (!OpenShellItem(hwnd_, path)) MessageBeep(MB_ICONWARNING);
 }
 
 void Viewer::GoBack() {
