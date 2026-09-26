@@ -51,6 +51,7 @@ bool Hex(wchar_t c) { return Digit(c) || (c >= L'a' && c <= L'f') || (c >= L'A' 
 
 constexpr size_t kMaxItems = 5000;  // parts of all the rules
 constexpr int kMaxDepth = 40;
+constexpr int kMaxHeight = 3 * kMaxDepth;  // levels of a rule's tree (a group: a choice, a sequence, a repeat)
 
 // The lexer of each dialect: keywords first (longest first, a longer match
 // of another token wins), then its terminals in order.
@@ -158,8 +159,14 @@ private:
     }
     size_t BlockComment(std::wstring_view open, std::wstring_view close) const {
         if (!Starts(open)) return 0;
+        size_t& none = no_close_[close == L"*)" ? 0 : 1];  // (none after here: found out once)
+        if (p_ >= none) return 0;
         const size_t e = s_.find(close, p_ + open.size());
-        return e == std::wstring_view::npos ? 0 : e + close.size() - p_;
+        if (e == std::wstring_view::npos) {
+            none = p_;
+            return 0;
+        }
+        return e + close.size() - p_;
     }
 
     Token Next() {
@@ -270,6 +277,7 @@ private:
     std::wstring_view s_;
     size_t p_;
     Dialect d_;
+    mutable size_t no_close_[2] = {std::wstring_view::npos, std::wstring_view::npos};  // "*)", "*/" from here on
 };
 
 class Parser {
@@ -307,6 +315,10 @@ public:
             }
             Expect(L";");
             if (rules.size() >= kMaxNodes) TooLarge();
+            // (Each level of brackets is checked, but the ? * + after a group
+            // wrap it outside that check: 40 levels made a tree 800 deep, too
+            // deep for the recursion that sizes and draws it.)
+            if (Height(r.def) > kMaxHeight) Fail(r.name.pos, Tr(L"Nested too deeply", L"Слишком глубокая вложенность"));
             rules.push_back(std::move(r));
         }
     }
@@ -326,6 +338,18 @@ private:
     void Count(size_t at, int depth) {
         if (++items_ > kMaxItems) TooLarge();
         if (depth > kMaxDepth) Fail(at, Tr(L"Nested too deeply", L"Слишком глубокая вложенность"));
+    }
+    // Levels of a tree, without recursing.
+    static int Height(const Node& root) {
+        int most = 0;
+        std::vector<std::pair<const Node*, int>> todo{{&root, 1}};
+        while (!todo.empty()) {
+            const auto [n, level] = todo.back();
+            todo.pop_back();
+            most = std::max(most, level);
+            for (const Node& k : n->kids) todo.push_back({&k, level + 1});
+        }
+        return most;
     }
     static Node Leaf(Node::Kind k, Text t) {
         Node n;

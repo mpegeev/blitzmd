@@ -7,7 +7,9 @@
 #include <ctime>
 #include <cwchar>
 #include <map>
+#include <functional>
 #include <optional>
+#include <queue>
 
 #include "core/mermaid_internal.h"
 
@@ -75,7 +77,7 @@ std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format, b
     long long year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
     bool has_year = false, has_month = false, has_day = false;
     double fraction = 0;
-    bool pm = false, ampm = false;
+    bool pm = false, meridiem = false, twelve = false;
     size_t i = 0, f = 0;
     auto digits = [&](size_t min, size_t max, long long* out) {
         size_t n = 0;
@@ -148,7 +150,7 @@ std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format, b
             if (!(rest.starts_with(L"HH") ? two(&hour) : one(&hour))) return std::nullopt;
         } else if (token(L"hh") || token(L"h")) {
             if (!(rest.starts_with(L"hh") ? two(&hour) : one(&hour))) return std::nullopt;
-            ampm = true;
+            twelve = true;
         } else if (token(L"mm") || token(L"m")) {
             if (!(rest.starts_with(L"mm") ? two(&minute) : one(&minute))) return std::nullopt;
         } else if (token(L"ss") || token(L"s")) {
@@ -181,7 +183,7 @@ std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format, b
             const std::wstring_view ap = s.substr(i, 2);
             if (EqualsNoCase(ap, L"pm")) pm = true;
             else if (!EqualsNoCase(ap, L"am")) return std::nullopt;
-            ampm = true;
+            meridiem = true;
             i += 2;
         } else if (token(L"X") || token(L"x")) {
             // Unix time, in seconds or milliseconds.
@@ -208,9 +210,10 @@ std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format, b
         }
     }
     if (i != s.size()) return std::nullopt;
-    if (ampm) {
-        if (hour < 1 || hour > 12) return std::nullopt;
-        hour = hour % 12 + (pm ? 12 : 0);
+    if (twelve && (hour < 1 || hour > 12)) return std::nullopt;
+    if (meridiem) {  // (as dayjs: 12 AM is 0, PM adds 12 below 12; hh 12 without A stays 12)
+        if (pm && hour < 12) hour += 12;
+        else if (!pm && hour == 12) hour = 0;
     }
     if (!has_year || !has_month || !has_day) {
         const Civil today = CivilFromDays(static_cast<long long>(std::floor(LocalNow() / kDay)));
@@ -608,56 +611,67 @@ private:
         }
         const double fallback = earliest ? *earliest : Today();
         const bool excludes = AnyExcluded();
-        for (;;) {
-            bool progress = false, missing = false;
-            for (size_t k = 0; k < tasks.size(); ++k) {
+        // Each task once those it waits for are done (the one before it
+        // without a start, its "after" and "until" tasks): ready ones in
+        // order. (Passes over all of them until none changed took a pass
+        // per task written before the one it waits for.)
+        std::vector<std::vector<size_t>> waiters(tasks.size());
+        std::vector<size_t> waiting(tasks.size(), 0);
+        for (size_t k = 0; k < tasks.size(); ++k) {
+            const Task& t = tasks[k];
+            std::vector<size_t> on;
+            if (t.start_raw.empty()) {
+                if (k > 0) on.push_back(k - 1);
+            } else if (keyword(t.start_raw, L"after")) {
+                on = refs(std::wstring_view(t.start_raw).substr(6));
+            }
+            if (keyword(t.end_raw, L"until")) {
+                const std::vector<size_t> until = refs(std::wstring_view(t.end_raw).substr(6));
+                on.insert(on.end(), until.begin(), until.end());
+            }
+            for (const size_t a : on) waiters[a].push_back(k);
+            waiting[k] = on.size();
+        }
+        std::priority_queue<size_t, std::vector<size_t>, std::greater<size_t>> ready;
+        for (size_t k = 0; k < tasks.size(); ++k) {
+            if (!waiting[k]) ready.push(k);
+        }
+        while (!ready.empty()) {
+            const size_t k = ready.top();
+            ready.pop();
+            {
                 Task& t = tasks[k];
-                if (t.resolved) continue;
                 // Start.
-                std::optional<double> start;
+                double start = 0;
                 if (t.start_raw.empty()) {
-                    if (k == 0) start = fallback;
-                    else if (tasks[k - 1].resolved) start = tasks[k - 1].end;
+                    start = k == 0 ? fallback : tasks[k - 1].end;
                 } else if (keyword(t.start_raw, L"after")) {
-                    bool ready = true;
                     std::optional<double> latest;
-                    for (size_t a : refs(std::wstring_view(t.start_raw).substr(6))) {
-                        if (!tasks[a].resolved) ready = false;
-                        else latest = latest ? std::max(*latest, tasks[a].end) : tasks[a].end;
-                    }
-                    if (ready) start = latest ? *latest : Today();
+                    for (size_t a : refs(std::wstring_view(t.start_raw).substr(6))) latest = latest ? std::max(*latest, tasks[a].end) : tasks[a].end;
+                    start = latest ? *latest : Today();
                 } else {
-                    start = Date(t.start_raw);
-                    if (!start) mermaid::Fail(t.line, Tr(L"Not a date in dateFormat: ", L"Дата не в формате dateFormat: ") + t.start_raw);
-                }
-                if (!start) {
-                    missing = true;
-                    continue;
+                    const std::optional<double> date = Date(t.start_raw);
+                    if (!date) mermaid::Fail(t.line, Tr(L"Not a date in dateFormat: ", L"Дата не в формате dateFormat: ") + t.start_raw);
+                    start = *date;
                 }
                 // End.
-                double end = *start;
+                double end = start;
                 bool at_date = false;
                 if (keyword(t.end_raw, L"until")) {
-                    bool ready = true;
                     std::optional<double> first_start;
                     for (size_t u : refs(std::wstring_view(t.end_raw).substr(6))) {
-                        if (!tasks[u].resolved) ready = false;
-                        else first_start = first_start ? std::min(*first_start, tasks[u].start) : tasks[u].start;
-                    }
-                    if (!ready) {
-                        missing = true;
-                        continue;
+                        first_start = first_start ? std::min(*first_start, tasks[u].start) : tasks[u].start;
                     }
                     end = first_start ? *first_start : Today();
                 } else if (auto date = ParseDate(t.end_raw, date_format)) {
                     end = *date + (inclusive_end_ ? kDay : 0.0);
                     at_date = ParseDate(t.end_raw, L"YYYY-MM-DD").has_value();
-                } else if (auto d = AddDuration(*start, t.end_raw)) {
+                } else if (auto d = AddDuration(start, t.end_raw)) {
                     end = *d;
                 }
                 if (!(std::abs(end) <= kMaxTime)) mermaid::Fail(t.line, Tr(L"The date is out of range", L"Дата вне допустимого диапазона"));
                 // (An end before the start stays: the next task starts there.)
-                t.start = *start;
+                t.start = start;
                 t.end = t.render_end = end;
                 // Excluded days push the end further, counted from the day
                 // after the start (Mermaid's checkTaskDates); the bar stops
@@ -672,14 +686,13 @@ private:
                     }
                 }
                 t.resolved = true;
-                progress = true;
             }
-            if (!missing) break;
-            if (!progress) {
-                for (const Task& t : tasks) {
-                    if (!t.resolved) mermaid::Fail(t.line, Tr(L"Tasks wait for each other in a circle", L"Задачи ждут друг друга по кругу"));
-                }
+            for (const size_t w : waiters[k]) {
+                if (--waiting[w] == 0) ready.push(w);
             }
+        }
+        for (const Task& t : tasks) {
+            if (!t.resolved) mermaid::Fail(t.line, Tr(L"Tasks wait for each other in a circle", L"Задачи ждут друг друга по кругу"));
         }
     }
 
