@@ -1548,6 +1548,10 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%zu formulas of %s laid out\n", doc->maths.size(), argv[2]);
+        if (doc->maths.empty()) {  // (a parser that stopped making formulas would pass otherwise)
+            std::printf("FAIL: no formula in %s\n", argv[2]);
+            ++failures;
+        }
         {
             // Only a formula too wide for its column makes a leaf scroll
             // horizontally: never plain text, centered images or tables.
@@ -1992,6 +1996,10 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%zu diagrams of %s laid out\n", doc->diagrams.size(), argv[2]);
+        if (doc->diagrams.empty()) {  // (a parser that stopped making diagrams would pass otherwise)
+            std::printf("FAIL: no diagram in %s\n", argv[2]);
+            ++failures;
+        }
         // Parsing: what is accepted, and errors with their line.
         struct Case {
             const wchar_t* src;
