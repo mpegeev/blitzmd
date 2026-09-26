@@ -1456,6 +1456,10 @@ void LayoutEngine::MinMaxWidth(Block* b, const Ctx& ctx, float& min_w, float& ma
     }
     float inset = 0;
     Ctx c = ctx;
+    // The alignment the blocks inside get, as in LayoutBlock: measured with
+    // another style, a leaf's layout was dropped by the next layout and
+    // measured again by this, a table in view never done refining (#146).
+    if (b->align != Align::Default && b->type != BlockType::TableCell) c.align = b->align;
     switch (b->type) {
     case BlockType::Quote:
         inset = m_.quote_bar + 2.f * m_.quote_pad;

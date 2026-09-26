@@ -4324,6 +4324,38 @@ int main(int argc, char** ansi_argv) {
             }
         }
         {
+            // A table with <div align> in its cells refines to the end, as the
+            // viewer's timer does it: the cells were measured with another
+            // style than laid out, so each layout dropped what the refinement
+            // measured and the timer never stopped (#146).
+            std::string md = "<table>\n";
+            for (int i = 0; i < 2000; ++i) md += "<tr><td><div align=\"center\">c" + std::to_string(i) + "</div></td><td>p</td></tr>\n";
+            md += "</table>\n";
+            auto table_doc = ParseMarkdown(md, L"C:\\heavy.md");
+            ComPtr<IDWriteFactory> dwf;
+            DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(dwf.GetAddressOf()));
+            Palette palette;
+            ImageStore images;
+            images.Attach(table_doc.get(), nullptr, false, false);
+            LayoutEngine engine;
+            engine.Init(dwf.Get(), &palette, &images);
+            engine.SetConfig(LayoutConfig{});
+            engine.SetDocument(table_doc.get());
+            engine.Layout(900.f, -700.f, 1400.f);  // (the viewer lays out a screen around the view exactly)
+            int rounds = 0;
+            for (; engine.HasEstimates() && rounds < 2000; ++rounds) {
+                engine.Refine(6.0);
+                engine.Layout(900.f, -700.f, 1400.f);
+            }
+            std::printf("  a table with <div align> in its cells: %s after %d rounds of refining\n",
+                        engine.HasEstimates() ? "still estimated" : "measured", rounds);
+            if (engine.HasEstimates()) {
+                std::printf("FAIL: refining never ends\n");
+                ++failures;
+            }
+            engine.SetDocument(nullptr);
+        }
+        {
             // More blocks than allowed: the parse stops there, and a warning
             // ends the document.
             ParseOptions opt;
