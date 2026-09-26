@@ -515,6 +515,30 @@ int main(int argc, char** ansi_argv) {
         std::printf("plugin OK\n");
         return 0;
     }
+    if (cmd == "longpath") {
+        // longpath <out-dir>: a picture next to a document in a directory
+        // whose path is longer than MAX_PATH loads.
+        std::wstring dir = L"\\\\?\\" + FullPath(argv[2]);
+        CreateDirectoryW(dir.c_str(), nullptr);
+        for (int i = 0; i < 6; ++i) {
+            dir += L"\\" + std::wstring(50, static_cast<wchar_t>(L'a' + i));
+            CreateDirectoryW(dir.c_str(), nullptr);
+        }
+        const std::wstring png = dir + L"\\pic.png";
+        if (!CopyFileW(FullPath("samples/gfm/img/transparent.png").c_str(), png.c_str(), FALSE)) {
+            std::printf("FAIL: cannot copy the picture (%lu)\n", GetLastError());
+            return 1;
+        }
+        auto doc = ParseMarkdown("![p](pic.png)\n", dir.substr(4) + L"\\doc.md");  // as TC passes it: no \\?\ prefix
+        ImageStore images;
+        images.Attach(doc.get(), nullptr, false, false);
+        images.LoadAll();
+        const ImageEntry* e = images.Entry(0);
+        const bool ok = e && e->state == ImageState::Ready && e->px_w > 0;
+        std::printf("picture at a path of %zu characters: %s\n", png.size() - 4, ok ? "loaded" : "not loaded");
+        std::printf(ok ? "longpath OK\n" : "FAIL: longpath\n");
+        return ok ? 0 : 1;
+    }
     if (cmd == "remote" && argc >= 4) {
         // remote <mdview.wlx64> <out-dir>: a document with 60 pictures on a
         // server that doesn't answer (10.255.255.1): the downloads queue up in

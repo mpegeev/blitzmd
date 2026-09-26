@@ -109,7 +109,7 @@ bool DecodeBytes(IWICImagingFactory* wic, const std::string& bytes, Pixels& px, 
 
 bool ReadImageSize(IWICImagingFactory* wic, const std::wstring& path, UINT& w, UINT& h) {
     ComPtr<IWICBitmapDecoder> decoder;
-    if (FAILED(wic->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand,
+    if (FAILED(wic->CreateDecoderFromFilename(ExtendedPath(path).c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand,
                                               &decoder))) {
         return false;
     }
@@ -328,6 +328,7 @@ bool HttpGet(const std::wstring& url, std::string& out, const std::atomic<bool>&
     if (!WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &uc)) return false;
     std::wstring path(uc.lpszUrlPath ? std::wstring(uc.lpszUrlPath, uc.dwUrlPathLength) : L"/");
     if (uc.lpszExtraInfo) path.append(uc.lpszExtraInfo, uc.dwExtraInfoLength);
+    if (const size_t hash = path.find(L'#'); hash != std::wstring::npos) path.resize(hash);  // (never sent)
     const bool secure = uc.nScheme == INTERNET_SCHEME_HTTPS;
     HINTERNET conn = WinHttpConnect(session, host, uc.nPort, 0);
     if (!conn) return false;
@@ -739,7 +740,7 @@ void ImageStore::LoadAll() {
             }
         }
         if (!remote && !StartsWithNoCase(e.url, L"data:")) {
-            const DWORD attrs = GetFileAttributesW(e.url.c_str());
+            const DWORD attrs = GetFileAttributesW(ExtendedPath(e.url).c_str());  // (long paths too)
             if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
                 e.state = ImageState::Failed;
                 continue;
