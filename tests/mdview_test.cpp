@@ -4375,6 +4375,23 @@ int main(int argc, char** ansi_argv) {
             }
         }
         {
+            // A table of 4000 x 50 in view: all 200k cells were measured with
+            // text layouts, not only the rows near the view (#148).
+            std::string md = "|" + repeat(" h |", 50) + "\n|" + repeat(" - |", 50) + "\n";
+            for (int r = 0; r < 4000; ++r) md += "|" + repeat(" c" + std::to_string(r % 97) + " |", 50) + "\n";
+            auto table = ParseMarkdown(md, L"C:\\heavy.md");
+            OffscreenOptions o;
+            o.width = 900.f;
+            o.max_height = 800.f;
+            OffscreenStats stats;
+            const bool drawn = RenderToBitmap(*table, o, &stats) != nullptr;
+            std::printf("  a table of 4000 x 50: layout %.0f ms\n", stats.layout_ms);
+            if (!drawn || stats.layout_ms > 1000) {
+                std::printf("FAIL: a big table's cells are all measured (%.0f ms)\n", stats.layout_ms);
+                ++failures;
+            }
+        }
+        {
             // More blocks than allowed: the parse stops there, and a warning
             // ends the document.
             ParseOptions opt;
