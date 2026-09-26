@@ -485,6 +485,23 @@ private:
             float need;
         };
         std::vector<Span> spans;
+        // The messages that bring a created participant in and end a
+        // destroyed one, by Walk's rule: their text keeps clear of the box
+        // standing at their end.
+        std::vector<int> made_by(n, -1), ended_by(n, -1);
+        for (size_t k = 0; k < p_.items.size(); ++k) {
+            const Item& it = p_.items[k];
+            if (it.kind != ItemKind::Message || it.a == it.b) continue;
+            const size_t b = static_cast<size_t>(it.b);
+            const int created = p_.people[b].created_at;
+            if (made_by[b] < 0 && created >= 0 && created <= static_cast<int>(k)) made_by[b] = static_cast<int>(k);
+            for (const int d : {it.a, it.b}) {
+                const int at = p_.people[static_cast<size_t>(d)].destroyed_at;
+                if (ended_by[static_cast<size_t>(d)] < 0 && at >= 0 && at <= static_cast<int>(k)) {
+                    ended_by[static_cast<size_t>(d)] = static_cast<int>(k);
+                }
+            }
+        }
         for (size_t k = 0; k < p_.items.size(); ++k) {
             const Item& it = p_.items[k];
             const float tw = texts_[k].layout ? texts_[k].w : 0.f;
@@ -499,10 +516,14 @@ private:
                     else left_need[i] = std::max(left_need[i], tw / 2);
                 } else {
                     const size_t a = static_cast<size_t>(std::min(it.a, it.b)), b = static_cast<size_t>(std::max(it.a, it.b));
-                    // A participant created by it stands at its end: the
-                    // text keeps clear of that box too.
-                    const bool creates = p_.people[static_cast<size_t>(it.b)].created_at == static_cast<int>(k);
-                    spans.push_back({a, b, tw + 40 + (creates ? BoxHalf(static_cast<size_t>(it.b)) : 0.f)});
+                    // A participant it creates or ends has a box at its end:
+                    // the text keeps clear of that box too.
+                    float boxes = 0;
+                    if (made_by[static_cast<size_t>(it.b)] == static_cast<int>(k)) boxes += BoxHalf(static_cast<size_t>(it.b));
+                    for (const int d : {it.a, it.b}) {
+                        if (ended_by[static_cast<size_t>(d)] == static_cast<int>(k)) boxes += BoxHalf(static_cast<size_t>(d));
+                    }
+                    spans.push_back({a, b, tw + 40 + boxes});
                 }
             } else if (it.kind == ItemKind::Note) {
                 const float w = std::max(kNoteMin, tw + 20);

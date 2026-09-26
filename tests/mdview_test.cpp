@@ -2638,6 +2638,25 @@ int main(int argc, char** ansi_argv) {
                 ++failures;
             }
         }
+        {  // sequence: the text of a message that brings a created participant in
+           // (a note between) or ends a destroyed one keeps clear of its box
+            std::wstring error;
+            auto width = [&](const std::wstring& body) {
+                const auto scene = layout(L"sequenceDiagram\n" + body, &error);
+                return scene ? scene->width : 0.f;
+            };
+            const std::wstring text = L"A->>B: a very long message text that is quite wide indeed\n";
+            const float created = width(L"participant A\ncreate participant B\n" + text);
+            const float noted = width(L"participant A\ncreate participant B\nNote over A: n\n" + text);
+            const float plain = width(L"participant A\nparticipant B\nA->>B: x\n" + text);
+            const float destroyed = width(L"participant A\nparticipant B\nA->>B: x\ndestroy B\n" + text);
+            std::printf("  sequence widths: created %.0f, with a note %.0f; plain %.0f, destroyed %.0f\n", created, noted,
+                        plain, destroyed);
+            if (noted + 0.5f < created || destroyed < plain + 10) {
+                std::printf("FAIL: sequence: a message's text runs into a created or destroyed participant's box\n");
+                ++failures;
+            }
+        }
         {  // C4: a boundary declared again may not move into itself (the pair
            // used to drop out of the diagram, drawn in a heap at 0,0)
             std::wstring error;
