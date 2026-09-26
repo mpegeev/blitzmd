@@ -5,6 +5,7 @@
 #include <winhttp.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <list>
 #include <mutex>
@@ -310,7 +311,11 @@ HINTERNET HttpSession() {
     return session;
 }
 
-bool HttpGet(const std::wstring& url, std::string& out) {
+// `cancelled`: the viewer is gone. A download also gives up after a minute
+// in all (a server may trickle a byte at a time, each within the timeouts).
+bool HttpGet(const std::wstring& url, std::string& out, const std::atomic<bool>& cancelled) {
+    constexpr double kDeadlineMs = 60000;
+    const double deadline = NowMs() + kDeadlineMs;
     HINTERNET session = HttpSession();
     if (!session) return false;
     URL_COMPONENTS uc{};
@@ -341,7 +346,7 @@ bool HttpGet(const std::wstring& url, std::string& out) {
                 char buf[16384];
                 for (;;) {
                     DWORD got = 0;
-                    if (!WinHttpReadData(req, buf, sizeof buf, &got)) {
+                    if (cancelled || NowMs() > deadline || !WinHttpReadData(req, buf, sizeof buf, &got)) {
                         ok = false;
                         break;
                     }
@@ -411,6 +416,24 @@ private:
     std::unordered_map<std::wstring, std::list<Item>::iterator> map_;
     size_t total_ = 0;
 };
+
+// The image jobs' own thread pool: a document with hundreds of pictures
+// queues its jobs here instead of making the process pool start a thread
+// for each (they mostly wait for a download slot).
+PTP_POOL ImagePool() {
+    static const PTP_POOL pool = [] {
+        const PTP_POOL p = CreateThreadpool(nullptr);
+        if (p) {
+            SetThreadpoolThreadMaximum(p, 8);
+            if (!SetThreadpoolThreadMinimum(p, 1)) {
+                CloseThreadpool(p);
+                return PTP_POOL{};
+            }
+        }
+        return p;
+    }();
+    return pool;
+}
 
 // Limits concurrent downloads.
 class DownloadGate {
@@ -507,6 +530,7 @@ struct ImageStore::Impl {
         std::mutex mu;
         HWND hwnd = nullptr;
         std::vector<std::unique_ptr<Job>> done;
+        std::atomic<bool> cancelled{false};  // the document is gone: skip what hasn't run
     };
 
     const Document* doc = nullptr;
@@ -521,17 +545,18 @@ struct ImageStore::Impl {
     ComPtr<IWICImagingFactory> wic;
     ComPtr<IDWriteFactory> dw;
 
-    static void RunJob(Job& job) {
+    static void RunJob(Job& job, const std::atomic<bool>& cancelled) {
+        if (cancelled) return;
         const bool com = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
         std::shared_ptr<const std::string> bytes;
         if (job.remote) {
             if (!RemoteCache::Get().Lookup(job.url, bytes) && job.allow_remote) {
                 auto data = std::make_shared<std::string>();
                 DownloadGate::Get().Enter();
-                const bool got = HttpGet(job.url, *data);
+                const bool got = !cancelled && HttpGet(job.url, *data, cancelled);
                 DownloadGate::Get().Leave();
                 bytes = got ? std::shared_ptr<const std::string>(std::move(data)) : nullptr;
-                RemoteCache::Get().Store(job.url, bytes);
+                if (!cancelled) RemoteCache::Get().Store(job.url, bytes);  // (not a failure to remember)
             }
         } else if (StartsWithNoCase(job.url, L"data:")) {
             auto data = std::make_shared<std::string>();
@@ -572,7 +597,7 @@ struct ImageStore::Impl {
     static void CALLBACK WorkCallback(PTP_CALLBACK_INSTANCE, void* ctx) {
         std::unique_ptr<Work> work(static_cast<Work*>(ctx));
         try {
-            RunJob(*work->job);
+            RunJob(*work->job, work->queue->cancelled);
         } catch (...) {
             work->job->ok = false;
         }
@@ -593,7 +618,7 @@ struct ImageStore::Impl {
         job->remote = remote;
         job->allow_remote = allow_remote;
         if (sync) {
-            RunJob(*job);
+            RunJob(*job, queue->cancelled);
             std::lock_guard<std::mutex> lock(queue->mu);
             queue->done.push_back(std::move(job));
             return;
@@ -603,10 +628,11 @@ struct ImageStore::Impl {
         InitializeThreadpoolEnvironment(&env);
         SetThreadpoolCallbackLibrary(&env, reinterpret_cast<HMODULE>(&__ImageBase));
         SetThreadpoolCallbackRunsLong(&env);
+        if (const PTP_POOL pool = ImagePool()) SetThreadpoolCallbackPool(&env, pool);
         auto* work = new Work{queue, std::move(job)};
         if (!TrySubmitThreadpoolCallback(WorkCallback, work, &env)) {
             std::unique_ptr<Work> w(work);
-            RunJob(*w->job);
+            RunJob(*w->job, queue->cancelled);
             std::lock_guard<std::mutex> lock(queue->mu);
             queue->done.push_back(std::move(w->job));
         }
@@ -643,6 +669,7 @@ void ImageStore::Detach() {
         impl_->queue->hwnd = nullptr;
         impl_->queue->done.clear();
     }
+    impl_->queue->cancelled = true;  // jobs still out stop early
     // A fresh queue: late results of the old document are simply dropped.
     impl_->queue = std::make_shared<Impl::Queue>();
     ++impl_->generation;
