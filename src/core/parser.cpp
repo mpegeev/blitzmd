@@ -409,6 +409,7 @@ private:
     std::exception_ptr error_;  // thrown by a callback (see Guarded)
     std::vector<Block*> stack_;
     std::vector<Block*> md_open_;
+    std::vector<Block*> implicit_lists_;  // open lists implied by a stray <li>, innermost last
 
     uint32_t mask_ = 0;
     uint16_t counts_[kStyleBitCount] = {};
@@ -446,6 +447,23 @@ private:
 
 Block* Builder::Push(BlockType type) {
     CloseLeaf();
+    // A list implied by a stray <li> (a browser draws such an item alone)
+    // ends at the first content after its items.
+    if (type != BlockType::ListItem && !implicit_lists_.empty() && Top() == implicit_lists_.back()) Pop();
+    const BlockType top = Top()->type;
+    if (type != BlockType::TableRow && type != BlockType::TableCell &&
+        (top == BlockType::Table || top == BlockType::TableRow)) {
+        // Content directly in <table>/<tr> (browsers move it out of the
+        // table), HTML or Markdown: an implicit cell lays it out like any other.
+        auto implicit = [this](BlockType t, Tag tag) {
+            Block* c = Push(t);
+            c->from_html = true;
+            c->html_tag = static_cast<uint16_t>(tag);
+            c->header = t == BlockType::TableRow && html_thead_;
+        };
+        if (top == BlockType::Table) implicit(BlockType::TableRow, Tag::Tr);
+        implicit(BlockType::TableCell, Tag::Td);
+    }
     Block* parent = Top();
     // Layout and rendering recurse over the tree: beyond a sane depth, blocks
     // still open and close in order but are attached at the deepest level.
@@ -463,6 +481,7 @@ void Builder::Pop() {
     Block* b = stack_.back();
     if (b->IsLeaf()) FlushText();
     stack_.pop_back();
+    if (!implicit_lists_.empty() && implicit_lists_.back() == b) implicit_lists_.pop_back();
     switch (b->type) {
     case BlockType::Paragraph:
     case BlockType::Heading:
@@ -1329,22 +1348,7 @@ void Builder::HtmlText(const std::wstring& text) {
 }
 
 Block* Builder::PushHtml(BlockType type, const HtmlToken& tok) {
-    CloseLeaf();
-    const BlockType top = Top()->type;
-    if (type != BlockType::TableRow && type != BlockType::TableCell &&
-        (top == BlockType::Table || top == BlockType::TableRow)) {
-        // Content directly in <table>/<tr> (browsers move it out of the
-        // table): an implicit cell lays it out like any other.
-        auto implicit = [this](BlockType t, Tag tag) {
-            Block* c = Push(t);
-            c->from_html = true;
-            c->html_tag = static_cast<uint16_t>(tag);
-            c->header = t == BlockType::TableRow && html_thead_;
-        };
-        if (top == BlockType::Table) implicit(BlockType::TableRow, Tag::Tr);
-        implicit(BlockType::TableCell, Tag::Td);
-    }
-    Block* b = Push(type);
+    Block* b = Push(type);  // (in an implicit cell if it is loose in a table)
     b->from_html = true;
     b->html_tag = static_cast<uint16_t>(tok.tag);
     b->align = AlignFromAttr(tok);
@@ -1562,6 +1566,7 @@ void Builder::HtmlStartTag(const HtmlToken& tok) {
             Block* list = PushHtml(BlockType::List, ul);
             list->tight = true;
             list->number = 1;
+            implicit_lists_.push_back(list);
         }
         Block* list = Top();
         const int index = static_cast<int>(list->children.size());

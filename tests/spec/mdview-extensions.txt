@@ -253,3 +253,58 @@ Paragraph line
 <pre><code>code block line
 </code></pre>
 ````````````````````````````````
+
+## Markdown loose in an HTML table
+
+A Markdown block directly inside `<table>` or `<tr>` gets an implicit
+cell, like HTML content there does.
+
+```````````````````````````````` example
+<table>
+<tr>
+
+**Paragraph directly in tr**
+
+</tr>
+</table>
+.
+<table>
+<tbody>
+<tr>
+<td><p><strong>Paragraph directly in tr</strong></p>
+</td>
+</tr>
+</tbody>
+</table>
+````````````````````````````````
+
+## Stray list items
+
+An `<li>` outside a list is drawn as a one-item list, which ends where
+anything but another item follows.
+
+```````````````````````````````` example
+<li>one</li>
+<li>two</li>
+
+After.
+
+<li>
+
+**markdown in li**
+
+</li>
+
+Last.
+.
+<ul>
+<li>one</li>
+<li>two</li>
+</ul>
+<p>After.</p>
+<ul>
+<li><p><strong>markdown in li</strong></p>
+</li>
+</ul>
+<p>Last.</p>
+````````````````````````````````
