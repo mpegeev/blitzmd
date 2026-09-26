@@ -124,7 +124,16 @@ void AddFlagImages(Document& doc) {
         if (leaf->base_flags & (kSup | kSub)) continue;
         size_t run = 0;
         bool added = false;
+        // The objects already there (images, formulas, diagrams over their
+        // source), in text order: nothing inside one becomes a flag.
+        const size_t existing = leaf->objects.size();
+        size_t next = 0;
         for (size_t i = 0; i + 3 < t.size();) {
+            while (next < existing && leaf->objects[next].pos + leaf->objects[next].length <= i) ++next;
+            if (next < existing && leaf->objects[next].pos <= i) {
+                i = leaf->objects[next].pos + leaf->objects[next].length;
+                continue;
+            }
             std::string key;
             size_t len = 0;
             if (IsRegionalIndicator(t, i)) {
@@ -154,7 +163,8 @@ void AddFlagImages(Document& doc) {
             // Superscripts stay letters; formulas are objects of their own.
             const bool raised = run < leaf->runs.size() && leaf->runs[run].start <= i &&
                                 (leaf->runs[run].flags & (kSup | kSub | kMath));
-            if (!raised && Find(key)) {
+            const bool overlaps = next < existing && leaf->objects[next].pos < i + len;
+            if (!raised && !overlaps && Find(key)) {
                 if (usable < 0) usable = Api().ok();
                 if (!usable) return;  // letters, as Windows shows them
                 const auto [it, inserted] = images.try_emplace(key, static_cast<int32_t>(doc.images.size()));
