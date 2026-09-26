@@ -4189,6 +4189,34 @@ int main(int argc, char** ansi_argv) {
                 std::printf("FAIL: pictures out of view are decoded offscreen (+%.0f MB)\n", grew2);
                 ++failures;
             }
+            // One 1 MB SVG named by 60 pictures: read and parsed once (each
+            // picture parsed its own copy, and Direct2D made a document of
+            // each drawn: #143).
+            CreateDirectoryW(FullPath("out").c_str(), nullptr);
+            CreateDirectoryW(FullPath("out/test").c_str(), nullptr);
+            const std::wstring svg_dir = FullPath("out/test/heavy-svg") + L"\\";
+            CreateDirectoryW(svg_dir.c_str(), nullptr);
+            std::string svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"40\">";
+            while (svg.size() < (1u << 20)) svg += "<rect x=\"1\" y=\"1\" width=\"3\" height=\"3\" fill=\"#123456\"/>";
+            svg += "</svg>";
+            if (HANDLE f = CreateFileW((svg_dir + L"big.svg").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+                f != INVALID_HANDLE_VALUE) {
+                DWORD n = 0;
+                WriteFile(f, svg.data(), static_cast<DWORD>(svg.size()), &n, nullptr);
+                CloseHandle(f);
+            }
+            const double before3 = peak_mb();
+            auto svgs = ParseMarkdown(repeat("![s](big.svg) ", 60), svg_dir + L"heavy.md");
+            OffscreenOptions few;
+            few.width = 600.f;
+            few.max_height = 200.f;
+            bmp = RenderToBitmap(*svgs, few);
+            const double grew3 = peak_mb() - before3;
+            std::printf("  60 pictures of one 1 MB SVG: peak memory +%.0f MB\n", grew3);
+            if (!bmp || grew3 > 40) {
+                std::printf("FAIL: an SVG named many times is parsed for each (+%.0f MB)\n", grew3);
+                ++failures;
+            }
         }
         {
             // SVG: a long font-family inherited by 20000 elements, and 20000

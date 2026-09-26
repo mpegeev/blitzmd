@@ -29,6 +29,9 @@ public:
     // Drops the cached document (the render target is going away; a new one
     // may get the same address).
     void ReleaseDeviceResources();
+    // Memory it holds, roughly: the source, Direct2D's document of it once
+    // drawn, raster <image>s.
+    size_t MemoryBytes() const;
 
 private:
     struct Text {

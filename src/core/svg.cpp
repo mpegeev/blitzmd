@@ -255,6 +255,16 @@ void SvgImage::ReleaseDeviceResources() {
     }
 }
 
+size_t SvgImage::MemoryBytes() const {
+    // (Direct2D's document of a 4 MB drawing of rectangles took some 30 MB.)
+    size_t n = source_.size() * (doc_ ? 9 : 1) + texts_.size() * sizeof(Text);
+    for (const Image& im : images_) {
+        n += im.pixels.size() * (im.bitmap ? 2 : 1);
+        if (im.svg) n += im.svg->MemoryBytes();
+    }
+    return n;
+}
+
 void SvgImage::ParseStructure() {
     const std::wstring w = Utf8ToWide(source_);
     HtmlTokenizer tz(w);
@@ -500,6 +510,9 @@ void SvgImage::Draw(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFacto
     if (doc_) {
         rt->SetTransform(place * old);
         dc5->DrawSvgDocument(doc_.Get());
+        // Direct2D queues the drawing's every element until EndDraw: a big
+        // SVG drawn many times in a frame queued hundreds of MB.
+        rt->Flush();
     }
     // User space -> viewport (viewBox with preserveAspectRatio xMidYMid meet).
     D2D1_MATRIX_3X2_F view = D2D1::Matrix3x2F::Identity();

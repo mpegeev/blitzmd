@@ -28,6 +28,9 @@ constexpr size_t kRemoteCacheBytes = 48u << 20;      // process-wide download ca
 constexpr UINT kMaxDecodeWidth = 2560;
 constexpr uint64_t kMaxDecodePixels = 16ull << 20;
 constexpr uint64_t kMaxAnimationPixels = 4ull << 20;  // larger GIFs stay static
+// Local SVG files a document's loading parses on its own thread (the UI's):
+// beyond, they are parsed in the pool.
+constexpr uint64_t kSyncSvgBytes = 8ull << 20;
 // Decoded pixels and bitmaps kept per document; beyond it the images drawn
 // least recently are dropped (and decoded again when they come back).
 #ifdef _WIN64
@@ -185,6 +188,7 @@ public:
             PropVariantClear(&v);
         }
         canvas_.assign(static_cast<size_t>(width_) * height_ * 4, 0);
+        source_bytes_ = bytes.size();
         return true;
     }
 
@@ -262,6 +266,7 @@ public:
     const std::vector<uint8_t>& canvas() const { return canvas_; }
     double delay_ms() const { return delay_ms_; }
     bool finished() const { return finished_; }
+    size_t source_bytes() const { return source_bytes_; }  // the file, kept in stream_ for the frames
 
     double due = 0;  // NowMs() when the next frame is due
 
@@ -279,6 +284,7 @@ private:
     ComPtr<IWICBitmapDecoder> decoder_;
     UINT frames_ = 0, width_ = 0, height_ = 0, current_ = 0;
     UINT plays_left_ = 0;
+    size_t source_bytes_ = 0;
     bool finished_ = false;
     UINT prev_disposal_ = 0;
     RECT prev_{};
@@ -640,6 +646,21 @@ struct ImageStore::Impl {
     std::shared_ptr<Queue> queue = std::make_shared<Queue>();
     ComPtr<IWICImagingFactory> wic;
     ComPtr<IDWriteFactory> dw;
+    // Local SVGs by path: a document naming one file many times parses (and
+    // keeps) it once. Those parsed in the pool: the other entries waiting.
+    std::unordered_map<std::wstring, std::shared_ptr<SvgImage>> svg_by_url;
+    std::unordered_map<std::wstring, std::vector<size_t>> svg_waiting;
+    uint64_t sync_svg_bytes = 0;  // parsed by LoadAll, on the caller's thread
+
+    static void SetSvg(ImageEntry& e, const std::shared_ptr<SvgImage>& svg) {
+        e.svg_image = svg;
+        e.svg = svg != nullptr;
+        e.state = svg ? ImageState::Ready : ImageState::Failed;
+        if (svg) {
+            e.px_w = static_cast<UINT>(svg->width() + 0.5f);
+            e.px_h = static_cast<UINT>(svg->height() + 0.5f);
+        }
+    }
 
     static void RunJob(Job& job, const std::atomic<bool>& cancelled) {
         if (cancelled) return;
@@ -782,6 +803,9 @@ void ImageStore::Detach() {
     impl_->entries.clear();
     impl_->pending_pixels.clear();
     impl_->bitmap_rt.clear();
+    impl_->svg_by_url.clear();
+    impl_->svg_waiting.clear();
+    impl_->sync_svg_bytes = 0;
 }
 
 void ImageStore::SetDark(bool dark) {
@@ -841,23 +865,43 @@ void ImageStore::LoadAll() {
             }
         }
         if (!remote && !StartsWithNoCase(e.url, L"data:")) {
-            const DWORD attrs = GetFileAttributesW(ExtendedPath(e.url).c_str());  // (long paths too)
-            if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+            WIN32_FILE_ATTRIBUTE_DATA fa{};
+            if (!GetFileAttributesExW(ExtendedPath(e.url).c_str(), GetFileExInfoStandard, &fa) ||  // (long paths too)
+                (fa.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
                 e.state = ImageState::Failed;
                 continue;
             }
             if (EndsWithNoCase(e.url, L".svg")) {
-                // Small text files: parse right away so the size is known.
-                std::string bytes;
-                if (ReadFileBytes(e.url.c_str(), bytes, kMaxImageBytes)) e.svg_image = SvgImage::Parse(bytes);
-                if (e.svg_image) {
-                    e.svg = true;
-                    e.px_w = static_cast<UINT>(e.svg_image->width() + 0.5f);
-                    e.px_h = static_cast<UINT>(e.svg_image->height() + 0.5f);
-                    e.state = ImageState::Ready;
-                } else {
-                    e.state = ImageState::Failed;
+                // Small text files, parsed right away so the size is known:
+                // each path once (a document may name one a thousand times),
+                // and on this thread at most kSyncSvgBytes of them. The rest
+                // are parsed in the pool like other pictures.
+                if (const auto it = impl_->svg_by_url.find(e.url); it != impl_->svg_by_url.end()) {
+                    Impl::SetSvg(e, it->second);
+                    continue;
                 }
+                if (const auto it = impl_->svg_waiting.find(e.url); it != impl_->svg_waiting.end()) {
+                    it->second.push_back(i);
+                    e.state = ImageState::Loading;
+                    continue;
+                }
+                const uint64_t size = (static_cast<uint64_t>(fa.nFileSizeHigh) << 32) | fa.nFileSizeLow;
+                if (impl_->sync_svg_bytes + size <= kSyncSvgBytes) {
+                    impl_->sync_svg_bytes += size;
+                    std::string bytes;
+                    std::shared_ptr<SvgImage> svg;
+                    if (ReadFileBytes(e.url.c_str(), bytes, kMaxImageBytes)) svg = SvgImage::Parse(bytes);
+                    impl_->svg_by_url.emplace(e.url, svg);  // (a failure too)
+                    Impl::SetSvg(e, svg);
+                    continue;
+                }
+                if (impl_->sync) {  // offscreen (a thumbnail, printing): its place only
+                    e.state = ImageState::Failed;
+                    continue;
+                }
+                impl_->svg_waiting.emplace(e.url, std::vector<size_t>{});
+                e.state = ImageState::Loading;
+                impl_->Submit(static_cast<int>(i), e.url, remote);
                 continue;
             }
             if (impl_->wic) ReadImageSize(impl_->wic.Get(), e.url, e.px_w, e.px_h);
@@ -900,7 +944,9 @@ uint64_t ImageStore::EntryBytes(size_t i) const {
         const D2D1_SIZE_U s = e.bitmap->GetPixelSize();
         b += static_cast<uint64_t>(s.width) * s.height * 4;
     }
-    if (e.animation) b += e.animation->canvas().size() * 2;  // canvas + disposal copy
+    // A GIF's canvas, its disposal copy and the file its frames come from.
+    if (e.animation) b += e.animation->canvas().size() * 2 + e.animation->source_bytes();
+    if (e.encoded) b += e.encoded->size();
     return b;
 }
 
@@ -908,10 +954,19 @@ void ImageStore::TrimMemory() {
     if (impl_->sync) return;
     std::vector<size_t> victims;
     uint64_t total = 0;
+    // An SVG may be shared by entries (a file named many times): it counts
+    // once, and is let go of only if none of them was drawn.
+    std::unordered_map<SvgImage*, bool> svgs;  // -> drawn in the last paint
     for (size_t i = 0; i < impl_->entries.size(); ++i) {
+        const ImageEntry& e = impl_->entries[i];
         const uint64_t b = EntryBytes(i);
         total += b;
-        if (b > 0 && impl_->entries[i].drawn_stamp != paint_stamp_) victims.push_back(i);
+        if (b > 0 && e.drawn_stamp != paint_stamp_) victims.push_back(i);
+        if (e.svg_image) {
+            const auto [it, first] = svgs.try_emplace(e.svg_image.get(), false);
+            if (first) total += e.svg_image->MemoryBytes();
+            if (e.drawn_stamp == paint_stamp_) it->second = true;
+        }
     }
     if (total <= kImageMemoryBudget) return;
     // Least recently drawn first; of the never drawn, those further down.
@@ -930,6 +985,15 @@ void ImageStore::TrimMemory() {
         e.animation.reset();
         e.encoded.reset();
     }
+    // Then Direct2D's documents of the SVGs out of view (made anew from the
+    // source when drawn again).
+    for (const auto& [svg, drawn] : svgs) {
+        if (total <= kImageMemoryBudget / 4 * 3) break;
+        if (drawn) continue;
+        const uint64_t before = svg->MemoryBytes();
+        svg->ReleaseDeviceResources();
+        total -= before - std::min<uint64_t>(before, svg->MemoryBytes());
+    }
 }
 
 bool ImageStore::CompletePending() {
@@ -943,6 +1007,18 @@ bool ImageStore::CompletePending() {
         if (job->generation != impl_->generation || job->index < 0 ||
             static_cast<size_t>(job->index) >= impl_->entries.size()) {
             continue;
+        }
+        // An SVG file parsed in the pool: for all the entries naming it.
+        if (const auto w = impl_->svg_waiting.find(job->url); w != impl_->svg_waiting.end()) {
+            const std::shared_ptr<SvgImage> svg = job->ok ? job->svg : nullptr;
+            impl_->svg_by_url[job->url] = svg;
+            for (const size_t k : w->second) {
+                ImageEntry& other = impl_->entries[k];
+                if (other.state != ImageState::Loading || other.url != job->url) continue;
+                Impl::SetSvg(other, svg);
+                resized = true;
+            }
+            impl_->svg_waiting.erase(w);
         }
         ImageEntry& e = impl_->entries[static_cast<size_t>(job->index)];
         if (e.url != job->url) continue;
@@ -1094,9 +1170,17 @@ void ImageStore::Draw(ID2D1RenderTarget* rt, int index, const D2D1_RECT_F& r, Pa
             CompletePending();
         }
         if (e.encoded) {
-            // First time on screen: start playing (frame 0 is already decoded).
+            // First time on screen: start playing (frame 0 is already decoded),
+            // while the files of the animations playing (each keeps its own
+            // for the frames) take at most a quarter of the budget; others
+            // show their first frame.
+            uint64_t playing = 0;
+            for (const ImageEntry& x : impl_->entries) {
+                if (x.animation) playing += x.animation->source_bytes();
+            }
             auto anim = std::make_shared<GifAnimation>();
-            if (impl_->wic && anim->Open(impl_->wic.Get(), *e.encoded) && anim->RenderFrame(0)) {
+            if (impl_->wic && playing + e.encoded->size() <= kImageMemoryBudget / 4 &&
+                anim->Open(impl_->wic.Get(), *e.encoded) && anim->RenderFrame(0)) {
                 anim->due = NowMs() + anim->delay_ms();
                 e.animation = std::move(anim);
                 impl_->pending_pixels[i] = Pixels{};
