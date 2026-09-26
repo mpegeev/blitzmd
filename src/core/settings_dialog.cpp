@@ -37,8 +37,8 @@ enum ControlId : WORD {
     kIdAutoReload,
     kIdSmooth,
     kIdHardware,
+    kIdMermaid,  // (the check boxes are kIdLineNumbers..kIdMermaid)
     kIdReset,
-    kIdMermaid,
     kIdHeader = 1100,  // section headers: kIdHeader + n
 };
 constexpr WORD kIdLabel = 0xFFFF;  // IDC_STATIC
@@ -362,7 +362,7 @@ INT_PTR SettingsDialog::Proc(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_NOTIFY: {
         const auto* nm = reinterpret_cast<const NMHDR*>(lp);
         if (dark_ && nm->code == NM_CUSTOMDRAW &&
-            (nm->idFrom == kIdFullWidth || (nm->idFrom >= kIdLineNumbers && nm->idFrom <= kIdHardware))) {
+            (nm->idFrom == kIdFullWidth || (nm->idFrom >= kIdLineNumbers && nm->idFrom <= kIdMermaid))) {
             SetWindowLongPtrW(dlg_, DWLP_MSGRESULT, DrawCheckbox(*reinterpret_cast<const NMCUSTOMDRAW*>(lp)));
             return TRUE;
         }
@@ -442,7 +442,7 @@ void SettingsDialog::OnCommand(WORD id, WORD code) {
     } else if (id == kIdFullWidth && code == BN_CLICKED) {
         EnableWindow(GetDlgItem(dlg_, kIdWidth), IsDlgButtonChecked(dlg_, kIdFullWidth) != BST_CHECKED);
         Apply();
-    } else if (id >= kIdLineNumbers && id <= kIdHardware && code == BN_CLICKED) {
+    } else if (id >= kIdLineNumbers && id <= kIdMermaid && code == BN_CLICKED) {
         Apply();
     } else if (code == CBN_SELCHANGE) {
         PostMessageW(dlg_, kMsgApply, 0, 0);
