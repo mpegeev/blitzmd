@@ -354,6 +354,13 @@ bool HttpGet(const std::wstring& url, std::string& out, const std::atomic<bool>&
     HINTERNET req = WinHttpOpenRequest(conn, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
                                        WINHTTP_DEFAULT_ACCEPT_TYPES, secure ? WINHTTP_FLAG_SECURE : 0);
     if (req) {
+        // A document's pictures never log on with the user's Windows account:
+        // by default WinHTTP answers an intranet host's NTLM/Negotiate
+        // challenge with it (after redirects too). The autologon policy
+        // (WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH) doesn't stop that for
+        // localhost; turning authentication off does.
+        DWORD no_auth = WINHTTP_DISABLE_AUTHENTICATION;
+        WinHttpSetOption(req, WINHTTP_OPTION_DISABLE_FEATURE, &no_auth, sizeof no_auth);
         const wchar_t* headers = L"Accept: image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5\r\n";
         if (WinHttpSendRequest(req, headers, static_cast<DWORD>(-1L), WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
             WinHttpReceiveResponse(req, nullptr)) {
