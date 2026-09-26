@@ -2558,6 +2558,14 @@ int main(int argc, char** ansi_argv) {
             L"railroad-beta\na = terminal(\"x\");\n" + repeat(L"/**/\n", 9000),
             L"eventmodeling\n" + repeat(L"tf 01 ui N" + std::wstring(3000, L'n') + L".A ->> 01 { " + std::wstring(3000, L'd') + L" }\n", 60),
             L"eventmodeling\n" + repeat(L"tf 99 evt S.E ->> 99 ->> 99 ->> 99\ntf 98 cmd C.D\n", 1000),
+            [&] {  // long words of zero-width characters (wrapping measured every prefix: 15 s)
+                std::wstring s = L"eventmodeling\n";
+                for (int i = 0; i < 12; ++i) {
+                    s += L"tf " + std::wstring(i < 10 ? L"0" : L"") + std::to_wstring(i) + L" ui A" + std::to_wstring(i) + L" {" +
+                         static_cast<wchar_t>(L'A' + i) + std::wstring(3900, L'\x200B') + std::wstring(60, L'W') + L"}\n";
+                }
+                return s;
+            }(),
             L"eventmodeling\ndata D {\n" + repeat(repeat(L"y ", 30) + L"\n", 60) + L"}\n" + repeat(L"tf 01 rmo R [[D]]\n", 1300),
             [&] {  // swimlanes: an edge past the nodes between in its lane
                 return std::wstring(L"swimlane-beta TD\nsubgraph L1\na --> b --> c\na --> c\nend\n");
