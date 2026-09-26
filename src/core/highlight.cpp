@@ -1643,6 +1643,9 @@ size_t CScanner::Regex(size_t i) {
         const wchar_t c = s_[j];
         if (c == L'\n') break;
         if (c == L'\\') {
+            // A regex literal ends with its line, an escaped line break too
+            // (skipping it would scan the rest of the block from every line).
+            if (j + 1 < n_ && s_[j + 1] == L'\n') break;
             j += 2;
             continue;
         }
