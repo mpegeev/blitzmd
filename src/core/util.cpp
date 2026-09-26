@@ -380,8 +380,9 @@ int DetectBomlessUtf16(std::string_view s) {
         zero_odd += z1;
     }
     const size_t pairs = n / 2;
-    if (zero_odd * 10 >= pairs * 3 && zero_even == 0) return 1;   // LE
-    if (zero_even * 10 >= pairs * 3 && zero_odd == 0) return 2;   // BE
+    // (A few zero bytes on the other side are characters like U+3000.)
+    if (zero_odd * 10 >= pairs * 3 && zero_even * 20 <= zero_odd) return 1;   // LE
+    if (zero_even * 10 >= pairs * 3 && zero_odd * 20 <= zero_even) return 2;   // BE
     return 0;
 }
 
@@ -465,13 +466,30 @@ bool DecodeBase64(std::wstring_view in, std::string& out) {
 }  // namespace
 
 bool DecodeDataUri(std::wstring_view uri, std::string& out) {
+    out.clear();  // (replaced, whichever encoding)
     if (!StartsWithNoCase(uri, L"data:")) return false;
     const size_t comma = uri.find(L',');
     if (comma == std::wstring_view::npos) return false;
-    const std::wstring_view meta = uri.substr(5, comma - 5);
+    const std::wstring meta = ToLower(uri.substr(5, comma - 5));
     const std::wstring_view payload = uri.substr(comma + 1);
-    if (meta.find(L";base64") != std::wstring_view::npos) return DecodeBase64(payload, out);
-    out = WideToUtf8(PercentDecode(payload));
+    if (meta.find(L";base64") != std::wstring::npos) return DecodeBase64(payload, out);
+    // Percent-encoded bytes, as they are (a picture's are no UTF-8).
+    const std::string text = WideToUtf8(payload);
+    auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+        if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+        return -1;
+    };
+    out.reserve(text.size());
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '%' && i + 2 < text.size() && hex(text[i + 1]) >= 0 && hex(text[i + 2]) >= 0) {
+            out.push_back(static_cast<char>((hex(text[i + 1]) << 4) | hex(text[i + 2])));
+            i += 2;
+        } else {
+            out.push_back(text[i]);
+        }
+    }
     return !out.empty();
 }
 

@@ -28,10 +28,8 @@ struct ImageEntry {
     bool svg = false;
     ImageState state = ImageState::Pending;
     UINT px_w = 0, px_h = 0;     // natural size (image pixels == DIPs)
-    ComPtr<IWICBitmapSource> pixels;     // decoded, 32bpp PBGRA (device independent)
     std::shared_ptr<SvgImage> svg_image; // parsed SVG (device independent)
     ComPtr<ID2D1Bitmap> bitmap;          // device resource, created on demand
-    uint32_t bitmap_gen = 0;
     std::shared_ptr<const std::string> encoded;  // animated GIF source
     std::shared_ptr<GifAnimation> animation;     // created when first drawn
     uint32_t drawn_stamp = 0;                    // paint in which it was last drawn

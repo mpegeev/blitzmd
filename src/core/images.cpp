@@ -39,11 +39,29 @@ struct Pixels {
     std::vector<uint8_t> data;  // 32bpp premultiplied BGRA, stride w*4
 };
 
+// The server of a path on a share (\\host\share\..., \\?\UNC\host\...),
+// lowercase; "?" for other device paths (\\.\pipe\...); empty if local
+// (C:\..., \\?\C:\...).
+std::wstring ShareServer(std::wstring_view p) {
+    if (p.size() < 2 || p[0] != L'\\' || p[1] != L'\\') return {};
+    if (p.size() >= 4 && (p[2] == L'?' || p[2] == L'.') && p[3] == L'\\') {
+        const std::wstring_view rest = p.substr(4);
+        if (rest.size() >= 2 && rest[1] == L':') return {};
+        if (!StartsWithNoCase(rest, L"UNC\\")) return L"?";
+        p = rest.substr(4);
+    } else {
+        p.remove_prefix(2);
+    }
+    return ToLower(p.substr(0, std::min(p.find(L'\\'), p.size())));
+}
+
 bool IsSvgBytes(const std::string& b) {
     const size_t probe = std::min<size_t>(b.size(), 1024);
     const std::string_view head(b.data(), probe);
+    // (An XML declaration or a comment may come first, however long.)
     return head.find("<svg") != std::string_view::npos ||
-           (head.find("<?xml") != std::string_view::npos && b.find("<svg") != std::string::npos);
+           ((head.find("<?xml") != std::string_view::npos || head.find("<!--") != std::string_view::npos) &&
+            b.find("<svg") != std::string::npos);
 }
 
 bool EndsWithNoCase(std::wstring_view s, std::wstring_view suffix) {
@@ -603,10 +621,11 @@ struct ImageStore::Impl {
             work->job->ok = false;
         }
         HWND target = nullptr;
-        {
+        try {  // (nothing may leave a thread-pool callback)
             std::lock_guard<std::mutex> lock(work->queue->mu);
             work->queue->done.push_back(std::move(work->job));
             target = work->queue->hwnd;
+        } catch (...) {
         }
         if (target) PostMessageW(target, ImageLoadedMessage(), 0, 0);
     }
@@ -636,6 +655,8 @@ struct ImageStore::Impl {
             RunJob(*w->job, queue->cancelled);
             std::lock_guard<std::mutex> lock(queue->mu);
             queue->done.push_back(std::move(w->job));
+            // (Told like a callback would, or the picture stays "loading".)
+            if (queue->hwnd) PostMessageW(queue->hwnd, ImageLoadedMessage(), 0, 0);
         }
         DestroyThreadpoolEnvironment(&env);
     }
@@ -643,7 +664,13 @@ struct ImageStore::Impl {
 
 ImageStore::ImageStore() : impl_(std::make_unique<Impl>()) {}
 
-ImageStore::~ImageStore() { Detach(); }
+ImageStore::~ImageStore() {
+    // Like Detach, without making a new queue (no allocation here).
+    std::lock_guard<std::mutex> lock(impl_->queue->mu);
+    impl_->queue->hwnd = nullptr;
+    impl_->queue->done.clear();
+    impl_->queue->cancelled = true;
+}
 
 void ImageStore::Attach(const Document* doc, HWND notify, bool dark, bool allow_remote) {
     Detach();
@@ -721,13 +748,10 @@ void ImageStore::LoadAll() {
         // Never touch network shares on our own: loading \\host\share\x.png
         // makes Windows authenticate to that host (NTLM hash leak). Only
         // shares on the same server as the document itself are allowed.
-        if (!remote && e.url.size() > 2 && e.url[0] == L'\\' && e.url[1] == L'\\') {
-            auto server = [](const std::wstring& p) {
-                const size_t end = p.find(L'\\', 2);
-                return ToLower(p.substr(0, end == std::wstring::npos ? p.size() : end));
-            };
-            const bool doc_on_share = doc->base_dir.size() > 2 && doc->base_dir[0] == L'\\' && doc->base_dir[1] == L'\\';
-            if (!doc_on_share || server(doc->base_dir) != server(e.url)) {
+        // (\\?\UNC\host\... is a share too; \\?\C:\... is not.)
+        if (!remote) {
+            const std::wstring server = ShareServer(e.url);
+            if (!server.empty() && server != ShareServer(doc->base_dir)) {
                 e.state = ImageState::Failed;
                 continue;
             }
@@ -745,7 +769,7 @@ void ImageStore::LoadAll() {
                 e.state = ImageState::Failed;
                 continue;
             }
-            if (EndsWithNoCase(e.url, L".svg") || EndsWithNoCase(e.url, L".svgz")) {
+            if (EndsWithNoCase(e.url, L".svg")) {
                 // Small text files: parse right away so the size is known.
                 std::string bytes;
                 if (ReadFileBytes(e.url.c_str(), bytes, kMaxImageBytes)) e.svg_image = SvgImage::Parse(bytes);
