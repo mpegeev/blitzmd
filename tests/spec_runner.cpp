@@ -138,7 +138,8 @@ int RunSpec(const std::string& path, bool verbose, int only_example, bool strict
         // Strict (our own extension tests): every mismatch is a failure.
         const bool raw_html = !strict && (HasRawHtml(e.markdown) || e.section == "HTML blocks" ||
                                           e.section == "Raw HTML" || e.kind == "tagfilter");
-        const bool md4c_differs = !strict && reference != expected;
+        // (Only when we agree with md4c: else it is our own mistake.)
+        const bool md4c_differs = !strict && reference != expected && ours == reference;
         if (raw_html) ++html_fail;
         else if (md4c_differs) ++md4c_fail;
         else ++fail;
@@ -155,6 +156,10 @@ int RunSpec(const std::string& path, bool verbose, int only_example, bool strict
                 "%d md4c-differs, %d skipped\n",
                 path.c_str(), static_cast<int>(examples.size()), pass, fail, html_fail, md4c_fail,
                 skipped);
+    if (pass + fail + html_fail + md4c_fail == 0) {  // no file, or -n with no such example
+        std::printf("FAIL: no example was run\n");
+        return 1;
+    }
     return fail == 0 ? 0 : 1;
 }
 

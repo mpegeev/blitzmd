@@ -303,6 +303,10 @@ std::string NormalizeHtml(const std::string& html) {
             }
             continue;
         }
+        if (t.kind == HtmlToken::Text && !in_code_block && t.text.find_first_not_of(L" \t\r\n") == std::wstring::npos &&
+            (toks.empty() || toks.back().block)) {
+            continue;  // whitespace after a block tag: trimmed anyway, and no formatting marker for it
+        }
         if (t.kind == HtmlToken::Text && !in_code_block) {
             const std::wstring key = format_key();
             if (!key.empty() || !last_key.empty()) {

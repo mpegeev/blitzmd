@@ -40,6 +40,7 @@ struct MathBox {
         ComPtr<IDWriteTextLayout> layout;
     };
     float width = 0, ascent = 0, descent = 0;
+    size_t dropped = 0;  // pieces left out, not finite or too far away (tests check it)
     std::vector<Glyph> glyphs;
     std::vector<Rule> rules;
     std::vector<Text> texts;

@@ -499,19 +499,23 @@ int main(int argc, char** ansi_argv) {
         const double t3 = NowMs();
         HBITMAP thumb = preview(FullPath(argv[3]).c_str(), 256, 256, nullptr, 0);
         const double t4 = NowMs();
+        bool thumb_ok = false;
         if (thumb) {
             BITMAP bm{};
             GetObjectW(thumb, sizeof bm, &bm);
             std::printf("ListGetPreviewBitmapW: %ldx%ld in %.1f ms\n", bm.bmWidth, bm.bmHeight, t4 - t3);
+            thumb_ok = bm.bmWidth > 0 && bm.bmWidth <= 256 && bm.bmHeight > 0 && bm.bmHeight <= 256;
             ComPtr<IWICBitmap> tb;
             if (wic && SUCCEEDED(wic->CreateBitmapFromHBITMAP(thumb, nullptr, WICBitmapIgnoreAlpha, &tb))) {
                 SaveBitmapPng(tb.Get(), Utf8ToWide(suffixed("-thumb")));
             }
             DeleteObject(thumb);
-        } else {
-            std::printf("ListGetPreviewBitmapW failed\n");
         }
         FreeLibrary(dll);
+        if (!thumb_ok) {
+            std::printf("FAIL: ListGetPreviewBitmapW: %s\n", thumb ? "not the size asked for" : "no bitmap");
+            return 1;
+        }
         std::printf("plugin OK\n");
         return 0;
     }
@@ -1537,13 +1541,18 @@ int main(int argc, char** ansi_argv) {
         for (const MathRef& m : doc->maths) {
             for (bool display : {false, true}) {
                 auto box = ts.Layout(m.tex, display, 16.f);
-                if (!sane(*box) || box->width <= 0 || box->glyphs.empty()) {
+                // (Layout drops what isn't finite, so sane() alone can't see it.)
+                if (!sane(*box) || box->width <= 0 || box->glyphs.empty() || box->dropped) {
                     std::printf("FAIL: layout of %s\n", WideToUtf8(m.tex).c_str());
                     ++failures;
                 }
             }
         }
         std::printf("%zu formulas of %s laid out\n", doc->maths.size(), argv[2]);
+        if (doc->maths.empty()) {  // (a parser that stopped making formulas would pass otherwise)
+            std::printf("FAIL: no formula in %s\n", argv[2]);
+            ++failures;
+        }
         {
             // Only a formula too wide for its column makes a leaf scroll
             // horizontally: never plain text, centered images or tables.
@@ -1988,6 +1997,10 @@ int main(int argc, char** ansi_argv) {
             }
         }
         std::printf("%zu diagrams of %s laid out\n", doc->diagrams.size(), argv[2]);
+        if (doc->diagrams.empty()) {  // (a parser that stopped making diagrams would pass otherwise)
+            std::printf("FAIL: no diagram in %s\n", argv[2]);
+            ++failures;
+        }
         // Parsing: what is accepted, and errors with their line.
         struct Case {
             const wchar_t* src;
@@ -3712,6 +3725,7 @@ int main(int argc, char** ansi_argv) {
         };
         const size_t n_yaml = sizeof(kYaml) / sizeof(kYaml[0]);
         double total = 0;
+        int failed = 0;
         for (int it = 0; it < iterations; ++it) {
             std::string md;
             if (rnd() % 3 == 0) {
@@ -3736,9 +3750,14 @@ int main(int argc, char** ansi_argv) {
             ComPtr<IWICBitmap> bmp = RenderToBitmap(*doc, o);
             total += NowMs() - t0;
             if (!bmp) {
-                std::printf("iteration %d: render failed\n", it);
+                std::printf("FAIL: iteration %d: render failed\n", it);
+                ++failed;
             }
             if ((it + 1) % 200 == 0) std::printf("%d iterations, avg %.2f ms\n", it + 1, total / (it + 1));
+        }
+        if (failed) {
+            std::printf("fuzz FAILED: %d of %d iterations\n", failed, iterations);
+            return 1;
         }
         std::printf("fuzz OK: %d iterations\n", iterations);
         return 0;

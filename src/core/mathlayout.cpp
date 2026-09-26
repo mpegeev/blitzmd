@@ -1279,13 +1279,17 @@ std::shared_ptr<const MathBox> MathTypesetter::Layout(std::wstring_view tex, boo
     out->descent = extent(a.box.d);
     for (const MathBox::Glyph& g : a.box.glyphs) {
         if (finite(g.x) && finite(g.y)) out->glyphs.push_back(g);
+        else ++out->dropped;
     }
     for (const MathBox::Rule& r : a.box.rules) {
         if (finite(r.x) && finite(r.y) && finite(r.w) && finite(r.h)) out->rules.push_back(r);
+        else ++out->dropped;
     }
     for (MathBox::Text& t : a.box.texts) {
         if (finite(t.x) && finite(t.y)) out->texts.push_back(std::move(t));
+        else ++out->dropped;
     }
+    if (!finite(a.box.w) || !finite(a.box.h) || !finite(a.box.d)) ++out->dropped;
     return out;
 }
 
