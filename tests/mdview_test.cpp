@@ -2340,6 +2340,13 @@ int main(int argc, char** ansi_argv) {
             {L"block-beta\ncolumns 3\na([\"Stadium\"]) e:::hot f:2\nclassDef hot fill:#f96\nx<[\" \"]>(y)", true, nullptr},
             {L"sankey-beta\n\" padded \",B,10.5kg\npadded,C,0x10", true, nullptr},
             {L"sankey-beta\nA,B,abc", false, L"Line 2"},
+            {L"erDiagram\nA {\n\"c\"\n}", false, L"Line 3"},  // an attribute without a type or name
+            {L"erDiagram\naccDescr {\nA ||--o{ B : r", false, L"Line 2"},  // accDescr { never closed
+            {L"classDiagram\naccDescr {\nclass A", false, L"Line 2"},
+            {L"sequenceDiagram\naccDescr {\nA->>B: x", false, L"Line 2"},
+            {L"sequenceDiagram\nNote over A,B,C: x", false, L"Line 2"},  // two participants at most
+            {L"sequenceDiagram\nNote over A,B: x", true, nullptr},
+            {L"sequenceDiagram\nparticipant A as\nA->>B: x", true, nullptr},
             {L"", false, nullptr},
             {L"not a diagram", false, nullptr},
         };
@@ -2770,6 +2777,19 @@ int main(int argc, char** ansi_argv) {
                                 WideToUtf8(src.substr(13, 12)).c_str());
                     ++failures;
                 }
+            }
+        }
+        {  // state: a composite <<fork>> keeps its title band
+            std::wstring error;
+            auto height = [&](const wchar_t* declared) {
+                const auto scene = layout(std::wstring(L"stateDiagram-v2\n") + declared + L"state F {\nA --> B\n}\n", &error);
+                return scene ? scene->height : 0.f;
+            };
+            const float plain = height(L""), fork = height(L"state F <<fork>>\n");
+            std::printf("  state composite: %.0f high, as a fork %.0f\n", plain, fork);
+            if (plain <= 0 || std::fabs(fork - plain) > 0.5f) {
+                std::printf("FAIL: state: a composite <<fork>> loses its title %s\n", WideToUtf8(error).c_str());
+                ++failures;
             }
         }
         {  // ClipRect: a box of no width, the other end straight above or below
