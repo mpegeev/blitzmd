@@ -104,7 +104,6 @@ public:
             if (!c_.AtStatementEnd()) c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
         }
         if (depth_ > 0) c_.Fail(Tr(L"A block has no \"end\"", L"Блок без «end»"));
-        if (open_box_ >= 0) open_box_ = -1;
     }
 
     std::vector<Participant> people;
@@ -198,8 +197,12 @@ private:
         if (c_.EatKeyword(L"accDescr")) {
             c_.SkipBlanks();
             if (c_.Eat(L'{')) {  // accDescr { several lines }
+                const size_t open = c_.pos() - 1;
                 while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
-                c_.Eat(L'}');
+                if (!c_.Eat(L'}')) {
+                    c_.set_pos(open);
+                    c_.Fail(Tr(L"'{' without '}'", L"«{» без «}»"));
+                }
             } else {
                 c_.LineRest();
             }
@@ -273,7 +276,7 @@ private:
         size_t alias_at = 0;
         for (size_t k = 0; k < line.size(); ++k) {
             if (k + 4 <= line.size() && IsSpace(line[k]) && StartsWithNoCase(line.substr(k + 1), L"as") &&
-                (k + 3 == line.size() || IsSpace(line[k + 3]))) {
+                IsSpace(line[k + 3])) {
                 name = line.substr(0, k);
                 alias = Trim(line.substr(k + 3));
                 alias_at = alias.empty() ? 0 : static_cast<size_t>(alias.data() - src_.text.data());
@@ -364,6 +367,10 @@ private:
         while (!c_.AtStatementEnd() && c_.Peek() != L':') c_.Advance();
         const std::wstring_view who = src_.text.substr(start, c_.pos() - start);
         const size_t comma = who.find(L',');
+        if (comma != std::wstring_view::npos && who.find(L',', comma + 1) != std::wstring_view::npos) {
+            c_.set_pos(start + who.find(L',', comma + 1));
+            c_.Fail(Tr(L"A note spans two participants at most", L"Заметка охватывает не больше двух участников"));
+        }
         it.a = Person(std::wstring(who.substr(0, comma)), start);
         it.b = comma == std::wstring_view::npos ? it.a : Person(std::wstring(who.substr(comma + 1)), start + comma + 1);
         if (!c_.Eat(L':')) c_.Fail(Tr(L"Expected ':'", L"Ожидалось «:»"));
@@ -870,7 +877,7 @@ private:
             if (x0 > x1) continue;
             const M& t = box_titles_[g];
             const float top = top_ - (t.layout ? t.h + 8 : 6.f);
-            b_.Rect(D2D1::RectF(x0, top, x1, actors_bottom + 6), 0, grp.fill.role == kDgNone ? Role(kDgNone) : grp.fill, Role(kDgNone));
+            b_.Rect(D2D1::RectF(x0, top, x1, actors_bottom + 6), 0, grp.fill, Role(kDgNone));
             if (t.layout) b_.Text(t, D2D1::Point2F((x0 + x1) / 2 - t.w / 2, top + 4), Role(kDgText), grp.title.pos, grp.title.len);
         }
         // rect blocks: colored backgrounds.

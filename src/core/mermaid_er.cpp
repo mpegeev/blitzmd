@@ -146,8 +146,12 @@ private:
         if (c_.EatKeyword(L"accDescr")) {
             c_.SkipBlanks();
             if (c_.Eat(L'{')) {
+                const size_t open = c_.pos() - 1;
                 while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
-                c_.Eat(L'}');
+                if (!c_.Eat(L'}')) {
+                    c_.set_pos(open);
+                    c_.Fail(Tr(L"'{' without '}'", L"«{» без «}»"));
+                }
             } else {
                 c_.LineRest();
             }
@@ -265,10 +269,7 @@ private:
         const int g = open_.back().first;
         for (int e : named_.back()) {
             Entity& en = entities[static_cast<size_t>(e)];
-            if (en.parent < 0 && !taken_[static_cast<size_t>(e)]) {
-                en.parent = g;
-                taken_[static_cast<size_t>(e)] = 1;
-            }
+            if (en.parent < 0) en.parent = g;
         }
         open_.pop_back();
         named_.pop_back();
@@ -378,7 +379,6 @@ private:
             e = static_cast<int>(entities.size());
             ids_.emplace(name.raw, e);
             entities.push_back(std::move(en));
-            taken_.push_back(0);
         }
         if (!named_.empty() && (named_.back().empty() || named_.back().back() != e)) {
             if (named_.back().size() < 4 * kMaxNodes) named_.back().push_back(e);
@@ -398,6 +398,7 @@ private:
             if (c_.Eat(L'}')) return;
             Attribute a;
             a.type = Token();
+            if (a.type.raw.empty()) c_.Fail(Tr(L"Expected an attribute type", L"Ожидался тип атрибута"));
             c_.SkipBlanks();
             if (c_.AtStatementEnd() || c_.Peek() == L'}') c_.Fail(Tr(L"Expected an attribute name", L"Ожидалось имя атрибута"));
             a.name = Token();
@@ -514,7 +515,6 @@ private:
     std::unordered_map<std::wstring, int> ids_;
     std::vector<std::pair<int, size_t>> open_;  // subgraphs being read, where each opened
     std::vector<std::vector<int>> named_;       // per subgraph being read: the entities named in it
-    std::vector<char> taken_;                   // per entity: in a subgraph already
 };
 
 // ---------------------------------------------------------------------------

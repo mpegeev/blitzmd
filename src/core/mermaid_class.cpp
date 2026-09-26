@@ -202,8 +202,12 @@ private:
         if (c_.EatKeyword(L"accDescr", true)) {
             c_.SkipBlanks();
             if (c_.Eat(L'{')) {
+                const size_t open = c_.pos() - 1;
                 while (!c_.AtEnd() && c_.Peek() != L'}') c_.Advance();
-                c_.Eat(L'}');
+                if (!c_.Eat(L'}')) {
+                    c_.set_pos(open);
+                    c_.Fail(Tr(L"'{' without '}'", L"«{» без «}»"));
+                }
             } else {
                 c_.LineRest();
             }

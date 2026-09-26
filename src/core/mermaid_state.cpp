@@ -699,7 +699,7 @@ private:
             const State& s = p_.states[i];
             Box& b = boxes_[i];
             b.style = StateStyle(s);
-            switch (s.kind) {
+            switch (s_.IsComposite(static_cast<int>(i)) ? Kind::Normal : s.kind) {  // (a composite <<fork>> is a box)
             case Kind::Start:
             case Kind::End: b.w = b.h = 14; continue;
             case Kind::Choice: b.w = b.h = 28; continue;
@@ -1164,6 +1164,21 @@ void CheckBudget(const Parser& p) {
         if (e.from < 0 || e.to < 0 || e.from == e.to) continue;
         e.from_cluster = box(t.from);
         e.to_cluster = box(t.to);
+        g.edges.push_back(e);
+    }
+    for (const Note& n : p.notes) {  // a composite's note is a node of its own, as in the layout
+        if (!s.IsComposite(n.state)) continue;
+        LayeredGraph::Node nn;
+        nn.w = nn.h = 10;
+        const int parent = p.states[static_cast<size_t>(n.state)].parent;
+        nn.cluster = parent >= 0 ? graph[static_cast<size_t>(parent)] : -1;
+        const int state = node[static_cast<size_t>(s.Representative(n.state))];
+        g.nodes.push_back(nn);
+        if (state < 0) continue;
+        LayeredGraph::Edge e;
+        e.from = state;
+        e.to = static_cast<int>(g.nodes.size() - 1);
+        e.from_cluster = box(n.state);
         g.edges.push_back(e);
     }
     if (LayoutLayered(g, true).too_large) TooLarge();
