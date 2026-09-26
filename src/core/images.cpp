@@ -39,22 +39,6 @@ struct Pixels {
     std::vector<uint8_t> data;  // 32bpp premultiplied BGRA, stride w*4
 };
 
-// The server of a path on a share (\\host\share\..., \\?\UNC\host\...),
-// lowercase; "?" for other device paths (\\.\pipe\...); empty if local
-// (C:\..., \\?\C:\...).
-std::wstring ShareServer(std::wstring_view p) {
-    if (p.size() < 2 || p[0] != L'\\' || p[1] != L'\\') return {};
-    if (p.size() >= 4 && (p[2] == L'?' || p[2] == L'.') && p[3] == L'\\') {
-        const std::wstring_view rest = p.substr(4);
-        if (rest.size() >= 2 && rest[1] == L':') return {};
-        if (!StartsWithNoCase(rest, L"UNC\\")) return L"?";
-        p = rest.substr(4);
-    } else {
-        p.remove_prefix(2);
-    }
-    return ToLower(p.substr(0, std::min(p.find(L'\\'), p.size())));
-}
-
 bool IsSvgBytes(const std::string& b) {
     const size_t probe = std::min<size_t>(b.size(), 1024);
     const std::string_view head(b.data(), probe);

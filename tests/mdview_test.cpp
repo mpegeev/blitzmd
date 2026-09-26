@@ -832,6 +832,14 @@ int main(int argc, char** ansi_argv) {
         // not run then (it would leave ran.txt behind).
         write(L"script.bat", "@echo ran>\"%~dp0ran.txt\"\r\n");
         DeleteFileW((dir + L"ran.txt").c_str());
+        // A link to a share on another server (Windows logs on there with the
+        // user's account as soon as the path is touched): asked first too.
+        // (.invalid never resolves: nothing is contacted even if it were.)
+        std::string share = "[";
+        for (int i = 0; i < 400; ++i) share += "open this ";
+        share += "](file://unreachable-host.invalid/share/doc.md)\n";
+        write(L"share.md", share);
+        std::wstring scenario_doc = L"modal.md";
 
         WNDCLASSW wc{};
         wc.lpfnWndProc = DefWindowProcW;
@@ -865,7 +873,7 @@ int main(int argc, char** ansi_argv) {
             HWND host = CreateWindowExW(0, wc.lpszClassName, L"modal test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40,
                                         1000, 760, nullptr, nullptr, wc.hInstance, nullptr);
             SetForegroundWindow(host);
-            ModalTest::viewer = load(host, (dir + L"modal.md").c_str(), 0);
+            ModalTest::viewer = load(host, (dir + scenario_doc).c_str(), 0);
             if (!ModalTest::viewer) {
                 std::printf("FAIL: %s: ListLoadW failed\n", name);
                 ++failures;
@@ -930,6 +938,17 @@ int main(int argc, char** ansi_argv) {
             std::printf("FAIL: link to a script: it ran after the viewer was closed\n");
             ++failures;
         }
+        scenario_doc = L"share.md";
+        scenario(
+            "link to another server's share",
+            [&] {
+                SendMessageW(ModalTest::viewer, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(500, 200));
+                SendMessageW(ModalTest::viewer, WM_LBUTTONUP, 0, MAKELPARAM(500, 200));
+            },
+            [&] { return ModalTest::FindDialog(ui) != nullptr; },
+            [&] {
+                if (HWND box = ModalTest::FindDialog(ui)) PostMessageW(box, WM_COMMAND, IDYES, 0);
+            });
         DestroyWindow(helper);
         FreeLibrary(dll);
         std::printf(failures ? "modal: %d FAILED\n" : "modal OK\n", failures);
