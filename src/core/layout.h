@@ -268,6 +268,9 @@ private:
     std::unique_ptr<MathTypesetter> math_;
     bool math_failed_ = false;
     std::unordered_map<int32_t, std::shared_ptr<const MathBox>> math_boxes_;
+    // Estimates typeset display formulas until then (NowMs(), set by each
+    // Layout): past it, those not typeset yet are guessed from their source.
+    double estimate_math_until_ = 0;
     std::unordered_map<int32_t, std::shared_ptr<const DiagramScene>> diagrams_;
     float viewport_w_ = 0.f;
     float doc_h_ = 0.f;

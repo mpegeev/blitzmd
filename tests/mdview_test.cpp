@@ -4040,6 +4040,9 @@ int main(int argc, char** ansi_argv) {
             // (Each tag searched all the unclosed ones: #136.)
             {"100k <td> outside a table", "<div>\n" + repeat("<td>", 100000) + "\n"},
             {"60k unclosed <div>, 60k </section>", "<div>\n" + repeat("<div>", 60000) + repeat("</section>", 60000) + "\n"},
+            // (The first layout typeset every display formula, and x'^{…} copied
+            // its superscript at every level: #137.)
+            {"100 display formulas x'^{x'^{…}} of 20k", repeat("$$" + repeat("x'^{", 38) + repeat("x'", 9800) + repeat("}", 38) + "$$\n\n", 100)},
         };
         int failures = 0;
         {

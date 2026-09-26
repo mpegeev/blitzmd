@@ -586,7 +586,8 @@ private:
     }
 
     // A horizontal list: atoms with TeX's spacing between them.
-    Atom List(const MathNode& n, Ctx ctx, bool lead_ord = false) {
+    // `first`: the list starts at that child.
+    Atom List(const MathNode& n, Ctx ctx, bool lead_ord = false, size_t first = 0) {
         if (n.color) ctx.color = n.color;
         struct Item {
             Atom atom;
@@ -595,8 +596,9 @@ private:
             int style = 1;  // a style switch only affects what follows it
         };
         std::vector<Item> items;
-        items.reserve(n.kids.size());
-        for (const MathNode& k : n.kids) {
+        items.reserve(n.kids.size() - std::min(first, n.kids.size()));
+        for (size_t i = first; i < n.kids.size(); ++i) {
+            const MathNode& k = n.kids[i];
             if (k.kind == MathKind::Style) {
                 ctx.style = std::clamp(static_cast<int>(k.value), 0, 3);
                 continue;
@@ -821,20 +823,19 @@ private:
         while (!limits && base.is_char && !base.op && primes < sup_node.kids.size() && IsPrime(sup_node.kids[primes])) {
             ++primes;
         }
-        MathNode prime_list, sup_rest;
-        const MathNode* sup_list = &sup_node;  // copied only when split
+        // (The rest of the superscript is its children after the primes: not
+        // copied, a copy of a nested x'^{x'^{…}} at every level is quadratic.)
+        MathNode prime_list;
         if (primes) {
-            prime_list.color = sup_rest.color = sup_node.color;
+            prime_list.color = sup_node.color;
             prime_list.kids.assign(sup_node.kids.begin(), sup_node.kids.begin() + static_cast<ptrdiff_t>(primes));
-            sup_rest.kids.assign(sup_node.kids.begin() + static_cast<ptrdiff_t>(primes), sup_node.kids.end());
-            sup_list = &sup_rest;
         }
         const bool has_sub = !sub_node.kids.empty();
-        const bool has_sup = !sup_list->kids.empty();
+        const bool has_sup = sup_node.kids.size() > primes;
         if (!has_sub && !has_sup && !primes) return base;
         const Ctx sup_ctx = ScriptCtx(ctx, false), sub_ctx = ScriptCtx(ctx, true);
         Atom sup, sub;
-        if (has_sup) sup = List(*sup_list, sup_ctx);
+        if (has_sup) sup = List(sup_node, sup_ctx, false, primes);
         if (has_sub) sub = List(sub_node, sub_ctx);
         const float italic = base.italic;
         const float base_w = base.ink_right >= 0 ? base.box.w : base.box.w - italic;
