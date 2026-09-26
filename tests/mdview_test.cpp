@@ -2360,6 +2360,21 @@ int main(int argc, char** ansi_argv) {
                 }().c_str());
             }
         }
+        {  // gantt: a vert label wider than the chart stays inside the diagram
+            std::wstring error;
+            const auto scene = layout(L"gantt\ndateFormat YYYY-MM-DD\nsection S\nTask : a, 2024-01-01, 2d\n" +
+                                          std::wstring(200, L'w') + L" :vert, v1, 2024-01-02, 0d\n",
+                                      &error);
+            bool inside = scene != nullptr;
+            for (size_t i = 0; scene && i < scene->texts.size(); ++i) {
+                const auto& t = scene->texts[i];
+                if (t.origin.x < 0 || t.origin.x + t.w > scene->width + 0.5f) inside = false;
+            }
+            if (!inside) {
+                std::printf("FAIL: gantt: a long vert label leaves the diagram %s\n", WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
         // Fuzz: random flowcharts from fragments.
         static const wchar_t* kPieces[] = {
             L"A", L"B", L"C", L"node-1", L" ", L"\n", L";", L"-->", L"---", L"-.->", L"==>", L"~~~", L"--o", L"--x",
