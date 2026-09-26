@@ -289,25 +289,38 @@ private:
         const DgColor line = Role(kDgLine);
         float y = top_ + 10;
         struct Row {
-            float y, h;
+            size_t period;
+            float y;
+            M text;
+            std::vector<M> events;
         };
-        std::vector<std::pair<size_t, Row>> rows;
+        std::vector<Row> rows;
         // First where everything goes, then the arrow under it all, then the boxes.
-        std::vector<std::pair<D2D1_RECT_F, int>> section_boxes;
+        struct SectionBox {
+            D2D1_RECT_F r;
+            int section;
+            M text;
+        };
+        std::vector<SectionBox> section_boxes;
         for (const int item : order_) {
             if (item < 0) {
                 const int section = -1 - item;
-                const M m = Measure(p_.sections[static_cast<size_t>(section)], 0);
-                section_boxes.push_back({D2D1::RectF(left, y, right, y + m.h + 20), section});
-                y += m.h + 20 + 24;
+                M m = Measure(p_.sections[static_cast<size_t>(section)], 0);
+                const float h = m.h;
+                section_boxes.push_back({D2D1::RectF(left, y, right, y + h + 20), section, std::move(m)});
+                y += h + 20 + 24;
                 continue;
             }
             const size_t i = static_cast<size_t>(item);
             const Period& p = p_.periods[i];
+            Row row{i, y, Measure(p.text, kPeriodW - 40), {}};
             float events_h = 0;
-            for (const Text& e : p.events) events_h += Measure(e, kEventW - 40).h + 20 + 8;
-            const float h = std::max(Measure(p.text, kPeriodW - 40).h + 20, events_h - 8);
-            rows.push_back({i, Row{y, h}});
+            for (const Text& e : p.events) {
+                row.events.push_back(Measure(e, kEventW - 40));
+                events_h += row.events.back().h + 20 + 8;
+            }
+            const float h = std::max(row.text.h + 20, events_h - 8);
+            rows.push_back(std::move(row));
             y += h + 30;
         }
         const float bottom = y;
@@ -317,16 +330,18 @@ private:
         b_.LineTo(D2D1::Point2F(line_x, bottom));
         b_.End(Role(kDgNone), line, 4.f);
         AddMarker(b_, Marker::Arrow, D2D1::Point2F(line_x, bottom + 10), D2D1::Point2F(line_x, top_), line, 2.f);
-        for (const auto& [r, s] : section_boxes) {
-            Box(r, s, false, Measure(p_.sections[static_cast<size_t>(s)], 0), p_.sections[static_cast<size_t>(s)], false);
+        for (const SectionBox& sb : section_boxes) {
+            Box(sb.r, sb.section, false, sb.text, p_.sections[static_cast<size_t>(sb.section)], false);
         }
-        for (const auto& [i, row] : rows) {
+        for (const Row& row : rows) {
+            const size_t i = row.period;
             const Period& p = p_.periods[i];
-            const M pm = Measure(p.text, kPeriodW - 40);
+            const M& pm = row.text;
             Box(D2D1::RectF(left, row.y, left + kPeriodW, row.y + pm.h + 20), colors_[i], false, pm, p.text, false);
             float ey = row.y;
-            for (const Text& e : p.events) {
-                const M m = Measure(e, kEventW - 40);
+            for (size_t k = 0; k < p.events.size(); ++k) {
+                const Text& e = p.events[k];
+                const M& m = row.events[k];
                 const float cy = ey + (m.h + 20) / 2;
                 b_.Begin(D2D1::Point2F(line_x + 4, cy));
                 b_.LineTo(D2D1::Point2F(events_x, cy));

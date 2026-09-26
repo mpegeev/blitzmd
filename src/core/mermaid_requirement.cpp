@@ -165,7 +165,7 @@ private:
         r.kind = ToLower(src_.text.substr(k, c_.pos() - k));
         r.pos = static_cast<uint32_t>(k);
         r.len = static_cast<uint32_t>(c_.pos() - k);
-        static const wchar_t* kRelations[] = {L"contains", L"copies", L"derives", L"satisfies", L"verifies", L"refines", L"traces"};
+        static constexpr const wchar_t* kRelations[] = {L"contains", L"copies", L"derives", L"satisfies", L"verifies", L"refines", L"traces"};
         if (std::find_if(std::begin(kRelations), std::end(kRelations), [&](const wchar_t* s) { return r.kind == s; }) == std::end(kRelations)) {
             c_.set_pos(k);
             c_.Fail(Tr(L"Unknown relationship: ", L"Неизвестная связь: ") + r.kind);

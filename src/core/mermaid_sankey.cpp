@@ -62,10 +62,11 @@ public:
                 c_.Advance();
             }
         }
-        // (Values adding up past a double's range would make no layout.)
+        // (Values adding up near a double's range would make no layout: the
+        // layout multiplies them further.)
         double total = 0;
         for (const SLink& l : links) total += l.value;
-        if (!std::isfinite(total)) Fail(kNoLine, Tr(L"The values are too large", L"Значения слишком большие"));
+        if (!(total <= 1e300)) Fail(kNoLine, Tr(L"The values are too large", L"Значения слишком большие"));
     }
 
     std::vector<SNode> nodes;
