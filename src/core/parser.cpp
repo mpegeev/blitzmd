@@ -508,8 +508,10 @@ void Builder::Pop() {
     }
 }
 
+// (The stack is searched from the top, where the block usually is: from the
+// bottom, a deep stack made every closing tag quadratic.)
 void Builder::PopTo(Block* b) {
-    if (std::find(stack_.begin(), stack_.end(), b) == stack_.end()) return;
+    if (std::find(stack_.rbegin(), stack_.rend(), b) == stack_.rend()) return;
     while (stack_.size() > 1) {
         Block* top = stack_.back();
         Pop();
@@ -518,7 +520,7 @@ void Builder::PopTo(Block* b) {
 }
 
 void Builder::PopAbove(Block* b) {
-    if (std::find(stack_.begin(), stack_.end(), b) == stack_.end()) return;
+    if (std::find(stack_.rbegin(), stack_.rend(), b) == stack_.rend()) return;
     while (stack_.size() > 1 && Top() != b) Pop();
 }
 
