@@ -210,6 +210,19 @@ std::wstring DirectoryOf(std::wstring_view path) {
     return std::wstring(path.substr(0, pos + 1));
 }
 
+std::wstring ShareServer(std::wstring_view p) {
+    if (p.size() < 2 || p[0] != L'\\' || p[1] != L'\\') return {};
+    if (p.size() >= 4 && (p[2] == L'?' || p[2] == L'.') && p[3] == L'\\') {
+        const std::wstring_view rest = p.substr(4);
+        if (rest.size() >= 2 && rest[1] == L':') return {};
+        if (!StartsWithNoCase(rest, L"UNC\\")) return L"?";
+        p = rest.substr(4);
+    } else {
+        p.remove_prefix(2);
+    }
+    return ToLower(p.substr(0, std::min(p.find(L'\\'), p.size())));
+}
+
 // Paths of MAX_PATH characters or more need the "\\?\" prefix.
 std::wstring ExtendedPath(std::wstring_view path) {
     std::wstring p(path);

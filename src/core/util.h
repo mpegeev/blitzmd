@@ -55,6 +55,11 @@ double NowMs();
 std::wstring DirectoryOf(std::wstring_view path);
 // Adds the "\\?\" prefix to paths too long for the classic file API.
 std::wstring ExtendedPath(std::wstring_view path);
+// The server of a path on a share (\\host\share\..., \\?\UNC\host\...),
+// lowercase; "?" for other device paths (\\.\pipe\...); empty if local
+// (C:\..., \\?\C:\...). Touching a share makes Windows log on to its server
+// with the user's account.
+std::wstring ShareServer(std::wstring_view path);
 
 // Reads a whole file (up to max_bytes). Returns false on failure/too large.
 bool ReadFileBytes(const wchar_t* path, std::string& out, uint64_t max_bytes);

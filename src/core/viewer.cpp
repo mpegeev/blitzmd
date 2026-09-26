@@ -1784,6 +1784,22 @@ void Viewer::OpenLink(int link_index) {
 }
 
 void Viewer::NavigateTo(const std::wstring& path, const std::wstring& fragment) {
+    // A share on another server than the document's: touching the path makes
+    // Windows log on there with the user's account (the server gets an NTLM
+    // response), so the user decides first. Device paths never.
+    const std::wstring server = ShareServer(path);
+    if (server == L"?") {
+        MessageBeep(MB_ICONWARNING);
+        return;
+    }
+    if (!server.empty() && server != ShareServer(doc_ ? doc_->base_dir : std::wstring())) {
+        const std::wstring msg = std::wstring(Tr(L"The link points to a network location:\n\n",
+                                                 L"Ссылка ведёт на сетевой ресурс:\n\n")) +
+                                 path + Tr(L"\n\nOpen it?", L"\n\nОткрыть?");
+        const HWND self = hwnd_;
+        if (MessageBoxW(self, msg.c_str(), L"mdview", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+        if (!Survived(self, this)) return;
+    }
     const DWORD attrs = GetFileAttributesW(path.c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES) {
         MessageBeep(MB_ICONWARNING);
