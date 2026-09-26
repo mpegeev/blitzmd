@@ -1404,15 +1404,19 @@ private:
     }
 
     // The item of `level` standing for an edge end: itself, the isolated
-    // subgraph around it, or, for a cluster, some item inside it.
-    Ref Representative(const Ref& r, int level) const {
+    // subgraph around it, or, for a cluster, some item inside it — not
+    // `avoid` (the other end's) if there is another.
+    Ref Representative(const Ref& r, int level, const Ref& avoid = Ref{-1, false}) const {
         if (!(r.cluster && !boxes_[static_cast<size_t>(r.index)].isolated) && Container(r) == level) return r;
         if (r.cluster && !boxes_[static_cast<size_t>(r.index)].isolated && boxes_[static_cast<size_t>(r.index)].level == level) {
+            Ref first{-1, false};
             for (const Ref& item : levels_[static_cast<size_t>(level)].items) {
                 const std::vector<int> around = Around(item);
-                if (std::find(around.begin(), around.end(), r.index) != around.end()) return item;
+                if (std::find(around.begin(), around.end(), r.index) == around.end()) continue;
+                if (item.index != avoid.index || item.cluster != avoid.cluster) return item;
+                if (first.index < 0) first = item;
             }
-            return Ref{-1, false};
+            return first;
         }
         int c = r.cluster ? r.index : p_.nodes[static_cast<size_t>(r.index)].cluster;
         for (int guard = 0; c >= 0 && guard <= kMaxNesting + 1; ++guard, c = Parent(c)) {
@@ -1477,7 +1481,11 @@ private:
         lv.edge_slot.assign(p_.edges.size(), -1);
         for (int ei : lv.edges) {
             const Edge& e = p_.edges[static_cast<size_t>(ei)];
-            const Ref a = Representative(e.from, static_cast<int>(li)), b = Representative(e.to, static_cast<int>(li));
+            // (A subgraph and one of its own items: the subgraph stands in by
+            // another item, or both would be one and the edge vanish.)
+            Ref a = Representative(e.from, static_cast<int>(li));
+            const Ref b = Representative(e.to, static_cast<int>(li), a);
+            if (a.index == b.index && a.cluster == b.cluster) a = Representative(e.from, static_cast<int>(li), b);
             const auto ia = slot.find({a.index, a.cluster}), ib = slot.find({b.index, b.cluster});
             if (ia == slot.end() || ib == slot.end()) continue;
             const int sa = ia->second, sb = ib->second;
