@@ -22,6 +22,9 @@ namespace {
 
 constexpr double kDay = 86400000.0;
 constexpr double kMaxTime = 4e14;  // about ±12,700 years (Mermaid takes years within ±10000)
+// Rows of the chart: more than a readable chart has, and each task steps
+// through its days when days are excluded.
+constexpr size_t kMaxTasks = 500;
 
 // Days since 1970-01-01 of a civil date (proleptic Gregorian).
 long long DaysFromCivil(long long y, unsigned m, unsigned d) {
@@ -534,7 +537,7 @@ private:
             c_.Fail(Tr(L"Expected [id,] [start,] end", L"Ожидалось [id,] [начало,] конец"));
         }
         t.section = static_cast<int>(sections.size()) - 1;
-        if (tasks.size() >= kMaxEdges) c_.Fail(Tr(L"Too many tasks", L"Слишком много задач"));
+        if (tasks.size() >= kMaxTasks) c_.Fail(TooMany(L"tasks", L"задач", kMaxTasks));
         tasks.push_back(std::move(t));
     }
 

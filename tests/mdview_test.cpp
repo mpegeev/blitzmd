@@ -2447,6 +2447,59 @@ int main(int argc, char** ansi_argv) {
                 ++failures;
             }
         }
+        {  // Limits on lines: Mermaid's for flowcharts (swimlanes too), ours for
+           // the rest. As many lines as allowed parse; one more is refused, with
+           // the limit in the message. (Lines between the same few nodes: dense
+           // ones give up sooner, at the layout's budget.)
+            struct Limit {
+                std::wstring head;
+                std::function<std::wstring(size_t)> line;  // the i-th line
+                size_t count;                              // lines allowed
+                const wchar_t* error;
+            };
+            auto same = [](const wchar_t* l) { return [l](size_t) { return std::wstring(l); }; };
+            std::wstring people;
+            for (int i = 0; i < 50; ++i) people += L"Person(p" + std::to_wstring(i) + L", \"P\")\n";
+            const Limit limits[] = {
+                {L"flowchart TD\n", same(L"A --> B\n"), 500, L"Mermaid draws at most 500"},
+                {L"swimlane-beta TD\nsubgraph L\nA\nB\nend\n", same(L"A --> B\n"), 500, L"Mermaid draws at most 500"},
+                {L"classDiagram\n", same(L"A --> B\n"), 2000, L"relations (at most 2000)"},
+                // (a note's line counts as a relation)
+                {L"classDiagram\nclass A\nnote for A \"n\"\n", same(L"A --> B\n"), 1999, L"relations (at most 2000)"},
+                {L"stateDiagram-v2\n", same(L"A --> B\n"), 2000, L"transitions (at most 2000)"},
+                // (a composite's note is linked to it: the line counts as a transition)
+                {L"stateDiagram-v2\nstate C {\nx\n}\nnote right of C : n\n", same(L"A --> B\n"), 1999, L"transitions (at most 2000)"},
+                {L"erDiagram\n", same(L"A ||--o{ B : r\n"), 2000, L"relationships (at most 2000)"},
+                {L"requirementDiagram\nrequirement a {\nid: 1\n}\nrequirement b {\nid: 2\n}\n", same(L"a - traces -> b\n"),
+                 2000, L"relationships (at most 2000)"},
+                // (a relation between the same two replaces the one before)
+                {L"C4Context\n" + people,
+                 [](size_t i) { return L"Rel(p" + std::to_wstring(i % 50) + L", p" + std::to_wstring(i / 50) + L", \"r\")\n"; },
+                 2000, L"relations (at most 2000)"},
+                {L"block-beta\na b\n", same(L"a --> b\n"), 2000, L"edges (at most 2000)"},
+                {L"architecture-beta\nservice a(server)\nservice b(server)\n", same(L"a:R -- L:b\n"), 2000, L"edges (at most 2000)"},
+                {L"sankey-beta\n", same(L"a,b,1\n"), 2000, L"flows (at most 2000)"},
+                {L"wardley-beta\n", same(L"a -> b\n"), 2000, L"links (at most 2000)"},
+                {L"wardley-beta\ncomponent c [0.5, 0.5]\n", same(L"c -> c\n"), 2000, L"links (at most 2000)"},
+                // (a transition to the same domain isn't drawn, nor counted)
+                {L"cynefin-beta\nclear --> clear\n", same(L"complex --> clear\n"), 2000, L"transitions (at most 2000)"},
+                // (arrows from every frame with the name: two per line)
+                {L"eventmodeling\ntf 01 evt S.A\ntf 01 evt S.B\n", same(L"tf 02 evt S.E ->> 01\n"), 1000, L"arrows (at most 2000)"},
+            };
+            for (const Limit& l : limits) {
+                std::wstring src = l.head;
+                for (size_t i = 0; i < l.count; ++i) src += l.line(i);
+                std::wstring at_error, past_error;
+                const bool at = CheckMermaid(src, &at_error);
+                const bool past = CheckMermaid(src + l.line(l.count), &past_error);
+                if (!at || past || past_error.find(l.error) == std::wstring::npos) {
+                    std::printf("FAIL: limit of %s: %zu lines -> \"%s\", one more -> \"%s\"\n",
+                                WideToUtf8(l.head.substr(0, l.head.find(L'\n'))).c_str(), l.count,
+                                WideToUtf8(at_error).c_str(), WideToUtf8(past_error).c_str());
+                    ++failures;
+                }
+            }
+        }
         // Hostile input: bounded time, no crash.
         auto repeat = [](const std::wstring& s, int n) {
             std::wstring r;
@@ -2772,6 +2825,37 @@ int main(int argc, char** ansi_argv) {
                 for (int i = 0; i < 400; ++i) s += L"Rel(p" + std::to_wstring(i % 30) + L", p" + std::to_wstring((i * 7) % 30) + L", \"r\")\n";
                 return s;
             }(),
+            // As many lines as allowed (2000), where the layout doesn't give up.
+            L"classDiagram\n" + repeat(L"A --> A\n", 2000),
+            L"classDiagram\n" + repeat(L"A ..> B : x\n", 2000),
+            L"classDiagram\nclass A\n" + repeat(L"note for A \"n\"\n", 1999),
+            L"stateDiagram-v2\n" + repeat(L"A --> B : x\n", 2000),
+            L"erDiagram\n" + repeat(L"A |o..o| A : x\n", 2000),
+            L"requirementDiagram\nrequirement a {\nid: 1\n}\n" + repeat(L"a - traces -> a\n", 2000),
+            [&] {
+                std::wstring s = L"C4Context\n";
+                for (int i = 0; i < 50; ++i) s += L"Person(p" + std::to_wstring(i) + L", \"P\")\n";
+                for (int i = 0; i < 2000; ++i) s += L"Rel(p" + std::to_wstring(i % 50) + L", p" + std::to_wstring((i * 7 + i / 50) % 50) + L", \"r\")\n";
+                return s;
+            }(),
+            [&] {
+                std::wstring s = L"block-beta\ncolumns 10\n";
+                for (int i = 0; i < 100; ++i) s += L"b" + std::to_wstring(i) + L" ";
+                s += L"\n";
+                for (int i = 0; i < 2000; ++i) s += L"b" + std::to_wstring(i % 100) + L" --> b" + std::to_wstring((i * 37) % 100) + L"\n";
+                return s;
+            }(),
+            L"cynefin-beta\n" + repeat(L"complex --> clear : \"t\"\nchaotic --> complex\n", 1000),
+            L"sankey-beta\n" + repeat(L"a,b,1\n", 2000),
+            [&] {  // parallel flows between a few nodes: each moved node re-sorted its
+                   // neighbours' flows once per flow (quadratic)
+                std::wstring s = L"sankey-beta\n";
+                for (int i = 0; i < 2000; ++i) s += L"a" + std::to_wstring(i % 2) + L",b" + std::to_wstring(i % 3) + L",1\n";
+                return s;
+            }(),
+            L"eventmodeling\n" + repeat(L"tf 01 evt S.E ->> 01\n", 44),  // 44 frames from all 44: 1936 arrows
+            // Frames naming one that comes later (no arrow): a box was looked up per frame (3 s).
+            L"eventmodeling\n" + repeat(L"tf 998 evt a ->> 999\n", 1333) + repeat(L"tf 999 evt a\n", 667),
         };
         for (const std::wstring& h : hostile) {
             const double t0 = NowMs();

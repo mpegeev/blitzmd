@@ -55,7 +55,7 @@ public:
             l.target = Node(b, b_pos, b_len);
             l.value = value;
             l.index = links.size();
-            if (links.size() >= kMaxNodes) c_.Fail(Tr(L"Too many flows", L"Слишком много потоков"));
+            if (links.size() >= kMaxLines) c_.Fail(TooMany(L"flows", L"потоков", kMaxLines));
             links.push_back(l);
             while (!c_.AtEnd() && c_.Peek() != L'\n') {
                 if (!IsSpace(c_.Peek())) c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
@@ -171,6 +171,7 @@ public:
         : nodes_(n), links_(l), x1_(w), y1_(h), dx_(node_w), dy_(pad) {}
 
     bool Run() {
+        seen_.assign(nodes_.size(), 0);
         for (size_t k = 0; k < links_.size(); ++k) {
             nodes_[links_[k].source].out.push_back(k);
             nodes_[links_[k].target].in.push_back(k);
@@ -369,9 +370,26 @@ private:
         SortOut(n);
         SortIn(n);
     }
+    // Each neighbour once: parallel links share one, and sorting its list
+    // again per link (as d3 does, cheap only for JavaScript's sort of a
+    // sorted array) made many parallel flows quadratic.
     void ReorderNodeLinks(size_t n) {
-        for (size_t k : nodes_[n].in) SortOut(links_[k].source);
-        for (size_t k : nodes_[n].out) SortIn(links_[k].target);
+        ++stamp_;
+        for (size_t k : nodes_[n].in) {
+            const size_t s = links_[k].source;
+            if (seen_[s] != stamp_) {
+                seen_[s] = stamp_;
+                SortOut(s);
+            }
+        }
+        ++stamp_;
+        for (size_t k : nodes_[n].out) {
+            const size_t t = links_[k].target;
+            if (seen_[t] != stamp_) {
+                seen_[t] = stamp_;
+                SortIn(t);
+            }
+        }
     }
 
     double TargetTop(size_t s, size_t t) const {
@@ -419,6 +437,8 @@ private:
     std::vector<SNode>& nodes_;
     std::vector<SLink>& links_;
     double x1_, y1_, dx_, dy_, py_ = 0;
+    std::vector<size_t> seen_;  // per node: the ReorderNodeLinks pass that last sorted it
+    size_t stamp_ = 0;
 };
 
 // d3's schemeTableau10.

@@ -168,7 +168,7 @@ private:
         c_.SkipBlanks();
         e.to = Id();
         e.to_group = GroupMark();
-        if (edges.size() >= kMaxNodes) c_.Fail(Tr(L"Too many edges", L"Слишком много связей"));
+        if (edges.size() >= kMaxLines) c_.Fail(TooMany(L"edges", L"связей", kMaxLines));
         edges.push_back(std::move(e));
     }
 

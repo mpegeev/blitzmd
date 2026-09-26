@@ -176,7 +176,7 @@ private:
         const Text b = Name();
         r.from = Index(backwards ? b : a);
         r.to = Index(backwards ? a : b);
-        if (relations.size() >= kMaxEdges) c_.Fail(Tr(L"Too many relationships", L"Слишком много связей"));
+        if (relations.size() >= kMaxLines) c_.Fail(TooMany(L"relationships", L"связей", kMaxLines));
         relations.push_back(std::move(r));
     }
 

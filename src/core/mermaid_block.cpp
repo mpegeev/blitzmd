@@ -130,7 +130,7 @@ public:
                     if (b < 0) c_.Fail(Tr(L"Expected a block", L"Ожидался блок"));
                     e.from = a;
                     e.to = b;
-                    if (edges.size() >= kMaxEdges) c_.Fail(Tr(L"Too many edges", L"Слишком много связей"));
+                    if (edges.size() >= kMaxLines) c_.Fail(TooMany(L"edges", L"связей", kMaxLines));
                     edges.push_back(e);
                     c_.SkipBlanks();
                     break;

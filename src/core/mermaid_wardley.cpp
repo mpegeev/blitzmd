@@ -422,7 +422,7 @@ public:
             }
             // The statement's end: a line end or the end.
             if (!Is(T::Newline) && !Is(T::Eof)) Fail(toks_[i_].text.pos, Tr(L"Unexpected ", L"Непонятно: ") + Shown(toks_[i_]));
-            if (++statements_ > kMaxNodes) TooLarge();
+            if (++statements_ > kMaxNodes + kMaxLines) TooLarge();  // (links are statements too)
         }
     }
 
@@ -575,7 +575,7 @@ private:
         l.to = NameValue();
         if (Is(T::Port)) l.to_port = toks_[i_++].text.raw;
         if (Is(T::LinkLabel)) l.label = toks_[i_++].text;
-        if (raw_links_.size() >= kMaxEdges * 4) Fail(l.from.pos, Tr(L"Too many links", L"Слишком много связей"));
+        if (raw_links_.size() >= kMaxLines) Fail(l.from.pos, TooMany(L"links", L"связей", kMaxLines));
         raw_links_.push_back(std::move(l));
     }
 

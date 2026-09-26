@@ -27,10 +27,27 @@ constexpr size_t kNoLine = static_cast<size_t>(-1);
 [[noreturn]] inline void TooLarge() {
     Fail(kNoLine, Tr(L"The diagram is too large", L"Диаграмма слишком большая"));
 }
+// "Too many <what> (at most N)", for a limit of ours.
+inline std::wstring TooMany(const wchar_t* en, const wchar_t* ru, size_t limit) {
+    const std::wstring n = std::to_wstring(limit);
+    return IsRussianUi() ? L"Слишком много " + std::wstring(ru) + L" (не больше " + n + L")"
+                         : L"Too many " + std::wstring(en) + L" (at most " + n + L")";
+}
 
-// Size limits (hostile input).
+// Size limits (hostile input). Mermaid itself limits only the source (50 000
+// characters) and a flowchart's links; the other limits are ours, so that no
+// diagram can stall the viewer. Those of one diagram type are in its file.
 constexpr size_t kMaxNodes = 2000;
-constexpr size_t kMaxEdges = 500;    // Mermaid's own limit (maxEdges)
+// Links of a flowchart (a swimlane diagram is one too): Mermaid's maxEdges,
+// beyond which Mermaid shows an error as well.
+constexpr size_t kMermaidMaxEdges = 500;
+// Lines of every other diagram: relations, transitions, edges, flows, links,
+// arrows. Diagrams laid out in layers (class, state, ER and requirement
+// diagrams) give up sooner when dense, at the layout's own budget ("too
+// large": random graphs at some 750-2000 lines); this bounds the sparse ones
+// (parallel lines, loops, notes), and the diagrams whose lines are only drawn
+// or placed by a layout with a budget of its own.
+constexpr size_t kMaxLines = 2000;
 constexpr size_t kMaxLabel = 4000;   // characters of one label
 constexpr int kMaxNesting = 24;
 

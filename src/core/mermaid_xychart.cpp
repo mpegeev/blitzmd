@@ -11,6 +11,9 @@
 namespace mdv::mermaid {
 namespace {
 
+// Bars and lines over one axis (their values are counted apart).
+constexpr size_t kMaxPlots = 500;
+
 struct Text {
     std::wstring raw;
     uint32_t pos = 0, len = 0;
@@ -104,7 +107,7 @@ private:
             p.labels.push_back(c_.Peek() == L'"' ? Quoted() : Text{});
             if (++values_ > kMaxNodes) c_.Fail(Tr(L"Too many values", L"Слишком много значений"));
         }
-        if (plots.size() >= kMaxEdges) c_.Fail(Tr(L"Too many plots", L"Слишком много графиков"));
+        if (plots.size() >= kMaxPlots) c_.Fail(TooMany(L"plots", L"графиков", kMaxPlots));
         plots.push_back(std::move(p));
     }
 

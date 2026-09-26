@@ -109,8 +109,8 @@ public:
             }
         }
         // A note's link is a line to draw like a relation: they count together.
-        if (relations.size() + links > kMaxEdges) {
-            mermaid::Fail(kNoLine, Tr(L"Too many relations: Mermaid draws at most 500", L"Слишком много связей: Mermaid рисует не больше 500"));
+        if (relations.size() + links > kMaxLines) {
+            mermaid::Fail(kNoLine, TooMany(L"relations", L"связей", kMaxLines));
         }
     }
 
@@ -405,8 +405,8 @@ private:
             r.label.len = static_cast<uint32_t>(l.size());
             if (l.size() > kMaxLabel) c_.Fail(Tr(L"Label too long", L"Слишком длинная подпись"));
         }
-        if (relations.size() >= kMaxEdges) {
-            c_.Fail(Tr(L"Too many relations: Mermaid draws at most 500", L"Слишком много связей: Mermaid рисует не больше 500"));
+        if (relations.size() >= kMaxLines) {
+            c_.Fail(TooMany(L"relations", L"связей", kMaxLines));
         }
         relations.push_back(std::move(r));
     }

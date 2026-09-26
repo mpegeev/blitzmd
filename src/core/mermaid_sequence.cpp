@@ -13,8 +13,8 @@
 namespace mdv::mermaid {
 namespace {
 
-// Messages, notes and blocks: they only stack up (linear work), so more than
-// a flowchart's links.
+// Messages, notes and blocks: rows that only stack up (linear work), so more
+// than the lines of the other diagrams (kMaxLines).
 constexpr size_t kMaxItems = 4000;
 
 struct Text {
@@ -240,7 +240,7 @@ private:
     }
 
     void Add(Item it) {
-        if (items.size() >= kMaxItems) c_.Fail(Tr(L"Too many messages", L"Слишком много сообщений"));
+        if (items.size() >= kMaxItems) c_.Fail(TooMany(L"messages", L"сообщений", kMaxItems));
         items.push_back(std::move(it));
     }
 
