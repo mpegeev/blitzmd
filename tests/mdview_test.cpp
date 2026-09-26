@@ -2984,6 +2984,15 @@ int main(int argc, char** ansi_argv) {
             L"eventmodeling\n" + repeat(L"tf 01 evt S.E ->> 01\n", 44),  // 44 frames from all 44: 1936 arrows
             // Frames naming one that comes later (no arrow): a box was looked up per frame (3 s).
             L"eventmodeling\n" + repeat(L"tf 998 evt a ->> 999\n", 1333) + repeat(L"tf 999 evt a\n", 667),
+            // Directive and YAML openings never closed, each looking for its
+            // end through the rest of the source (#151): a correct diagram
+            // after 6250 of them, and an error after 5000.
+            [&] {
+                std::wstring s = L"wardley-beta\n" + repeat(L"%%{\n", 6250);
+                for (int i = 0; i < 6; ++i) s += L"note \"" + repeat(L"}%%", 1330) + L"x\" [0." + std::to_wstring(i + 1) + L", 0.5]\n";
+                return s;
+            }(),
+            L"wardley-beta\n" + repeat(L" ---\n", 5000) + std::wstring(24986, L'\n') + L"x",
             // One class line naming 12 450 elements and 12 450 classes: each
             // element got all of them (24 s and 7.6 GB for ER: #141).
             L"erDiagram\ne\nclass " + repeat(L"e,", 12449) + L"e " + repeat(L"c,", 12449) + L"c",

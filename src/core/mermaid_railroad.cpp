@@ -124,7 +124,7 @@ private:
     }
     // Hidden: blanks, %% comments, /* */ (calls, EBNF), (* *) (EBNF), # (PEG), ; (ABNF).
     bool Skip() {
-        if (const size_t n = YamlBlockLength(s_, p_)) {
+        if (const size_t n = YamlBlockLength(s_, p_, &yaml_none_)) {
             p_ += n;
             return true;
         }
@@ -134,7 +134,7 @@ private:
             return true;
         }
         if (c == L'%' && At(1) == L'%') {
-            if (const size_t n = DirectiveLength(s_, p_)) {
+            if (const size_t n = DirectiveLength(s_, p_, &directive_none_)) {
                 p_ += n;
                 return true;
             }
@@ -275,6 +275,7 @@ private:
     }
 
     std::wstring_view s_;
+    size_t yaml_none_ = std::wstring_view::npos, directive_none_ = std::wstring_view::npos;  // (YamlBlockLength)
     size_t p_;
     Dialect d_;
     mutable size_t no_close_[2] = {std::wstring_view::npos, std::wstring_view::npos};  // "*)", "*/" from here on
