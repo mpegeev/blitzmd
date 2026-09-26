@@ -522,8 +522,8 @@ SceneBuilder::Measured SceneBuilder::Measure(const RichText& t, float wrap, bool
     Measured m;
     IDWriteTextFormat* fmt = Format(bold, scale);
     if (!fmt) return m;
-    const std::wstring& text = t.text.empty() ? std::wstring(L" ") : t.text;
-    if (FAILED(dw_->CreateTextLayout(text.c_str(), static_cast<UINT32>(text.size()), fmt, wrap > 0 ? wrap : 100000.f,
+    const std::wstring_view text = t.text.empty() ? std::wstring_view(L" ") : std::wstring_view(t.text);
+    if (FAILED(dw_->CreateTextLayout(text.data(), static_cast<UINT32>(text.size()), fmt, wrap > 0 ? wrap : 100000.f,
                                      100000.f, &m.layout))) {
         return m;
     }
@@ -673,6 +673,19 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
         brush->SetColor(ToColor(Resolve(c, dark)));
         return brush.Get();
     };
+    // Search hits by position, looked up per text (there may be thousands of
+    // each); the current hit and the selection are one each.
+    std::vector<DiagramHighlight> hits, others;
+    std::vector<uint32_t> reach;  // the furthest end of hits[0..i]
+    if (highlights && highlight_brushes) {
+        for (const DiagramHighlight& h : *highlights) {
+            if (h.kind == 0) hits.push_back(h);
+            else if (h.kind <= 2) others.push_back(h);
+        }
+        std::sort(hits.begin(), hits.end(), [](const DiagramHighlight& a, const DiagramHighlight& b) { return a.start < b.start; });
+        uint32_t furthest = 0;
+        for (const DiagramHighlight& h : hits) reach.push_back(furthest = std::max(furthest, h.end));
+    }
 
     for (const DiagramScene::Item& item : s.items) {
         if (item.text) {
@@ -681,15 +694,19 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
             if (!t.layout || !shown(box, 4)) continue;
             if (highlights && highlight_brushes && t.src_length > 0) {
                 // The current hit over other hits over the selection.
-                int best = -1, kind = -1;
-                for (const DiagramHighlight& h : *highlights) {
-                    if (h.start >= t.src_start + t.src_length || h.end <= t.src_start || h.kind > 2) continue;
-                    const int priority = h.kind == 1 ? 2 : (h.kind == 0 ? 1 : 0);
-                    if (priority > best) {
-                        best = priority;
-                        kind = h.kind;
-                    }
+                const uint32_t a = t.src_start, b = t.src_start + t.src_length;
+                bool current = false;
+                int kind = -1;
+                for (const DiagramHighlight& h : others) {
+                    if (h.start >= b || h.end <= a) continue;
+                    if (h.kind == 1) current = true;
+                    else if (kind < 0) kind = h.kind;
                 }
+                const auto after = std::lower_bound(hits.begin(), hits.end(), b,
+                                                    [](const DiagramHighlight& h, uint32_t v) { return h.start < v; });
+                const size_t before = static_cast<size_t>(after - hits.begin());  // hits starting before b
+                if (before > 0 && reach[before - 1] > a) kind = 0;
+                if (current) kind = 1;
                 if (kind >= 0 && highlight_brushes[kind]) {
                     if (t.angle != 0) {
                         // Along the turned text, padded at its ends.
