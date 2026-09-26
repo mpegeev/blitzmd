@@ -56,12 +56,15 @@ private:
         ComPtr<ID2D1Bitmap> bitmap;        // device resource for doc_rt_
     };
 
-    static std::shared_ptr<SvgImage> Parse(std::string bytes, int depth);
+    // `raster_left`: bytes of decoded raster <image>s the whole tree (this
+    // document and those nested in it) may still take.
+    static std::shared_ptr<SvgImage> Parse(std::string bytes, int depth, size_t* raster_left);
     void ParseStructure();
     void AddImage(Image im, std::wstring_view href);
 
     std::string source_;
     int depth_ = 0;  // nesting level of this document inside <image>s
+    size_t* raster_left_ = nullptr;  // while parsing: Parse's `raster_left`
     float width_ = 300, height_ = 150;
     float vb_x_ = 0, vb_y_ = 0, vb_w_ = 0, vb_h_ = 0;
     std::vector<Text> texts_;
