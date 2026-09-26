@@ -105,6 +105,35 @@ UINT FileChangedMessage() {
     return msg;
 }
 
+// A poll of the file's stamp is done: wParam 1 if it changed, lParam the
+// watch it belongs to (Viewer::watch_gen_).
+UINT PollDoneMessage() {
+    static const UINT msg = RegisterWindowMessageW(L"MdViewWlxPollDone");
+    return msg;
+}
+
+// Polls a file on a network share: GetFileAttributesEx on the thread pool,
+// since a share that stopped answering blocks it for the SMB timeout. The
+// check owns everything it needs, so it may outlive the viewer.
+struct PollCheck {
+    HWND hwnd;
+    std::wstring path;  // extended
+    uint64_t time, size;
+    uint32_t gen;
+};
+
+void CALLBACK PollCallback(PTP_CALLBACK_INSTANCE, void* context) {
+    std::unique_ptr<PollCheck> c(static_cast<PollCheck*>(context));
+    WIN32_FILE_ATTRIBUTE_DATA fa{};
+    bool changed = false;
+    if (GetFileAttributesExW(c->path.c_str(), GetFileExInfoStandard, &fa)) {
+        const uint64_t t = (static_cast<uint64_t>(fa.ftLastWriteTime.dwHighDateTime) << 32) | fa.ftLastWriteTime.dwLowDateTime;
+        const uint64_t size = (static_cast<uint64_t>(fa.nFileSizeHigh) << 32) | fa.nFileSizeLow;
+        changed = t != c->time || size != c->size;
+    }
+    PostMessageW(c->hwnd, PollDoneMessage(), changed ? 1 : 0, static_cast<LPARAM>(c->gen));
+}
+
 // GetDpiForWindow exists since Windows 10 1607; resolved dynamically so the
 // plugin still loads on older systems.
 UINT WindowDpi(HWND hwnd) {
@@ -388,6 +417,8 @@ private:
     HANDLE watch_change_ = INVALID_HANDLE_VALUE;  // FindFirstChangeNotification
     HANDLE watch_wait_ = nullptr;                 // thread-pool wait on it
     uint64_t file_time_ = 0, file_size_ = 0;      // stamp of the loaded file
+    uint32_t watch_gen_ = 0;                      // incremented by StartWatch()
+    bool poll_pending_ = false;                   // a PollCheck of this watch is out
 
     std::wstring search_text_;
     std::vector<TextRange> hits_;
@@ -646,6 +677,8 @@ void CALLBACK Viewer::WatchCallback(void* hwnd, BOOLEAN /*timed_out*/) {
 
 void Viewer::StartWatch() {
     StopWatch();
+    ++watch_gen_;  // (a poll still out belongs to the previous watch)
+    poll_pending_ = false;
     if (path_.empty() || !GlobalSettings().auto_reload) return;
     FileStamp(file_time_, file_size_);
     const std::wstring dir = DirectoryOf(path_);
@@ -2481,10 +2514,16 @@ void Viewer::OnTimer(UINT_PTR id) {
         break;
     }
     case kTimerWatchPoll: {
-        uint64_t t = 0, size = 0;
-        if (FileStamp(t, size) && (t != file_time_ || size != file_size_)) {
-            SetTimer(hwnd_, kTimerReload, kReloadDelayMs, nullptr);
-        }
+        // Checked on the thread pool, one check at a time (PollCallback).
+        if (poll_pending_ || path_.empty()) break;
+        auto* check = new PollCheck{hwnd_, ExtendedPath(path_), file_time_, file_size_, watch_gen_};
+        TP_CALLBACK_ENVIRON env;
+        InitializeThreadpoolEnvironment(&env);
+        SetThreadpoolCallbackLibrary(&env, reinterpret_cast<HMODULE>(&__ImageBase));  // stays loaded meanwhile
+        SetThreadpoolCallbackRunsLong(&env);
+        if (TrySubmitThreadpoolCallback(&PollCallback, check, &env)) poll_pending_ = true;
+        else delete check;
+        DestroyThreadpoolEnvironment(&env);
         break;
     }
     case kTimerGif:
@@ -2603,6 +2642,13 @@ LRESULT Viewer::Proc(UINT msg, WPARAM wp, LPARAM lp) {
     }
     if (msg == FileChangedMessage()) {
         if (watch_change_ != INVALID_HANDLE_VALUE || watch_wait_) OnFileChanged();
+        return 0;
+    }
+    if (msg == PollDoneMessage()) {
+        if (static_cast<uint32_t>(lp) == watch_gen_) {
+            poll_pending_ = false;
+            if (wp) SetTimer(hwnd_, kTimerReload, kReloadDelayMs, nullptr);
+        }
         return 0;
     }
     if (msg == ImageLoadedMessage()) {
