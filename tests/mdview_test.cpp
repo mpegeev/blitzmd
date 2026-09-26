@@ -2340,6 +2340,7 @@ int main(int argc, char** ansi_argv) {
             {L"block-beta\ncolumns 3\na([\"Stadium\"]) e:::hot f:2\nclassDef hot fill:#f96\nx<[\" \"]>(y)", true, nullptr},
             {L"sankey-beta\n\" padded \",B,10.5kg\npadded,C,0x10", true, nullptr},
             {L"sankey-beta\nA,B,abc", false, L"Line 2"},
+            {L"architecture-beta\nservice a(server)[A] in g", false, L"No such group: g"},  // (not "declared before")
             {L"erDiagram\nA {\n\"c\"\n}", false, L"Line 3"},  // an attribute without a type or name
             {L"erDiagram\naccDescr {\nA ||--o{ B : r", false, L"Line 2"},  // accDescr { never closed
             {L"classDiagram\naccDescr {\nclass A", false, L"Line 2"},
@@ -2817,6 +2818,103 @@ int main(int argc, char** ansi_argv) {
             std::printf("  swimlanes: second rank at %.0f and %.0f\n", b, d);
             if (b < 0 || d < 0 || std::fabs(b - d) > 1) {
                 std::printf("FAIL: swimlanes: nodes of one rank in different layers %s\n", WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        {  // gantt: 12 o'clock with hh and no A is noon, not midnight (task B
+           // starts after A, not before it)
+            std::wstring error;
+            const std::wstring src = L"gantt\ndateFormat YYYY-MM-DD hh:mm\nsection S\nA : a, 2024-01-01 01:00, 2024-01-01 11:00\n"
+                                     L"B : b, 2024-01-01 12:00, 1h\n";
+            const auto scene = layout(src, &error);
+            auto label_x = [&](const wchar_t* line) {
+                const uint32_t at = static_cast<uint32_t>(src.find(line) + 1);
+                for (size_t i = 0; scene && i < scene->texts.size(); ++i) {
+                    if (scene->texts[i].src_start == at) return scene->texts[i].origin.x;
+                }
+                return -1.f;
+            };
+            const float a = label_x(L"\nA :"), b = label_x(L"\nB :");
+            std::printf("  gantt hh: task at 01:00 labelled at %.0f, at 12:00 at %.0f\n", a, b);
+            if (a < 0 || b <= a) {
+                std::printf("FAIL: gantt: 12:00 with hh read as midnight %s\n", WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        {  // gantt: tasks written before those they wait for resolve in one go
+           // (a pass over all of them per task: quadratic)
+            auto waiting = [](bool reversed) {
+                std::wstring s = L"gantt\ndateFormat YYYY-MM-DD\nsection S\n";
+                if (!reversed) s += L"l : a499, 2024-01-01, 1d\n";
+                for (int i = 0; i < 499; ++i) {
+                    const int k = reversed ? i : 498 - i;
+                    s += L"t : a" + std::to_wstring(k) + L", 2024-01-01, until a" + std::to_wstring(k + 1) + L"\n";
+                }
+                if (reversed) s += L"l : a499, 2024-01-01, 1d\n";
+                return s;
+            };
+            auto best_ms = [&](const std::wstring& src) {
+                double best = 1e9;
+                for (int i = 0; i < 3; ++i) {
+                    std::wstring error;
+                    const double t0 = NowMs();
+                    if (!CheckMermaid(src, &error)) return -1.0;
+                    best = std::min(best, NowMs() - t0);
+                }
+                return best;
+            };
+            const double in_order = best_ms(waiting(false)), reversed = best_ms(waiting(true));
+            std::printf("  gantt 499 tasks waiting: in order %.1f ms, reversed %.1f ms\n", in_order, reversed);
+            if (in_order < 0 || reversed < 0 || reversed > in_order * 4 + 5) {
+                std::printf("FAIL: gantt: tasks written before those they wait for are slow to resolve\n");
+                ++failures;
+            }
+        }
+        {  // railroad EBNF: repeats after each of 39 nested groups made a tree
+           // 780 deep (each level of brackets was checked alone)
+            std::wstring nested_ebnf = L"railroad-ebnf-beta\nr = " + std::wstring(39, L'(') + L"x";
+            for (int d = 38; d >= 0; --d) nested_ebnf += L")" + std::wstring(static_cast<size_t>(38 - d), L'+');
+            nested_ebnf += L" ;";
+            std::wstring error;
+            const bool ok = CheckMermaid(nested_ebnf, &error);
+            std::printf("  railroad nested 39 groups with repeats: %s\n", ok ? "accepted" : WideToUtf8(error).c_str());
+            if (ok) {
+                std::printf("FAIL: railroad: a tree hundreds of levels deep accepted\n");
+                ++failures;
+            }
+            // Unclosed comments: each searched to the end once, not per "(*"
+            // (timed against as many tokens without comments).
+            auto lex_ms = [&](const wchar_t* unit) {
+                std::wstring src = L"railroad-ebnf-beta\n";
+                while (src.size() < 49000) src += unit;
+                double best = 1e9;
+                for (int i = 0; i < 3; ++i) {
+                    const double t0 = NowMs();
+                    CheckMermaid(src, &error);
+                    best = std::min(best, NowMs() - t0);
+                }
+                return best;
+            };
+            const double unclosed = lex_ms(L"(*"), plain = lex_ms(L"(+");
+            std::printf("  railroad 24 000 unclosed comments: %.0f ms, as many tokens without: %.0f ms\n", unclosed, plain);
+            if (unclosed > plain * 3 + 10) {
+                std::printf("FAIL: railroad: unclosed comments are slow to skip\n");
+                ++failures;
+            }
+        }
+        {  // architecture: a star of 600 services on one side of a hub is
+           // drawn (placing each searched every placed box: "too large")
+            std::wstring src = L"architecture-beta\nservice hub(server)[Hub]\n";
+            for (int i = 0; i < 600; ++i) {
+                src += L"service s" + std::to_wstring(i) + L"(disk)[S]\nhub:R -- L:s" + std::to_wstring(i) + L"\n";
+            }
+            std::wstring error;
+            const double t0 = NowMs();
+            const auto scene = layout(src, &error);
+            const double ms = NowMs() - t0;
+            std::printf("  architecture star of 600: %s in %.0f ms\n", scene ? "drawn" : WideToUtf8(error).c_str(), ms);
+            if (!scene || ms > 3000) {
+                std::printf("FAIL: architecture: a star of 600 services not drawn\n");
                 ++failures;
             }
         }

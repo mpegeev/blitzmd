@@ -1436,20 +1436,20 @@ private:
     void TextNodes(const std::vector<Subset>& data, const std::vector<Area>& areas, const std::vector<Circle>& cs, const std::vector<Centre>& centres,
                    float title_h) {
         std::vector<std::pair<std::wstring, std::vector<const TextNode*>>> groups;
+        std::map<std::wstring, size_t> group_of;
         for (const TextNode& n : p_.texts) {
             const std::wstring key = Parser::Key(n.sets);
-            auto it = std::find_if(groups.begin(), groups.end(), [&](const auto& g) { return g.first == key; });
-            if (it == groups.end()) {
-                groups.push_back({key, {}});
-                it = groups.end() - 1;
-            }
-            it->second.push_back(&n);
+            const auto [it, fresh] = group_of.try_emplace(key, groups.size());
+            if (fresh) groups.push_back({key, {}});
+            groups[it->second].second.push_back(&n);
         }
+        std::map<std::wstring, size_t> subset_of;  // (the first with the key)
+        for (size_t k = 0; k < data.size(); ++k) subset_of.try_emplace(Parser::Key(data[k].sets), k);
         const float px = 40 * kScale;
         for (const auto& [key, nodes] : groups) {
-            size_t k = 0;
-            while (k < data.size() && Parser::Key(data[k].sets) != key) ++k;
-            if (k == data.size()) continue;
+            const auto found = subset_of.find(key);
+            if (found == subset_of.end()) continue;
+            const size_t k = found->second;
             const double cx = centres[k].x, cy = centres[k].y;
             double min_r = INFINITY, inner = INFINITY;
             for (const int i : areas[k].sets) {
