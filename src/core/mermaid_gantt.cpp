@@ -121,7 +121,9 @@ std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format, b
                 const std::wstring_view name = kMonths[m];
                 const bool full = rest.starts_with(L"MMMM");
                 for (const std::wstring_view n : {name, name.substr(0, 3)}) {
-                    if (strict && (n.size() == 3) == full) continue;
+                    // (Strict: MMMM takes the whole name, MMM the first three
+                    // letters; for May they are the same.)
+                    if (strict && (full ? n.size() != name.size() : n.size() != 3)) continue;
                     if (s.size() - i >= n.size() && EqualsNoCase(s.substr(i, n.size()), n)) {
                         i += n.size();
                         month = m + 1;

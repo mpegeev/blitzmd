@@ -2642,6 +2642,23 @@ int main(int argc, char** ansi_argv) {
                 ++failures;
             }
         }
+        {  // gantt: "May" is a whole month name for MMMM (a task ending in May
+           // came out empty: no end, and an axis of one day)
+            // Task B starts after A: in the right part of the chart, not at its start.
+            std::wstring error;
+            const std::wstring src = L"gantt\ndateFormat D MMMM YYYY\nsection S\nA : a, 1 January 2024, 5 May 2024\nB : b, after a, 1d\n";
+            const auto scene = layout(src, &error);
+            const uint32_t b_at = static_cast<uint32_t>(src.find(L"\nB :") + 1);
+            float b_x = -1;
+            for (size_t i = 0; scene && i < scene->texts.size(); ++i) {
+                if (scene->texts[i].src_start == b_at) b_x = scene->texts[i].origin.x;
+            }
+            std::printf("  gantt task after one ending in May: label at %.0f of %.0f\n", b_x, scene ? scene->width : 0.f);
+            if (!scene || b_x < scene->width * 0.7f) {  // (in May: at 0.9; misread, it sat at 0.5)
+                std::printf("FAIL: gantt: \"May\" not read as a month\n");
+                ++failures;
+            }
+        }
         {  // gantt: a vert label wider than the chart stays inside the diagram
             std::wstring error;
             const auto scene = layout(L"gantt\ndateFormat YYYY-MM-DD\nsection S\nTask : a, 2024-01-01, 2d\n" +
