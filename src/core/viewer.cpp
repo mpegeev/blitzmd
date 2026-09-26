@@ -883,14 +883,19 @@ void Viewer::OnPaint() {
     st.hover_block = hover_block_;
     st.copy_button_hover = copy_hover_;
     st.copied_block = copied_block_;
-    images_.BeginPaint();
-    if (full_.active()) {
-        DrawFullView();
-    } else {
-        drawn_.clear();
-        if (doc_) renderer_.Draw(rt_.Get(), layout_, st);
+    try {
+        images_.BeginPaint();
+        if (full_.active()) {
+            DrawFullView();
+        } else {
+            drawn_.clear();
+            if (doc_) renderer_.Draw(rt_.Get(), layout_, st);
+        }
+        DrawOverlays();
+    } catch (...) {
+        // Out of memory: the frame is shown as far as it got, and EndDraw
+        // must follow BeginDraw regardless or the target stops drawing.
     }
-    DrawOverlays();
     const HRESULT hr = rt_->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
         DiscardDeviceResources();

@@ -76,6 +76,16 @@ public:
 protected:
     virtual ~InlineObjectBase() = default;
 
+    // Draw is called by DirectWrite: nothing may unwind through it. A step
+    // that throws (out of memory) is left out of this frame.
+    template <class F>
+    static void NoThrow(F&& f) noexcept {
+        try {
+            f();
+        } catch (...) {
+        }
+    }
+
 private:
     LONG ref_ = 1;
 };
@@ -122,10 +132,10 @@ public:
         if (zoomable && dc.drawn) RecordDrawn(dc, object_, box);
         if (zoomable && IsZoomed(*object_)) {
             dc.rt->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-            dc.images->Draw(dc.rt, index_, ZoomedRect(box, *object_), dc.palette, engine_->dwrite(), em_);
+            NoThrow([&] { dc.images->Draw(dc.rt, index_, ZoomedRect(box, *object_), dc.palette, engine_->dwrite(), em_); });
             dc.rt->PopAxisAlignedClip();
         } else {
-            dc.images->Draw(dc.rt, index_, box, dc.palette, engine_->dwrite(), em_);
+            NoThrow([&] { dc.images->Draw(dc.rt, index_, box, dc.palette, engine_->dwrite(), em_); });
         }
         return S_OK;
     }
@@ -162,21 +172,23 @@ public:
         const D2D1_RECT_F box = D2D1::RectF(x, top, x + w_, top + h_);
         // Highlights in the diagram's own positions.
         local_.clear();
-        for (DiagramHighlight hl : dc.diagram_highlights) {
-            if (hl.end <= object_->pos || hl.start >= object_->pos + object_->length) continue;
-            hl.start = std::max(hl.start, object_->pos) - object_->pos;
-            hl.end = std::min(hl.end, object_->pos + object_->length) - object_->pos;
-            local_.push_back(hl);
-        }
+        NoThrow([&] {
+            for (DiagramHighlight hl : dc.diagram_highlights) {
+                if (hl.end <= object_->pos || hl.start >= object_->pos + object_->length) continue;
+                hl.start = std::max(hl.start, object_->pos) - object_->pos;
+                hl.end = std::min(hl.end, object_->pos + object_->length) - object_->pos;
+                local_.push_back(hl);
+            }
+        });
         // A wide, flat diagram (a left-to-right pipeline) is still one to zoom.
         const bool zoomable = dc.interactive && !scene_->error && std::max(w_, h_) >= kMinZoomable;
         if (zoomable && dc.drawn) RecordDrawn(dc, object_, box);
         if (zoomable && IsZoomed(*object_)) {
             dc.rt->PushAxisAlignedClip(box, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-            DrawDiagram(dc.rt, *scene_, ZoomedRect(box, *object_), dc.dark, &local_, dc.highlight_brushes);
+            NoThrow([&] { DrawDiagram(dc.rt, *scene_, ZoomedRect(box, *object_), dc.dark, &local_, dc.highlight_brushes); });
             dc.rt->PopAxisAlignedClip();
         } else {
-            DrawDiagram(dc.rt, *scene_, box, dc.dark, &local_, dc.highlight_brushes);
+            NoThrow([&] { DrawDiagram(dc.rt, *scene_, box, dc.dark, &local_, dc.highlight_brushes); });
         }
         return S_OK;
     }
@@ -263,8 +275,10 @@ public:
             const float box = size_ * kEmojiBox;
             const float left = x + (size_ * kEmojiAdvance - box) * 0.5f;
             const float top = y + ascent_ - size_ * kEmojiCenter - box * 0.5f;
-            dc.images->Draw(dc.rt, index_, D2D1::RectF(left, top, left + box, top + box), dc.palette,
-                            engine_->dwrite(), size_);
+            NoThrow([&] {
+                dc.images->Draw(dc.rt, index_, D2D1::RectF(left, top, left + box, top + box), dc.palette,
+                                engine_->dwrite(), size_);
+            });
         }
         return S_OK;
     }
@@ -308,7 +322,7 @@ public:
         ID2D1Brush* brush = dc.default_brush;
         ComPtr<ID2D1Brush> effect_brush;
         if (effect && SUCCEEDED(effect->QueryInterface(IID_PPV_ARGS(&effect_brush)))) brush = effect_brush.Get();
-        math->Draw(dc.rt, *box_, D2D1::Point2F(x, y + ascent_ - raise_), scale_, brush);  // y: baseline - ascent
+        NoThrow([&] { math->Draw(dc.rt, *box_, D2D1::Point2F(x, y + ascent_ - raise_), scale_, brush); });  // y: baseline - ascent
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE GetMetrics(DWRITE_INLINE_OBJECT_METRICS* m) override {
