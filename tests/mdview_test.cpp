@@ -2630,6 +2630,18 @@ int main(int argc, char** ansi_argv) {
                 ++failures;
             }
         }
+        {  // C4: a boundary declared again may not move into itself (the pair
+           // used to drop out of the diagram, drawn in a heap at 0,0)
+            std::wstring error;
+            const auto scene = layout(L"C4Context\nBoundary(a, \"A\") {\nBoundary(b, \"B\") {\nSystem(s, \"S\")\n"
+                                      L"Boundary(a, \"again\")\n}\n}\n",
+                                      &error);
+            std::printf("  C4 boundary moved into itself: %s\n", scene ? "drawn" : WideToUtf8(error).c_str());
+            if (scene) {
+                std::printf("FAIL: C4: a boundary moved into itself is drawn\n");
+                ++failures;
+            }
+        }
         {  // gantt: a vert label wider than the chart stays inside the diagram
             std::wstring error;
             const auto scene = layout(L"gantt\ndateFormat YYYY-MM-DD\nsection S\nTask : a, 2024-01-01, 2d\n" +
