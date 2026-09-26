@@ -28,6 +28,10 @@ namespace {
 constexpr wchar_t kObjectChar = 0xFFFC;
 constexpr wchar_t kLineBreak = 0x2028;
 constexpr size_t kMaxNesting = 128;  // block tree depth
+// Open blocks HTML may stack up (browsers cap nesting too, Chrome at 512):
+// every tag searches them, so thousands of unclosed tags would make the
+// parse quadratic. Past it, block tags open nothing.
+constexpr size_t kMaxHtmlStack = 2 * kMaxNesting;
 constexpr int kMaxFootnoteNesting = 4;
 
 std::wstring DecodeAttr(const MD_ATTRIBUTE& a) {
@@ -1571,8 +1575,9 @@ void Builder::HtmlStartTag(const HtmlToken& tok) {
         break;
     }
 
-    if (!html_block_mode_) {
-        // Block-level tags inside a Markdown paragraph don't change structure.
+    if (!html_block_mode_ || stack_.size() >= kMaxHtmlStack) {
+        // Block-level tags inside a Markdown paragraph don't change structure
+        // (nor do they past kMaxHtmlStack).
         if (const auto* id = tok.Attr(L"id")) RegisterAnchor(*id);
         return;
     }

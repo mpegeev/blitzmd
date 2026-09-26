@@ -4037,6 +4037,9 @@ int main(int argc, char** ansi_argv) {
             {"8000 lines of code", "```js\n" + repeat("const value = compute(alpha, \"text\", 42) + other.field; // note\n", 8000) + "```\n"},
             // (Each unbalanced ')' cut off used to recount the whole link: #135.)
             {"www. link and 200k ')'", "www.example.com/" + repeat(")", 200000) + "\n"},
+            // (Each tag searched all the unclosed ones: #136.)
+            {"100k <td> outside a table", "<div>\n" + repeat("<td>", 100000) + "\n"},
+            {"60k unclosed <div>, 60k </section>", "<div>\n" + repeat("<div>", 60000) + repeat("</section>", 60000) + "\n"},
         };
         int failures = 0;
         {
