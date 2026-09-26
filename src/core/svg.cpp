@@ -272,13 +272,19 @@ void SvgImage::ParseStructure() {
         bool hidden = false;
         D2D1_MATRIX_3X2_F m = D2D1::Matrix3x2F::Identity();
     };
+    // Every element starts from a copy of its parent's state: past this
+    // depth, elements share the deepest one (their end tags just count down).
+    constexpr size_t kMaxDepth = 256;
     std::vector<Inherited> stack(1);
+    size_t beyond = 0;  // open elements past kMaxDepth
     bool root_seen = false;
     int text_index = -1;
     auto apply = [](Inherited& in, std::wstring_view name, std::wstring_view value) {
-        if (name == L"font-family") in.family = std::wstring(value);
-        else if (name == L"font-size") ParseSvgLength(value, in.size);
-        else if (name == L"font-weight") {
+        if (name == L"font-family") {
+            if (value.size() <= 256) in.family = std::wstring(value);  // (copied into every element below)
+        } else if (name == L"font-size") {
+            ParseSvgLength(value, in.size);
+        } else if (name == L"font-weight") {
             if (value == L"bold" || value == L"bolder") in.weight = 700;
             else if (value == L"normal") in.weight = 400;
             else if (int v = _wtoi(std::wstring(value).c_str()); v >= 100 && v <= 900) in.weight = static_cast<uint16_t>(v);
@@ -430,9 +436,13 @@ void SvgImage::ParseStructure() {
                 texts_.push_back(std::move(t));
                 text_index = static_cast<int>(texts_.size() - 1);
             }
-            if (!tok.self_closing) stack.push_back(std::move(in));
+            if (!tok.self_closing) {
+                if (stack.size() < kMaxDepth) stack.push_back(std::move(in));
+                else ++beyond;
+            }
         } else if (tok.kind == HtmlToken::EndTag) {
-            if (stack.size() > 1) stack.pop_back();
+            if (beyond > 0) --beyond;
+            else if (stack.size() > 1) stack.pop_back();
             if (tok.name == L"text") text_index = -1;
         } else if (tok.kind == HtmlToken::Text && text_index >= 0 && !stack.back().hidden) {
             std::wstring& dst = texts_[static_cast<size_t>(text_index)].text;

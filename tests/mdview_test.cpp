@@ -3398,6 +3398,27 @@ int main(int argc, char** ansi_argv) {
                 ++failures;
             }
         }
+        {
+            // SVG: a long font-family inherited by 20000 elements, and 20000
+            // nested groups (each element used to copy its parent's state).
+            const std::string family(1000000, 'f');
+            const std::string svgs[] = {
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\" font-family=\"" + family + "\">" +
+                    repeat("<g/>", 20000) + "</svg>",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\">" + repeat("<g font-family=\"abcdefghijklmnopqrstuvwxyz\">", 20000) +
+                    "<text>x</text>" + repeat("</g>", 20000) + "</svg>",
+            };
+            for (const std::string& svg : svgs) {
+                const double t0 = NowMs();
+                const bool parsed = SvgImage::Parse(std::string(svg)) != nullptr;
+                const double ms = NowMs() - t0;
+                std::printf("  SVG of %zu KB: %s in %.0f ms\n", svg.size() >> 10, parsed ? "parsed" : "rejected", ms);
+                if (ms > limit) {
+                    std::printf("FAIL: SVG parsing too slow (%.0f ms)\n", ms);
+                    ++failures;
+                }
+            }
+        }
         for (const auto& c : cases) {
             auto doc = ParseMarkdown(c.md, L"C:\\heavy.md");
             OffscreenOptions o;
