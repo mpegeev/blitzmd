@@ -223,6 +223,16 @@ struct Dumper {
         case BlockType::Rule:
             out += "<hr />\n";
             break;
+        case BlockType::Details:
+            out += "<details>\n";
+            for (const Block* c : b->children) BlockOut(c, false);
+            out += "</details>\n";
+            break;
+        case BlockType::Summary:
+            out += "<summary>";
+            Inline(b);
+            out += "</summary>\n";
+            break;
         default:
             for (const Block* c : b->children) BlockOut(c, false);
             break;
