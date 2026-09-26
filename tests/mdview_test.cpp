@@ -514,6 +514,76 @@ int main(int argc, char** ansi_argv) {
         std::printf("plugin OK\n");
         return 0;
     }
+    if (cmd == "search" && argc >= 4) {
+        // search <mdview.wlx64> <out-dir>: ListSearchTextW forward, backward
+        // (with and without a selection), and a text that isn't there.
+        HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
+        using SetParamsFn = void(__stdcall*)(void*);
+        using LoadFn = HWND(__stdcall*)(HWND, const wchar_t*, int);
+        using SearchFn = int(__stdcall*)(HWND, const wchar_t*, int);
+        using CloseFn = void(__stdcall*)(HWND);
+        auto set_params = dll ? reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams")) : nullptr;
+        auto load = dll ? reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW")) : nullptr;
+        auto search = dll ? reinterpret_cast<SearchFn>(GetProcAddress(dll, "ListSearchTextW")) : nullptr;
+        auto close = dll ? reinterpret_cast<CloseFn>(GetProcAddress(dll, "ListCloseWindow")) : nullptr;
+        if (!set_params || !load || !search || !close) {
+            std::fprintf(stderr, "cannot load plugin\n");
+            return 1;
+        }
+        const std::wstring dir = FullPath(argv[3]) + L"\\";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        DeleteFileW((dir + L"mdview.ini").c_str());
+        struct {
+            int size;
+            DWORD lo, hi;
+            char ini[MAX_PATH];
+        } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
+        strncpy_s(dp.ini, WideToUtf8(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        set_params(&dp);
+        std::string md;
+        for (int i = 0; i < 300; ++i) md += "Paragraph " + std::to_string(i) + " with foo in it.\n\n";
+        {
+            HANDLE f = CreateFileW((dir + L"search.md").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD n = 0;
+            if (f != INVALID_HANDLE_VALUE) {
+                WriteFile(f, md.data(), static_cast<DWORD>(md.size()), &n, nullptr);
+                CloseHandle(f);
+            }
+        }
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"MdViewSearchHost";
+        RegisterClassW(&wc);
+        HWND host = CreateWindowExW(0, wc.lpszClassName, L"search test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40, 1000,
+                                    760, nullptr, nullptr, wc.hInstance, nullptr);
+        HWND viewer = load(host, (dir + L"search.md").c_str(), 0);
+        if (!viewer) {
+            std::fprintf(stderr, "ListLoadW failed\n");
+            return 1;
+        }
+        int failures = 0;
+        auto expect = [&](int got, int want, const char* what) {  // 0: found, 1: not found
+            std::printf("%s: %s\n", what, got == 0 ? "found" : "not found");
+            if (got != want) {
+                std::printf("FAIL: %s\n", what);
+                ++failures;
+            }
+        };
+        constexpr int kFirst = 1, kBack = 8;
+        SendMessageW(viewer, WM_KEYDOWN, VK_END, 0);  // just opened: nothing selected
+        expect(search(viewer, L"foo", kFirst | kBack), 0, "backward from the end, nothing selected");
+        expect(search(viewer, L"foo", kBack), 0, "find previous");
+        SendMessageW(viewer, WM_KEYDOWN, VK_HOME, 0);
+        expect(search(viewer, L"foo", kFirst), 0, "forward from the top");
+        expect(search(viewer, L"foo", 0), 0, "find next");
+        expect(search(viewer, L"bar", kFirst), 1, "a text that isn't there");
+        close(viewer);
+        DestroyWindow(host);
+        FreeLibrary(dll);
+        std::printf(failures ? "search: %d FAILED\n" : "search OK\n", failures);
+        return failures ? 1 : 0;
+    }
     if (cmd == "modal" && argc >= 4) {
         // modal <mdview.wlx64> <out-dir>: Total Commander closes the viewer
         // while one of its modal loops runs: the context menu, and the "Run
