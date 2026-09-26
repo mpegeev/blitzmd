@@ -3119,6 +3119,7 @@ public:
                 declCtx_ = false;
                 funcNext_ = false;
                 inCount_ = 0;
+                arith_ = 0;
                 if (hdPending_) {
                     hdPending_ = false;
                     i = Heredoc(i);
@@ -3172,6 +3173,7 @@ public:
                 }
                 const size_t e = VarEnd(i);
                 if (e > i) {
+                    if (e == i + 3 && c1 == L'(') ++arith_;  // $((
                     em_.Add(i, e, K::Variable);
                     cmdPos_ = c1 == L'(';
                     i = e;
@@ -3185,13 +3187,16 @@ public:
                 ++i;
                 continue;
             }
-            if (c == L'<' && c1 == L'<' && i + 2 < n_ && s_[i + 2] != L'<') {
+            // (Inside $(( )) or (( )), << shifts.)
+            if (c == L'<' && c1 == L'<' && i + 2 < n_ && s_[i + 2] != L'<' && arith_ == 0) {
                 if (const size_t e = HeredocStart(i)) {
                     i = e;
                     continue;
                 }
             }
             if (c == L';' || c == L'&' || c == L'|' || c == L'(' || c == L')') {
+                if (c == L'(' && c1 == L'(') ++arith_;
+                else if (c == L')' && c1 == L')' && arith_ > 0) --arith_;
                 cmdPos_ = true;
                 declCtx_ = false;
                 inCount_ = 0;
@@ -3394,6 +3399,7 @@ private:
     bool declCtx_ = false;
     bool funcNext_ = false;
     int inCount_ = 0;
+    int arith_ = 0;  // open $(( / (( on this line
     LineFinder lf_;
     wchar_t hd_[64] = {};
     size_t hdLen_ = 0;

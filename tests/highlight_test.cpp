@@ -369,6 +369,7 @@ function build() {
     gcc -O2 -c "$f" -o "${f%.c}.o" || exit 1
   done
   count=$(ls | wc -l)
+  mask=$((1 << bits)) && (( mask <<= 1 ))
   echo 'single $quoted' # trailing comment
 }
 
@@ -891,6 +892,7 @@ const Expectation kExpect[] = {
     E4("bash", L"; do", L"do", Keyword), E3("bash", L"gcc", Function), E4("bash", L"\"$f\"", L"$f", Variable),
     E4("bash", L"exit 1", L"exit", Keyword), E4("bash", L"done\n", L"done", Keyword), E4("bash", L"$(ls", L"$(", Variable),
     E4("bash", L"$(ls", L"ls", Function), E4("bash", L"| wc", L"wc", Function), E3("bash", L"'single $quoted'", String),
+    E4("bash", L"  echo 'single", L"echo", Function),  // (the << in $(( )) above is a shift)
     E3("bash", L"# trailing comment", Comment), E3("bash", L"case", Keyword), E3("bash", L"esac", Keyword),
     E3("bash", L"<<EOF", Keyword), E4("bash", L"Hello $USER", L"Hello ", String),
     E4("bash", L"Hello $USER", L"$USER", Variable), E4("bash", L"\nEOF\n", L"EOF", Keyword),
