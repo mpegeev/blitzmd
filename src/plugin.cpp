@@ -70,7 +70,7 @@ HBITMAP PreviewBitmap(const std::wstring& path, int width, int height, const cha
     o.width = 640.f;
     o.layout.font_size = 16.f;
     o.layout.max_content_width = 0;
-    o.layout.dark = GlobalSettings().theme == ThemeMode::Dark;
+    o.layout.dark = ThumbnailTheme() == ThemeMode::Dark;  // (on TC's thumbnail thread)
     o.allow_remote_images = false;
     const float aspect = static_cast<float>(height) / static_cast<float>(width);
     o.max_height = o.width * std::max(aspect, 0.5f);

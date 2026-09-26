@@ -1493,7 +1493,8 @@ void Builder::HtmlStartTag(const HtmlToken& tok) {
         b->ordered = t == Tag::Ol;
         b->tight = true;
         b->number = 1;
-        if (const auto* start = tok.Attr(L"start")) b->number = _wtoi(start->c_str());
+        // (Bounded like Markdown lists: item numbers add to it.)
+        if (const auto* start = tok.Attr(L"start")) b->number = std::clamp(_wtoi(start->c_str()), -999999999, 999999999);
         break;
     }
     case Tag::Li: {
@@ -1519,7 +1520,7 @@ void Builder::HtmlStartTag(const HtmlToken& tok) {
         const int index = static_cast<int>(list->children.size());
         Block* b = PushHtml(BlockType::ListItem, tok);
         b->number = list->number + index;
-        if (const auto* v = tok.Attr(L"value")) b->number = _wtoi(v->c_str());
+        if (const auto* v = tok.Attr(L"value")) b->number = std::clamp(_wtoi(v->c_str()), -999999999, 999999999);
         b->tight = true;
         break;
     }

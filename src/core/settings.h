@@ -33,8 +33,14 @@ struct Settings {
     bool operator==(const Settings&) const = default;
 };
 
-// Process-wide settings instance.
+// Process-wide settings instance (UI thread only).
 Settings& GlobalSettings();
+
+// The theme for thumbnails, which Total Commander draws on another thread
+// while the UI thread may change the settings: a copy of
+// GlobalSettings().theme that PublishSettings() updates after a change.
+ThemeMode ThumbnailTheme();
+void PublishSettings();
 
 // Location of the ini file (set from ListSetDefaultParams, else next to the DLL).
 void SetSettingsPath(const std::wstring& ini_path);

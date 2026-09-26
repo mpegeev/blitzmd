@@ -133,7 +133,7 @@ std::optional<double> ParseDate(std::wstring_view s, std::wstring_view format, b
             if (!found) return std::nullopt;
             has_month = true;
         } else if (token(L"MM") || token(L"M")) {
-            if (!(rest[1] == L'M' ? two(&month) : one(&month))) return std::nullopt;
+            if (!(rest.starts_with(L"MM") ? two(&month) : one(&month))) return std::nullopt;
             has_month = true;
         } else if (token(L"Do")) {
             if (!digits(1, 2, &day) || s.size() - i < 2) return std::nullopt;
@@ -1017,7 +1017,10 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
         b.LineTo(D2D1::Point2F(x, label_y));
         b.End(Role(kDgNone), Role(kDgLine), 2.f, 1);
         const M m = b.Measure(ParseLabel(t.text.raw, false), 0, false, kScale);
-        const float tx = std::clamp(x - m.w / 2, kMargin, x1 + kSide - m.w);
+        // Centered under the line, kept inside the chart; a label wider than
+        // the chart starts at its left edge and widens the diagram.
+        const float tx = std::max(kMargin, std::min(x - m.w / 2, x1 + kSide - m.w));
+        width = std::max(width, tx + m.w + kMargin);
         b.Text(m, D2D1::Point2F(tx, label_y + (row_h - m.h) / 2), Role(kDgText), t.text.pos, t.text.len);
     }
     // Today, if in the chart.

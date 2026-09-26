@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 
 #include "core/util.h"
 
@@ -44,6 +45,14 @@ Settings& GlobalSettings() {
     return settings;
 }
 
+namespace {
+std::atomic<ThemeMode> g_thumbnail_theme{ThemeMode::Auto};
+}  // namespace
+
+ThemeMode ThumbnailTheme() { return g_thumbnail_theme.load(std::memory_order_relaxed); }
+
+void PublishSettings() { g_thumbnail_theme.store(GlobalSettings().theme, std::memory_order_relaxed); }
+
 void SetSettingsPath(const std::wstring& ini_path) {
     // Store our settings in our own file next to the ini TC suggests.
     PathStorage() = DirectoryOf(ini_path) + L"mdview.ini";
@@ -79,6 +88,7 @@ void LoadSettings() {
     s.line_numbers = ReadInt(L"LineNumbers", d.line_numbers) != 0;
     s.auto_reload = ReadInt(L"AutoReload", d.auto_reload) != 0;
     if (s.font_family.empty()) s.font_family = d.font_family;
+    PublishSettings();
 }
 
 void SaveSettings() {

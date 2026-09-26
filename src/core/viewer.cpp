@@ -2804,6 +2804,7 @@ bool ViewerIsDark(HWND hwnd) {
 }
 
 void ApplySettingsToViewers(const Settings& old) {
+    PublishSettings();  // every change of GlobalSettings() comes here
     // A viewer may reload its document; none is created or destroyed meanwhile,
     // but iterate over a copy anyway.
     const std::vector<Viewer*> viewers = G().viewers;
