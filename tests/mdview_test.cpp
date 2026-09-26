@@ -4268,6 +4268,25 @@ int main(int argc, char** ansi_argv) {
                 std::printf("FAIL: an SVG's embedded pictures are not bounded (+%.0f MB)\n", grew4);
                 ++failures;
             }
+            // Printing 150 pictures of 2400 x 300 (3 MB each decoded): within
+            // the budget of pictures (all were kept, twice: ~870 MB: #145).
+            const double before5 = peak_mb();
+            {
+                auto printed = ParseMarkdown(repeat("![w](img/wide-2400x300.png)\n\n", 150), FullPath("samples/gfm/heavy.md"));
+                LayoutConfig cfg;
+                cfg.max_content_width = 0;
+                cfg.page_padding = 0;
+                PageRenderer pr;
+                if (pr.Init(*printed, cfg, 680.f, 96.f, 1000)) {
+                    for (const auto& [top, bottom] : pr.Paginate(1000.f)) pr.RenderBand(top, 1000.f, bottom);
+                }
+            }
+            const double grew5 = peak_mb() - before5;
+            std::printf("  printing 150 pictures of 2400 x 300: peak memory +%.0f MB\n", grew5);
+            if (grew5 > 400) {
+                std::printf("FAIL: printing keeps every picture (+%.0f MB)\n", grew5);
+                ++failures;
+            }
         }
         {
             // SVG: a long font-family inherited by 20000 elements, and 20000

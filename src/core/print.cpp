@@ -98,6 +98,7 @@ std::vector<std::pair<float, float>> PageRenderer::Paginate(float page_h) {
 }
 
 IWICBitmap* PageRenderer::RenderBand(float y, float height, float clip_bottom) {
+    images_.BeginPaint();  // (each band a paint: the pictures of past ones may go)
     rt_->BeginDraw();
     rt_->SetTransform(D2D1::Matrix3x2F::Identity());
     rt_->Clear(palette_.theme().Color(kColorBackground));
@@ -113,6 +114,7 @@ IWICBitmap* PageRenderer::RenderBand(float y, float height, float clip_bottom) {
         rt_->PopAxisAlignedClip();
     }
     rt_->EndDraw();
+    images_.TrimMemory();
     return bitmap_.Get();
 }
 
@@ -128,19 +130,25 @@ bool PrintDocument(HWND owner, Document& doc, const LayoutConfig& config, const 
     pd.nToPage = 9999;
     pd.nCopies = 1;
     if (!PrintDlgW(&pd)) return CommDlgExtendedError() == 0;  // cancelled, or failed (no printer...)
-    HDC dc = pd.hDC;
-    auto cleanup = [&] {
-        if (dc) DeleteDC(dc);
-        if (pd.hDevMode) GlobalFree(pd.hDevMode);
-        if (pd.hDevNames) GlobalFree(pd.hDevNames);
-    };
+    const HDC dc = pd.hDC;
+    // Released however printing ends, an exception (out of memory) included:
+    // a job started is ended or aborted, never left open in the spooler.
+    struct Job {
+        PRINTDLGW& pd;
+        HFONT font = nullptr;
+        bool started = false, ended = false;
+        ~Job() {
+            if (started && !ended) AbortDoc(pd.hDC);
+            if (pd.hDC) DeleteDC(pd.hDC);  // (first: the font may still be selected)
+            if (font) DeleteObject(font);
+            if (pd.hDevMode) GlobalFree(pd.hDevMode);
+            if (pd.hDevNames) GlobalFree(pd.hDevNames);
+        }
+    } job{pd};
     // The owner (the viewer, which owns `doc`) may have been closed while a
     // dialog was up: here, and in StartDoc (a printer to a file asks for its
     // name). Nothing touches `doc` before both.
-    if (!dc || !IsWindow(owner)) {
-        cleanup();
-        return false;
-    }
+    if (!dc || !IsWindow(owner)) return false;
     const int dpi_x = GetDeviceCaps(dc, LOGPIXELSX), dpi_y = GetDeviceCaps(dc, LOGPIXELSY);
     const int phys_w = GetDeviceCaps(dc, PHYSICALWIDTH), phys_h = GetDeviceCaps(dc, PHYSICALHEIGHT);
     const int off_x = GetDeviceCaps(dc, PHYSICALOFFSETX), off_y = GetDeviceCaps(dc, PHYSICALOFFSETY);
@@ -154,10 +162,7 @@ bool PrintDocument(HWND owner, Document& doc, const LayoutConfig& config, const 
     const int footer_h = dpi_y / 3;
     const int content_w = right - left;
     const int content_h = bottom - top - footer_h;
-    if (content_w < dpi_x || content_h < dpi_y) {
-        cleanup();
-        return false;
-    }
+    if (content_w < dpi_x || content_h < dpi_y) return false;
     const float render_dpi = static_cast<float>(std::min(dpi_x, 300));
     const float width_dip = content_w * 96.f / dpi_x;
     const float page_h_dip = content_h * 96.f / dpi_y;
@@ -165,19 +170,14 @@ bool PrintDocument(HWND owner, Document& doc, const LayoutConfig& config, const 
     DOCINFOW di{};
     di.cbSize = sizeof di;
     di.lpszDocName = title.c_str();
-    if (StartDocW(dc, &di) <= 0) {
-        cleanup();
-        return false;
-    }
+    if (StartDocW(dc, &di) <= 0) return false;
+    job.started = true;
     PageRenderer pr;
-    if (!IsWindow(owner) || !pr.Init(doc, config, width_dip, render_dpi, 512)) {
-        AbortDoc(dc);
-        cleanup();
-        return false;
-    }
+    if (!IsWindow(owner) || !pr.Init(doc, config, width_dip, render_dpi, 512)) return false;
     const auto pages = pr.Paginate(page_h_dip);
-    HFONT font = CreateFontW(-MulDiv(8, dpi_y, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    const HFONT font = job.font =
+        CreateFontW(-MulDiv(8, dpi_y, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                    CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     const float band_dip = static_cast<float>(pr.band_px()) / pr.scale();
     bool ok = true;
     for (size_t p = 0; p < pages.size() && ok; ++p) {
@@ -226,10 +226,7 @@ bool PrintDocument(HWND owner, Document& doc, const LayoutConfig& config, const 
         SelectObject(dc, old_font);
         if (EndPage(dc) <= 0) ok = false;
     }
-    if (ok) EndDoc(dc);
-    else AbortDoc(dc);
-    DeleteObject(font);
-    cleanup();
+    if (ok) job.ended = EndDoc(dc) > 0;  // (else Job aborts it)
     return ok;
 }
 
