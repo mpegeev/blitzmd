@@ -223,8 +223,7 @@ std::wstring PickFamily(IDWriteFactory* dw, std::wstring_view list) {
 std::shared_ptr<SvgImage> SvgImage::Parse(std::string bytes) { return Parse(std::move(bytes), 0); }
 
 std::shared_ptr<SvgImage> SvgImage::Parse(std::string bytes, int depth) {
-    const size_t probe = std::min<size_t>(bytes.size(), 4096);
-    if (std::string_view(bytes.data(), probe).find("<svg") == std::string_view::npos) return nullptr;
+    if (bytes.find("<svg") == std::string::npos) return nullptr;  // (after any prolog: a license in a comment...)
     auto img = std::make_shared<SvgImage>();
     img->source_ = std::move(bytes);
     img->depth_ = depth;
@@ -269,7 +268,8 @@ void SvgImage::ParseStructure() {
         uint32_t fill = 0x000000;
         float fill_opacity = 1;
         bool no_fill = false;
-        bool hidden = false;
+        bool hidden = false;  // not drawn
+        bool gone = false;    // display:none or in <defs>: visibility can't bring it back
         D2D1_MATRIX_3X2_F m = D2D1::Matrix3x2F::Identity();
     };
     // Every element starts from a copy of its parent's state: past this
@@ -303,9 +303,9 @@ void SvgImage::ParseStructure() {
             float v;
             if (ParseNumber(value, i, v)) in.fill_opacity *= std::clamp(v, 0.f, 1.f);
         } else if (name == L"display") {
-            if (value == L"none") in.hidden = true;
+            if (value == L"none") in.hidden = in.gone = true;
         } else if (name == L"visibility") {
-            in.hidden = value == L"hidden";
+            in.hidden = in.gone || value == L"hidden";
         }
     };
     while (tz.Next(tok)) {
@@ -370,7 +370,7 @@ void SvgImage::ParseStructure() {
             } else if (n == L"defs" || n == L"clippath" || n == L"mask" || n == L"symbol" ||
                        n == L"title" || n == L"desc" || n == L"metadata" || n == L"style" || n == L"script" ||
                        n == L"pattern" || n == L"marker" || n == L"lineargradient" || n == L"radialgradient") {
-                in.hidden = true;
+                in.hidden = in.gone = true;
             } else if (n == L"image" && !in.hidden) {
                 const std::wstring* href = tok.Attr(L"href");
                 if (!href) href = tok.Attr(L"xlink:href");

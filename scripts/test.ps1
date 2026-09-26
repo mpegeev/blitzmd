@@ -74,6 +74,7 @@ Step 'settings dialog' {
     & $t settings $dll samples/gfm/04-code-highlighting.md (Join-Path $tmp 'settings/s') | Where-Object { $_ -match 'FAIL|settings' }
 }
 Step 'image zoom' { & $t zoom $dll tests/zoom.md (Join-Path $tmp 'zoom/z') | Where-Object { $_ -match 'FAIL|zoom' } }
+Step 'inputs' { & $t inputs all | Where-Object { $_ -match 'FAIL|inputs' } }
 Step 'long paths' { & $t longpath (Join-Path $tmp 'longpath') | Where-Object { $_ -match 'FAIL|longpath' } }
 Step 'remote pictures' { & $t remote $dll (Join-Path $tmp 'remote') | Where-Object { $_ -match 'FAIL|remote' } }
 Step 'search' { & $t search $dll (Join-Path $tmp 'search') | Where-Object { $_ -match 'FAIL|search' } }

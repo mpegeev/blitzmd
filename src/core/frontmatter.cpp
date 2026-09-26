@@ -213,14 +213,10 @@ private:
 
     bool ParseBlockScalar(bool literal, int parent_indent, Node& out) {
         out.kind = Node::Scalar;
-        int block_indent = -1;
         std::vector<std::string_view> parts;
         while (i_ < lines_.size()) {
             const Line& l = lines_[i_];
-            if (!l.text.empty()) {
-                if (l.indent <= parent_indent) break;
-                if (block_indent < 0) block_indent = l.indent;
-            }
+            if (!l.text.empty() && l.indent <= parent_indent) break;
             parts.push_back(l.text);
             ++i_;
         }

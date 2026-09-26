@@ -519,6 +519,32 @@ int main(int argc, char** ansi_argv) {
         std::printf("plugin OK\n");
         return 0;
     }
+    if (cmd == "inputs" && std::strcmp(argv[2], "all") == 0) {
+        // inputs all: decoding of data: URIs and of text files, SVG sniffing.
+        int failures = 0;
+        auto expect = [&](bool ok, const char* what) {
+            std::printf("%s: %s\n", what, ok ? "ok" : "FAIL");
+            if (!ok) ++failures;
+        };
+        std::string bytes;
+        expect(DecodeDataUri(L"data:image/png,%89PNG%0D%0A%1A%0A", bytes) && bytes == std::string("\x89PNG\r\n\x1A\n", 8),
+               "percent-encoded binary data: URI");
+        expect(DecodeDataUri(L"data:image/png;BASE64,iVBORw==", bytes) && bytes.size() == 4 &&
+                   static_cast<unsigned char>(bytes[0]) == 0x89,
+               "data: URI marked ;BASE64");
+        std::string utf16;  // U+3000 then ASCII, UTF-16 LE without a BOM
+        for (const wchar_t c : std::wstring(L"\x3000Hello, world! A text file in UTF-16 without a BOM.")) {
+            utf16.push_back(static_cast<char>(c & 0xFF));
+            utf16.push_back(static_cast<char>(c >> 8));
+        }
+        expect(DecodeTextToUtf8(utf16) == WideToUtf8(L"\x3000Hello, world! A text file in UTF-16 without a BOM."),
+               "UTF-16 LE without a BOM, starting with U+3000");
+        expect(SvgImage::Parse("<!-- " + std::string(5000, 'l') +
+                               " -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"/>") != nullptr,
+               "SVG after a 5 KB comment");
+        std::printf(failures ? "inputs: %d FAILED\n" : "inputs OK\n", failures);
+        return failures ? 1 : 0;
+    }
     if (cmd == "longpath") {
         // longpath <out-dir>: a picture next to a document in a directory
         // whose path is longer than MAX_PATH loads.
