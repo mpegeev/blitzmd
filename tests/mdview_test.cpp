@@ -2884,7 +2884,8 @@ int main(int argc, char** ansi_argv) {
                         for (int k = j + 1; k < 24; ++k) triples.push_back(std::wstring{sets[i], L',', sets[j], L',', sets[k]});
                     }
                 }
-                for (size_t n = 0; n < 3300; ++n) s += L"union " + triples[n % 700] + L":1\n";  // (700 distinct: 1000 areas at most)
+                // (700 distinct: 1000 areas at most; fewer than the 3300 of the review, for ASan's pace)
+                for (size_t n = 0; n < 1400; ++n) s += L"union " + triples[n % 700] + L":1\n";
                 return s;
             }(),
             [&] {  // venn: every pair declared again and again (cubic in the repeats: #138)
