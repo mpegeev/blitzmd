@@ -35,7 +35,7 @@ constexpr int kMaxAssemblyGlyphs = 1000;      // parts of one stretched glyph
 constexpr int kFormulaAssemblyGlyphs = 4000;  // and of all of a formula's
 constexpr int kMaxShapedTexts = 64;           // DirectWrite layouts of a formula (emoji, complex scripts)
 constexpr size_t kMaxRunGlyphs = 64;          // glyphs drawn in one call
-constexpr float kFarDips = 1e7f;              // > any 20000-character formula at the reference size
+constexpr float kFarDips = 1e7f;              // farther glyphs are dropped, extents clamped (MathBox::dropped)
 
 // Big-endian reads with bounds checks (0 outside the table).
 struct Table {
@@ -562,10 +562,8 @@ private:
         case MathKind::List: {
             Atom a = List(n, ctx);
             a.cls = n.cls;
-            if (n.cls == MathClass::Op) {
-                a.op = true;
-                a.limits = n.limits;
-            }
+            a.op = n.cls == MathClass::Op;  // {\sum} is an Ord: its scripts go to the side
+            if (a.op) a.limits = n.limits;
             return a;
         }
         case MathKind::Glyphs: return Glyphs(n, ctx);
@@ -824,15 +822,19 @@ private:
             ++primes;
         }
         MathNode prime_list, sup_rest;
-        prime_list.color = sup_rest.color = sup_node.color;
-        prime_list.kids.assign(sup_node.kids.begin(), sup_node.kids.begin() + static_cast<ptrdiff_t>(primes));
-        sup_rest.kids.assign(sup_node.kids.begin() + static_cast<ptrdiff_t>(primes), sup_node.kids.end());
+        const MathNode* sup_list = &sup_node;  // copied only when split
+        if (primes) {
+            prime_list.color = sup_rest.color = sup_node.color;
+            prime_list.kids.assign(sup_node.kids.begin(), sup_node.kids.begin() + static_cast<ptrdiff_t>(primes));
+            sup_rest.kids.assign(sup_node.kids.begin() + static_cast<ptrdiff_t>(primes), sup_node.kids.end());
+            sup_list = &sup_rest;
+        }
         const bool has_sub = !sub_node.kids.empty();
-        const bool has_sup = !sup_rest.kids.empty();
+        const bool has_sup = !sup_list->kids.empty();
         if (!has_sub && !has_sup && !primes) return base;
         const Ctx sup_ctx = ScriptCtx(ctx, false), sub_ctx = ScriptCtx(ctx, true);
         Atom sup, sub;
-        if (has_sup) sup = List(sup_rest, sup_ctx);
+        if (has_sup) sup = List(*sup_list, sup_ctx);
         if (has_sub) sub = List(sub_node, sub_ctx);
         const float italic = base.italic;
         const float base_w = base.ink_right >= 0 ? base.box.w : base.box.w - italic;

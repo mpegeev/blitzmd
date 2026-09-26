@@ -369,6 +369,7 @@ uint32_t ParseColor(std::wstring_view model, std::wstring_view spec) {
             wchar_t* end = nullptr;
             const std::wstring part(spec.substr(p));
             out[got++] = std::wcstof(part.c_str(), &end);
+            if (end == part.c_str()) return false;  // not a number ("red" in \color[rgb]{red})
             p += static_cast<size_t>(end - part.c_str());
             while (p < spec.size() && (spec[p] == ',' || IsSpace(spec[p]))) ++p;
         }
@@ -688,7 +689,7 @@ private:
                     continue;
                 }
             }
-            Step(list, mode);
+            Step(list);
         }
         alphabet_ = saved_alphabet;
         color_ = saved_color;
@@ -733,14 +734,19 @@ private:
             Bail(list);
             return list;
         }
+        // One token: a switch in it (\color, \rm) ends with it, as in braces.
+        const Alphabet saved_alphabet = alphabet_;
+        const uint32_t saved_color = color_;
         ++depth_;
-        Step(list, kModeGroup);
+        Step(list);
         --depth_;
+        alphabet_ = saved_alphabet;
+        color_ = saved_color;
         return list;
     }
 
     // One token of math: appends to `list`.
-    void Step(MathNode& list, Mode mode) {
+    void Step(MathNode& list) {
         const wchar_t c = s_[i_];
         if (IsSpace(c) || c == '%') {
             SkipSpaces();
@@ -784,7 +790,7 @@ private:
         }
         if (c == '\\') {
             ++i_;
-            Command(ReadName(), list, mode);
+            Command(ReadName(), list);
             return;
         }
         if (c == '&' || c == '#' || c == '$') {
@@ -1080,8 +1086,7 @@ private:
         if (n->cls == MathClass::Op) n->limits = limits;
     }
 
-    void Command(const std::wstring& name, MathNode& list, Mode mode) {
-        (void)mode;
+    void Command(const std::wstring& name, MathNode& list) {
         // Spacing.
         static const struct {
             const wchar_t* name;
@@ -1097,10 +1102,9 @@ private:
                 return;
             }
         }
-        if (name == L"hspace" || name == L"hskip" || name == L"kern" || name == L"mkern" || name == L"mskip" ||
-            name == L"hspace*") {
+        if (name == L"hspace" || name == L"hskip" || name == L"kern" || name == L"mkern" || name == L"mskip") {
             if (Peek() == '*') ++i_;
-            std::wstring dim = name == L"hspace" || name == L"hspace*" ? RawGroup() : ReadDimension();
+            std::wstring dim = name == L"hspace" ? RawGroup() : ReadDimension();
             Push(list, MakeSpace(DimensionMu(dim)));
             return;
         }
@@ -1550,9 +1554,15 @@ private:
         SkipSpaces();
         const size_t b = i_;
         if (Peek() == '-' || Peek() == '+') ++i_;
+        const size_t digits = i_;
         while (!AtEnd() && ((s_[i_] >= '0' && s_[i_] <= '9') || s_[i_] == '.')) ++i_;
+        if (i_ == digits) {  // no number: whatever follows is not a unit (\kern xy)
+            i_ = b;
+            return {};
+        }
         SkipSpaces();
-        if (i_ + 1 < s_.size() && s_[i_] >= 'a' && s_[i_] <= 'z' && s_[i_ + 1] >= 'a' && s_[i_ + 1] <= 'z') i_ += 2;
+        const auto letter = [](wchar_t c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
+        if (i_ + 1 < s_.size() && letter(s_[i_]) && letter(s_[i_ + 1])) i_ += 2;
         return std::wstring(s_.substr(b, i_ - b));
     }
 
@@ -1562,11 +1572,19 @@ private:
         const std::wstring s(d);
         const float v = std::wcstof(s.c_str(), &end);
         if (!std::isfinite(v)) return 0;
-        const std::wstring_view unit = Trim(std::wstring_view(end));
+        std::wstring unit(Trim(std::wstring_view(end)));
+        for (wchar_t& c : unit) {
+            if (c >= 'A' && c <= 'Z') c += 'a' - 'A';  // TeX takes \kern3PT as well
+        }
         float mu = v * 18.f;                      // em
         if (unit == L"mu") mu = v;
         else if (unit == L"ex") mu = v * 8.f;
         else if (unit == L"pt") mu = v * 1.8f;    // 10pt = 1em
+        else if (unit == L"pc") mu = v * 21.6f;   // 12pt
+        else if (unit == L"bp") mu = v * 1.807f;  // 72.27pt / 72
+        else if (unit == L"dd") mu = v * 1.926f;  // 1238pt / 1157
+        else if (unit == L"cc") mu = v * 23.11f;  // 12dd
+        else if (unit == L"sp") mu = v * 1.8f / 65536.f;
         else if (unit == L"px") mu = v * 18.f / 16.f;
         else if (unit == L"cm") mu = v * 51.f;
         else if (unit == L"mm") mu = v * 5.1f;
