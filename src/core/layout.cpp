@@ -16,6 +16,7 @@ constexpr float kHugeWidth = 100000.f;
 constexpr wchar_t kObjectChar = 0xFFFC;
 constexpr float kMathRefSize = 64.f;  // formulas are typeset once at this size and scaled
 constexpr size_t kMaxRefineChars = 200000;  // longer leaves are measured near the view only
+constexpr size_t kMaxExactCells = 20000;    // a bigger table has only rows near the view measured
 
 bool IsStrongRtl(wchar_t c) {
     return (c >= 0x0590 && c <= 0x08FF) || (c >= 0xFB1D && c <= 0xFDFF) || (c >= 0xFE70 && c <= 0xFEFF);
@@ -1006,10 +1007,8 @@ void LayoutEngine::EvictFar(float y0, float y1) {
         LeafState& s = leaves_[i];
         if (!s.layout) continue;
         const Block* b = doc_->leaves[i];
-        if (b->y + b->h < y0 - margin || b->y > y1 + margin) {
-            // Table cells keep their layouts (min/max widths are needed).
-            if (!s.minmax_valid) s.layout.Reset();
-        }
+        // (Table cells too: their min/max widths are kept in the state.)
+        if (b->y + b->h < y0 - margin || b->y > y1 + margin) s.layout.Reset();
     }
 }
 
@@ -1559,27 +1558,38 @@ float LayoutEngine::LayoutTable(Block* b, float x, float y, float w, const Ctx& 
     const float guess = static_cast<float>(rows.size()) * (m_.em * ctx.scale * 1.5f + 2.f * pady + border) * 1.5f;
     const bool estimate = !(cursor < exact_y1_ && cursor + guess > exact_y0_);
 
-    size_t ncols = 0;
+    size_t ncols = 0, ncells = 0;
     for (Block* row : rows) {
         size_t n = 0;
         for (Block* cell : row->children) n += static_cast<size_t>(std::max(1, cell->colspan));
         ncols = std::max(ncols, n);
+        ncells += row->children.size();
     }
     ncols = std::max<size_t>(ncols, 1);
+    // A table near the view has its cells measured exactly, all of them for
+    // column widths that don't change while scrolling; but in a huge one
+    // (seconds of text layouts) only the rows near the view, the others as
+    // far tables are (where the last layout put them, or the guess).
+    const bool huge = ncells > kMaxExactCells;
+    const float row_guess = guess / 1.5f / static_cast<float>(rows.size());
+    const float near_y0 = exact_y0_ - (exact_y1_ - exact_y0_), near_y1 = exact_y1_ + (exact_y1_ - exact_y0_);
     std::vector<float> cmin(ncols, 0.f), cmax(ncols, 0.f);
     struct Span {
         size_t col, span;
         float mn, mx;
     };
     std::vector<Span> spans;
-    for (Block* row : rows) {
+    for (size_t r = 0; r < rows.size(); ++r) {
+        Block* row = rows[r];
+        const float row_y = row->h > 0 ? row->y : cursor + static_cast<float>(r) * row_guess;
+        const bool row_estimate = estimate || (huge && !(row_y < near_y1 && row_y + std::max(row->h, row_guess) > near_y0));
         size_t col = 0;
         for (Block* cell : row->children) {
             Ctx c = ctx;
             c.header_cell = cell->header || row->header;
             c.align = cell->align;
             float mn, mx;
-            MinMaxWidth(cell, c, mn, mx, estimate);
+            MinMaxWidth(cell, c, mn, mx, row_estimate);
             mn += 2.f * padx;
             mx += 2.f * padx;
             const size_t span = std::min<size_t>(static_cast<size_t>(std::max(1, cell->colspan)), ncols - col);
