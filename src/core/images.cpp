@@ -211,11 +211,18 @@ public:
                                     WICBitmapPaletteTypeCustom))) {
             return false;
         }
-        std::vector<uint8_t> px(static_cast<size_t>(fw) * fh * 4);
-        if (FAILED(conv->CopyPixels(nullptr, fw * 4, static_cast<UINT>(px.size()), px.data()))) return false;
-        for (UINT y = 0; y < fh && top + y < height_; ++y) {
-            for (UINT x = 0; x < fw && left + x < width_; ++x) {
-                const uint8_t* s = &px[(static_cast<size_t>(y) * fw + x) * 4];
+        // Only the part of the frame on the canvas: a frame may claim to be
+        // far bigger than the canvas (up to 65535 x 65535).
+        const UINT cw = left < width_ ? std::min(fw, width_ - left) : 0;
+        const UINT ch = top < height_ ? std::min(fh, height_ - top) : 0;
+        std::vector<uint8_t> px(static_cast<size_t>(cw) * ch * 4);
+        if (cw && ch) {
+            const WICRect rc{0, 0, static_cast<INT>(cw), static_cast<INT>(ch)};
+            if (FAILED(conv->CopyPixels(&rc, cw * 4, static_cast<UINT>(px.size()), px.data()))) return false;
+        }
+        for (UINT y = 0; y < ch; ++y) {
+            for (UINT x = 0; x < cw; ++x) {
+                const uint8_t* s = &px[(static_cast<size_t>(y) * cw + x) * 4];
                 if (s[3] == 0) continue;  // transparent pixel keeps the canvas
                 uint8_t* d = &canvas_[(static_cast<size_t>(top + y) * width_ + left + x) * 4];
                 d[0] = s[0];

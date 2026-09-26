@@ -3373,6 +3373,31 @@ int main(int argc, char** ansi_argv) {
             {"8000 lines of code", "```js\n" + repeat("const value = compute(alpha, \"text\", 42) + other.field; // note\n", 8000) + "```\n"},
         };
         int failures = 0;
+        {
+            // First (the peak of memory still low): a GIF whose frame claims
+            // 8000 x 8000 pixels on a 16 x 16 canvas. Only the canvas is
+            // decoded; the frame used to take 256 MB.
+            auto peak_mb = [] {
+                PROCESS_MEMORY_COUNTERS pmc{};
+                GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc);
+                return static_cast<double>(pmc.PeakWorkingSetSize) / (1024.0 * 1024.0);
+            };
+            const double before = peak_mb();
+            auto doc = ParseMarkdown(
+                "![g](data:image/gif;base64,R0lGODlhEAAQAIAAAP8AAAAA/yH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAQB9AHw"
+                "ACAkQBACH5BAAKAAAALAAAAAAQABAAAAICRAEAOw==)\n",
+                L"C:\\heavy.md");
+            OffscreenOptions o;
+            o.width = 400.f;
+            o.max_height = 300.f;
+            ComPtr<IWICBitmap> bmp = RenderToBitmap(*doc, o);
+            const double grew = peak_mb() - before;
+            std::printf("  a GIF frame far bigger than its canvas: peak memory +%.0f MB\n", grew);
+            if (!bmp || grew > 100) {
+                std::printf("FAIL: a GIF frame bigger than its canvas takes %.0f MB\n", grew);
+                ++failures;
+            }
+        }
         for (const auto& c : cases) {
             auto doc = ParseMarkdown(c.md, L"C:\\heavy.md");
             OffscreenOptions o;
