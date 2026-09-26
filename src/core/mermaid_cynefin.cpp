@@ -88,8 +88,10 @@ public:
                 }
                 c_.SkipBlanks();
                 if (!c_.AtStatementEnd()) c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
-                if (transitions.size() >= kMaxEdges) Fail(at, Tr(L"Too many transitions", L"Слишком много переходов"));
-                if (t.from != t.to) transitions.push_back(std::move(t));
+                if (t.from != t.to) {
+                    if (transitions.size() >= kMaxLines) Fail(at, TooMany(L"transitions", L"переходов", kMaxLines));
+                    transitions.push_back(std::move(t));
+                }
                 current = -1;
                 continue;
             }

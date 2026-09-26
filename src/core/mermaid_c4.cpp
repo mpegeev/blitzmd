@@ -179,7 +179,7 @@ private:
                 same->back = r.back;
                 return;
             }
-            if (rels.size() >= kMaxEdges) Error(at, Tr(L"Too many relations", L"Слишком много связей"));
+            if (rels.size() >= kMaxLines) Error(at, TooMany(L"relations", L"связей", kMaxLines));
             rels.push_back(std::move(r));
             return;
         }

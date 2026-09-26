@@ -10,6 +10,9 @@
 namespace mdv::mermaid {
 namespace {
 
+// Boxes in a row, each with its actors' faces: 500 are some 85 000 px wide.
+constexpr size_t kMaxTasks = 500;
+
 struct Text {
     std::wstring raw;
     uint32_t pos = 0, len = 0;
@@ -113,7 +116,7 @@ private:
             }
         }
         t.section = static_cast<int>(sections.size()) - 1;
-        if (tasks.size() >= kMaxEdges) c_.Fail(Tr(L"Too many tasks", L"Слишком много задач"));
+        if (tasks.size() >= kMaxTasks) c_.Fail(TooMany(L"tasks", L"задач", kMaxTasks));
         tasks.push_back(std::move(t));
     }
 

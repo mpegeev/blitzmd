@@ -318,8 +318,8 @@ private:
             t.to = Ref(true);
             c_.SkipBlanks();
             if (c_.Eat(L':')) t.label = Rest();
-            if (transitions.size() >= kMaxEdges) {
-                c_.Fail(Tr(L"Too many transitions (at most 500)", L"Слишком много переходов (не больше 500)"));
+            if (transitions.size() >= kMaxLines) {
+                c_.Fail(TooMany(L"transitions", L"переходов", kMaxLines));
             }
             transitions.push_back(std::move(t));
             return;
@@ -1166,8 +1166,12 @@ void CheckBudget(const Parser& p) {
         e.to_cluster = box(t.to);
         g.edges.push_back(e);
     }
-    for (const Note& n : p.notes) {  // a composite's note is a node of its own, as in the layout
+    // A composite's note is a node of its own, as in the layout, and its line
+    // counts as a transition (as a note's line does in class diagrams).
+    size_t lines = p.transitions.size();
+    for (const Note& n : p.notes) {
         if (!s.IsComposite(n.state)) continue;
+        if (++lines > kMaxLines) mermaid::Fail(kNoLine, TooMany(L"transitions", L"переходов", kMaxLines));
         LayeredGraph::Node nn;
         nn.w = nn.h = 10;
         const int parent = p.states[static_cast<size_t>(n.state)].parent;

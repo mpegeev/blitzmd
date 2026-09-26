@@ -370,7 +370,7 @@ private:
                 default_link.Merge(st);
             } else {
                 const long n = std::wcstol(w.c_str(), nullptr, 10);
-                if (n >= 0 && n < static_cast<long>(kMaxEdges)) link_styles[static_cast<size_t>(n)].Merge(st);
+                if (n >= 0 && n < static_cast<long>(kMermaidMaxEdges)) link_styles[static_cast<size_t>(n)].Merge(st);
             }
         }
     }
@@ -462,8 +462,10 @@ private:
             std::vector<Ref> next = NodeGroup();
             for (const Ref& a : group) {
                 for (const Ref& b : next) {
-                    if (edges.size() >= kMaxEdges) {
-                        c_.Fail(Tr(L"Too many links: Mermaid draws at most 500", L"Слишком много связей: Mermaid рисует не больше 500"));
+                    if (edges.size() >= kMermaidMaxEdges) {
+                        const std::wstring n = std::to_wstring(kMermaidMaxEdges);
+                        c_.Fail(IsRussianUi() ? L"Слишком много связей: Mermaid рисует не больше " + n
+                                              : L"Too many links: Mermaid draws at most " + n);
                     }
                     Edge edge;
                     edge.from = a;

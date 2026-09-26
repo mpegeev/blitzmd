@@ -10,6 +10,9 @@
 namespace mdv::mermaid {
 namespace {
 
+// Columns in a row (rows, top down): 500 are some 100 000 px long.
+constexpr size_t kMaxPeriods = 500;
+
 struct Text {
     std::wstring raw;
     uint32_t pos = 0, len = 0;
@@ -66,7 +69,7 @@ public:
                 p.text = Here(Until(false));
                 p.section = static_cast<int>(sections.size()) - 1;
                 if (p.text.raw.empty()) c_.Fail(Tr(L"Unexpected text", L"Непонятный текст"));
-                if (periods.size() >= kMaxEdges) c_.Fail(Tr(L"Too many periods", L"Слишком много периодов"));
+                if (periods.size() >= kMaxPeriods) c_.Fail(TooMany(L"periods", L"периодов", kMaxPeriods));
                 periods.push_back(std::move(p));
             }
         }

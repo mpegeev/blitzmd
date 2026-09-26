@@ -199,7 +199,7 @@ private:
             r.label.len = static_cast<uint32_t>(l.size());
         }
         if (r.label.raw.size() > kMaxLabel) c_.Fail(Tr(L"Label too long", L"Слишком длинная подпись"));
-        if (relationships.size() >= kMaxNodes) c_.Fail(Tr(L"Too many relationships", L"Слишком много связей"));
+        if (relationships.size() >= kMaxLines) c_.Fail(TooMany(L"relationships", L"связей", kMaxLines));
         relationships.push_back(std::move(r));
         return false;
     }

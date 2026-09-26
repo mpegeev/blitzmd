@@ -8,6 +8,7 @@
 #include <cwctype>
 #include <map>
 #include <optional>
+#include <set>
 
 #include "core/mermaid_internal.h"
 
@@ -207,6 +208,29 @@ public:
                 Fail(toks_[i_].text.pos, Tr(L"Expected tf, rf, entity, data, note or gwt", L"Ожидалось tf, rf, entity, data, note или gwt"));
             }
         }
+        if (SourcedArrows() > kMaxLines) mermaid::Fail(kNoLine, TooMany(L"arrows", L"стрелок", kMaxLines));
+    }
+
+    // The arrows the layout draws from the frames a frame names: one from
+    // each frame with a named number, once a frame with it came before (or
+    // is this one). Frames alike multiply them. (The others, from the last
+    // box in another lane, are one per frame at most.)
+    size_t SourcedArrows() const {
+        std::map<std::wstring, size_t> alike;
+        for (const Frame& f : frames) ++alike[f.name.raw];
+        std::set<std::wstring> seen;
+        size_t arrows = 0;
+        for (const Frame& f : frames) {
+            seen.insert(f.name.raw);
+            if (f.reset) continue;
+            std::vector<std::wstring> named = f.sources;
+            std::sort(named.begin(), named.end());
+            named.erase(std::unique(named.begin(), named.end()), named.end());
+            for (const std::wstring& s : named) {
+                if (seen.count(s)) arrows += alike[s];
+            }
+        }
+        return arrows;
     }
 
     std::vector<Frame> frames;
@@ -299,6 +323,12 @@ public:
         std::map<int, Lane> lanes;
         std::vector<Box> boxes;
         std::vector<std::pair<size_t, size_t>> relations;  // source box, target box
+        size_t sourced = 0;                                 // of them, from the frames named
+        std::map<std::wstring, size_t> first_box;           // frame number -> its first box
+        auto box_named = [&](const std::wstring& name) {
+            const auto it = first_box.find(name);
+            return it != first_box.end() ? it->second : boxes.size();
+        };
         std::optional<int> previous;
         float max_r = 0;
         for (size_t k = 0; k < p_.frames.size(); ++k) {
@@ -338,6 +368,7 @@ public:
             box.w = w;
             box.h = h;
             boxes.push_back(std::move(box));
+            first_box.try_emplace(f.name.raw, boxes.size() - 1);
             previous = index;
             float y = 0;
             for (auto& [i, l] : lanes) {
@@ -347,13 +378,15 @@ public:
             // Its arrows: from the frames it names, else from the last box
             // in another lane (none for the first frame or a reset).
             if (f.reset || (k == 0 && f.sources.empty())) continue;
-            const size_t target = FindBoxIn(boxes, f.name.raw);
+            const size_t target = box_named(f.name.raw);
             if (!f.sources.empty()) {
                 for (size_t j = 0; j < p_.frames.size(); ++j) {
                     if (std::find(f.sources.begin(), f.sources.end(), p_.frames[j].name.raw) == f.sources.end()) continue;
-                    const size_t source = FindBoxIn(boxes, p_.frames[j].name.raw);
-                    if (source < boxes.size()) relations.push_back({source, target});
-                    if (relations.size() > kMaxEdges * 10) TooLarge();
+                    const size_t source = box_named(p_.frames[j].name.raw);
+                    if (source < boxes.size()) {
+                        relations.push_back({source, target});
+                        if (++sourced > kMaxLines) TooLarge();  // (Parse refuses these first)
+                    }
                 }
             } else {
                 for (size_t j = k; j-- > 0;) {
@@ -393,13 +426,6 @@ public:
     }
 
 private:
-    size_t FindBoxIn(const std::vector<Box>& boxes, const std::wstring& name) const {
-        for (size_t i = 0; i < boxes.size(); ++i) {
-            if (p_.frames[boxes[i].frame].name.raw == name) return i;
-        }
-        return boxes.size();
-    }
-
     // Mermaid's calculateSwimlaneProps: UI and processors from 0, commands
     // and read models from 100, events from 200; a namespace gets the next
     // lane of its kind (each time: Mermaid finds none it made before).
