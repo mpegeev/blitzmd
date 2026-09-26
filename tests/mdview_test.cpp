@@ -1203,14 +1203,33 @@ int main(int argc, char** ansi_argv) {
             std::printf("AutoReload=%d: new text %s\n", enabled, found ? "shown" : "not shown");
             if (found != (enabled == 1)) ++failures;
             close(v);
-            if (enabled) {
-                // Settings are cached per process: flip the switch as the menu would.
-                FreeLibrary(dll);
-                dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
-                load = reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW"));
-                search = reinterpret_cast<SearchFn>(GetProcAddress(dll, "ListSearchTextW"));
-                close = reinterpret_cast<CloseFn>(GetProcAddress(dll, "ListCloseWindow"));
-                set_params = reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams"));
+            // Settings are cached per process: flip the switch as the menu would.
+            FreeLibrary(dll);
+            dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
+            load = reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW"));
+            search = reinterpret_cast<SearchFn>(GetProcAddress(dll, "ListSearchTextW"));
+            close = reinterpret_cast<CloseFn>(GetProcAddress(dll, "ListCloseWindow"));
+            set_params = reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams"));
+        }
+        {
+            // The same file over a network path (\\localhost\C$\...): it is
+            // polled on the thread pool as well as watched.
+            std::wstring unc;
+            if (file.size() > 2 && file[1] == L':') unc = L"\\\\localhost\\" + std::wstring(1, file[0]) + L"$" + file.substr(2);
+            write(file, "# Reload test\n\nfirst version\n");
+            if (unc.empty() || GetFileAttributesW(unc.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                std::printf("network path: skipped (no administrative share)\n");
+            } else {
+                write(ini, "[mdview]\r\nAutoReload=1\r\n");
+                set_params(&dp);
+                HWND v = load(host, unc.c_str(), 0);
+                pump(300);
+                save_like_editor("# Reload test\n\nnetwork-version-marker\n");
+                pump(3500);  // a poll every 2 s, then the reload delay
+                const bool found = v && search(v, L"network-version-marker", 1) == 0;
+                std::printf("network path: new text %s\n", found ? "shown" : "not shown");
+                if (!found) ++failures;
+                if (v) close(v);
             }
         }
         DestroyWindow(host);
