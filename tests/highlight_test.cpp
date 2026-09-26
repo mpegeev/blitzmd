@@ -352,6 +352,7 @@ CREATE TABLE IF NOT EXISTS "orders" (
 );
 insert into t (a, b) values (@param, :name), ($1, N'unicode');
 UPDATE t SET flag = TRUE WHERE id IN (1, 2, 3);
+SELECT E'it\'s' AS quoted;
 )~~"},
 {"bash", L"bash", LR"~~(#!/usr/bin/env bash
 # Build script
@@ -379,6 +380,7 @@ case "$1" in
 esac
 cat <<EOF > out.txt
 Hello $USER
+It's here
 EOF
 echo done
 )~~"},
@@ -411,6 +413,7 @@ $hash = @{ Key = 'value'; Num = 42 }
 $here = @"
 Here-string with $Name
 "@
+$smile = "`😀 smile"
 )~~"},
 {"batch", L"bat", LR"~~(@echo off
 REM Batch sample
@@ -467,6 +470,7 @@ body, html {
 @media screen and (max-width: 600px) {
   .item { display: none; }
 }
+.emoji::after { content: "\😀"; }
 )~~"},
 {"json", L"json", LR"~~({
   "name": "mdview",
@@ -558,6 +562,7 @@ const x = 1;
 ```
 ---
 <!-- comment -->
+**** then **strong** here
 )~~"},
 {"dockerfile", L"Dockerfile", LR"~~(# syntax=docker/dockerfile:1
 FROM node:20-alpine AS build
@@ -608,6 +613,7 @@ endif()
 add_library(core STATIC src/a.cpp "${CMAKE_SOURCE_DIR}/src/b.cpp")
 target_link_libraries(core PUBLIC d2d1 $<$<CONFIG:Debug>:dbghelp>)
 message(STATUS "Version: ${PROJECT_VERSION} env=$ENV{PATH}")
+message("smile \😀 done")
 )~~"},
 {"pascal", L"pascal", LR"~~(program Hello;
 {$APPTYPE CONSOLE}
@@ -706,7 +712,19 @@ block comment
 print <<"END";
 It's $name
 END
+=head1 NAME
+
+demo - no code here
+=cut
 my $done = 1;
+)~~"},
+{"elixir", L"elixir", LR"~~(defmodule Demo do
+  @re ~r/^#{prefix}\d+$/i
+  def run(x), do: x
+end
+)~~"},
+{"erlang", L"erlang", LR"~~(-module(demo).
+quotes() -> [$", $'] ++ "text".
 )~~"},
 {"kotlin", L"kotlin", LR"~~(package demo
 import kotlinx.coroutines.*
@@ -734,6 +752,7 @@ let raw = #"raw \(not) "quoted""#
 #if DEBUG
 print("debug", nil ?? true)
 #endif
+#"line start"#.count
 )~~"},
 {"asm", L"nasm", LR"~~(; NASM sample
 section .data
@@ -760,6 +779,7 @@ Inline math $E = mc^2$ and display:
 \[ \int_0^1 x\,dx \]
 Escaped \% percent and \\ newline.
 \end{document}
+Emoji \😀 escaped.
 )~~"},
 {"haskell", L"haskell", LR"~~(module Main where
 import qualified Data.Map as M
@@ -1120,6 +1140,18 @@ const Expectation kExpect[] = {
     E4("cmake", L"/utf-8", L"8", Plain), E3("makefile", L"$(SRC:.c=.o)", Variable),
     E4("java", L"System.out.println", L"out", Plain), E4("rust", L"use std::collections::HashMap;", L"HashMap", Plain),
     E4("php", L"namespace App\\Http;", L"App", Plain),
+    // Review fixes (#82)
+    E4("sql", L"E'it\\'s'", L"E'it", String), E4("sql", L"E'it\\'s'", L"\\'", Escape),
+    E4("sql", L"'s' AS quoted", L"AS", Keyword),
+    E3("bash", L"It's here", String), E4("bash", L"\nEOF\necho", L"EOF", Keyword),
+    E3("powershell", L"`😀", Escape), E3("powershell", L" smile\"", String),
+    E3("css", L"\\😀", Escape), E3("cmake", L"\\😀", Escape), E3("latex", L"\\😀", Escape),
+    E3("markdown", L"**strong**", Heading), E3("perl", L"=head1 NAME\n\ndemo - no code here\n=cut", Comment),
+    E4("perl", L"\nmy $done", L"my", Keyword), E3("swift", L"#\"line start\"#", String),
+    E4("elixir", L"~r/^#{prefix}", L"~r/^", String), E4("elixir", L"#{prefix}", L"prefix", Plain),
+    E3("elixir", L"\\d", Escape), E4("elixir", L"+$/i", L"+$/", String), E4("elixir", L"  def run", L"def", Keyword),
+    E3("erlang", L"$\"", String), E3("erlang", L"$'", String), E3("erlang", L"\"text\"", String),
+    E4("erlang", L"] ++ ", L"++", Plain),
 };
 
 #undef E3
@@ -1408,6 +1440,12 @@ void TestPathological() {
             s += L'x';
         }
         run(s, "backtick runs");
+    }
+    {  // unclosed ${ on a heredoc line with CRLF line ends (sh)
+        std::wstring s = L"cat <<EOF\r\n";
+        while (s.size() < 262144) s += L"${";
+        s += L"\r\nEOF\r\n";
+        run(s, "CRLF heredoc of ${");
     }
     std::printf("pathological: total %.2f s, worst %.3f s (%s)\n", total, worst, worstWhat.c_str());
 }

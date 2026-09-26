@@ -302,6 +302,11 @@ private:
 inline bool IsHighSurrogate(wchar_t c) { return U(c) >= 0xD800 && U(c) <= 0xDBFF; }
 inline bool IsLowSurrogate(wchar_t c) { return U(c) >= 0xDC00 && U(c) <= 0xDFFF; }
 
+// End of the character at i (i < n): a surrogate pair is one character.
+inline size_t CharEnd(const wchar_t* s, size_t n, size_t i) {
+    return IsHighSurrogate(s[i]) && i + 1 < n && IsLowSurrogate(s[i + 1]) ? i + 2 : i + 1;
+}
+
 // s[i] == '\\'. Returns the end of the escape sequence (> i).
 size_t EscapeEnd(const wchar_t* s, size_t n, size_t i) {
     size_t j = i + 1;
@@ -967,6 +972,7 @@ constexpr uint64_t F_DOT_IDENT = 1ull << 43;     // '.' inside identifiers (R)
 constexpr uint64_t F_ASSIGN_PROP = 1ull << 44;   // ident followed by '=' is a property (HCL, Nix)
 constexpr uint64_t F_DELPHI_T = 1ull << 45;      // TFoo / EFoo / IFoo are types
 constexpr uint64_t F_HEREDOC = 1ull << 47;       // <<~EOS (Ruby, Crystal), <<"END" (Perl), <<<EOT (PHP)
+constexpr uint64_t F_SIGIL = 1ull << 48;         // ~r/regex/, ~s(text) (Elixir)
 constexpr uint64_t F_SQ_INTERP = 1ull << 46;     // single-quoted strings interpolate too (Dart)
 
 struct LangDef {
@@ -1124,7 +1130,11 @@ size_t CScanner::Token(size_t i, bool bol) {
     if (!IsWordStart(c)) pending_ = K::Plain;
     if (c == L';' || c == L'{' || c == L'(' || c == L'=') nsCtx_ = false;
     if (const size_t e = TryComment(i)) return e;
-    if (c == L'#' && bol && Has(F_HASH_PREPROC)) return Preproc(i);
+    if (c == L'#' && bol && Has(F_HASH_PREPROC)) {
+        size_t j = i;  // (Swift: #"raw"# starting a line is a string)
+        while (Has(F_SWIFT_RAW) && j < n_ && s_[j] == L'#' && j - i < 200) ++j;
+        if (!(j > i && j < n_ && s_[j] == L'"')) return Preproc(i);
+    }
     if (const size_t e = TryString(i)) return e;
     if (c == L'<' && Has(F_HEREDOC) && i + 1 < n_ && s_[i + 1] == L'<') {
         if (const size_t e = HeredocStart(i)) return e;
@@ -1166,6 +1176,13 @@ size_t CScanner::Token(size_t i, bool bol) {
 size_t CScanner::TryComment(size_t i) {
     const wchar_t c = s_[i];
     if (Has(F_PHP) && c == L'#' && i + 1 < n_ && s_[i + 1] == L'[') return 0;  // PHP 8 attribute
+    if (Has(F_PERL) && c == L'=' && (i == 0 || s_[i - 1] == L'\n') && i + 1 < n_ && IsAlpha(s_[i + 1])) {
+        // POD: from any =command (=pod, =head1, =over...) starting a line to the =cut line.
+        const size_t p = Find(s_, n_, i, L"\n=cut");
+        const size_t e = p == kNpos ? n_ : LineEnd(s_, n_, p + 1);
+        em_.Add(i, e, K::Comment);
+        return e;
+    }
     for (int b = 0; b < 2; ++b) {
         const wsv open = b == 0 ? d_.blockOpen : d_.block2Open;
         const wsv close = b == 0 ? d_.blockClose : d_.block2Close;
@@ -1540,7 +1557,7 @@ size_t CScanner::PrefixedString(size_t i, size_t e) {
         if (l == L'n' || l == L'e' || l == L'b' || l == L'x') {
             StrSpec sp;
             sp.quote = q;
-            sp.esc = false;
+            sp.esc = l == L'e';  // E'it\'s' (PostgreSQL)
             sp.doubling = true;
             sp.multiline = true;
             return ScanStr(i, e + 1, sp);
@@ -1794,6 +1811,9 @@ size_t CScanner::Special(size_t i, bool bol) {
         break;
     }
     case L'$': {
+        if (Has(F_ERLANG) && c1 != L'\0' && c1 != L'\n') {  // $c, $\n: a character ($" opens no string)
+            return Emit(i, c1 == L'\\' ? EscapeEnd(s_, n_, i + 1) : CharEnd(s_, n_, i + 1), K::String, Prev::Value);
+        }
         if (Has(F_CS_STRINGS)) {
             size_t j = i;
             while (j < n_ && s_[j] == L'$' && j - i < 8) ++j;
@@ -1902,6 +1922,28 @@ size_t CScanner::Special(size_t i, bool bol) {
         if (Has(F_LUA_LONG)) {
             if (const size_t lvl = LongBracketLevel(i))
                 return Emit(i, LongBracketEnd(i + lvl + 1, lvl - 1), K::String, Prev::Value);
+        }
+        break;
+    case L'~':
+        if (Has(F_SIGIL) && IsAlpha(c1)) {
+            size_t j = i + 2;
+            while (IsUpper(c1) && j < n_ && IsUpper(s_[j]) && j - i < 16) ++j;  // ~SQL"..."
+            static constexpr wchar_t kOpen[] = L"/|\"'([{<", kClose[] = L"/|\"')]}>";
+            for (size_t d = 0; j < n_ && kOpen[d]; ++d) {
+                if (s_[j] != kOpen[d]) continue;
+                StrSpec sp;
+                sp.quote = kClose[d];
+                sp.multiline = true;
+                if (IsLower(c1)) sp.interp = kIpHash;  // ~r/#{x}/ interpolates, ~R/#{x}/ does not
+                if (d == 2 || d == 3) {
+                    const wchar_t triple[4] = {kOpen[d], kOpen[d], kOpen[d], 0};
+                    if (At(s_, n_, j, triple)) {
+                        sp.qlen = 3;
+                        return ScanStr(i, j + 3, sp);
+                    }
+                }
+                return ScanStr(i, j + 1, sp);
+            }
         }
         break;
     case L'%':
@@ -2028,14 +2070,14 @@ constexpr LangDef kLangCrystal{.kw = kCrystalKw, .consts = kNilConsts, .line1 = 
                                .f = F_CALL | F_DQ_STRING | F_SQ_CHAR | F_MULTILINE | F_INTERP_HASH | F_RUBYISH |
                                     F_REGEX | F_PASCAL_TYPE | F_CAPS_CONST | F_HEREDOC};
 constexpr LangDef kLangElixir{.kw = kElixirKw, .consts = kNilConsts, .line1 = L"#",
-                              .f = kCFam | F_MULTILINE | F_TRIPLE_DQ | F_INTERP_HASH | F_RUBYISH | F_PASCAL_TYPE};
+                              .f = kCFam | F_MULTILINE | F_TRIPLE_DQ | F_INTERP_HASH | F_RUBYISH | F_PASCAL_TYPE |
+                                   F_SIGIL};
 constexpr LangDef kLangErlang{.kw = kErlangKw, .consts = kErlangConsts, .line1 = L"%", .f = kCFam | F_ERLANG};
 constexpr LangDef kLangPhp{.kw = kPhpKw, .types = kPhpTypes, .consts = kPhpConsts, .line1 = L"//", .line2 = L"#",
                            .blockOpen = L"/*", .blockClose = L"*/",
                            .f = kCFam | F_MULTILINE | F_INTERP_DOLLAR | F_DOLLAR_VAR | F_PHP | F_PASCAL_TYPE |
                                 F_CAPS_CONST | F_HEREDOC};
-constexpr LangDef kLangPerl{.kw = kPerlKw, .builtins = kPerlBuiltins, .line1 = L"#", .blockOpen = L"=pod",
-                            .blockClose = L"=cut",
+constexpr LangDef kLangPerl{.kw = kPerlKw, .builtins = kPerlBuiltins, .line1 = L"#",
                             .f = kCFam | F_MULTILINE | F_INTERP_DOLLAR | F_PERL | F_REGEX | F_BT_RAW | F_HEREDOC};
 constexpr LangDef kLangLua{.kw = kLuaKw, .consts = kLuaConsts, .line1 = L"--", .f = kCFam | F_LUA_LONG};
 constexpr LangDef kLangR{.kw = kRKw, .consts = kRConsts, .line1 = L"#", .f = kCFam | F_MULTILINE | F_DOT_IDENT};
@@ -2094,7 +2136,7 @@ void RunGeneric(const wchar_t* s, size_t n, Emitter& em, const LangDef& d) {
 size_t CssEscapeEnd(const wchar_t* s, size_t n, size_t i) {
     size_t j = i + 1;
     while (j < n && j - i <= 6 && IsHex(s[j])) ++j;
-    if (j == i + 1 && j < n) ++j;
+    if (j == i + 1 && j < n) j = CharEnd(s, n, j);
     return j;
 }
 
@@ -3129,8 +3171,8 @@ private:
                     k = p + 2;
                     continue;
                 }
-                noBold = true;
-                k += 2;
+                if (p == kNpos) noBold = true;
+                while (k < ce && s_[k] == L'*') ++k;  // (**** is no bold)
                 continue;
             }
             if (c == L']' && k + 1 < ce && s_[k + 1] == L'(' && !noLink) {
@@ -3299,7 +3341,7 @@ private:
         const wchar_t c1 = i + 1 < n_ ? s_[i + 1] : L'\0';
         if (c1 == L'{') {
             size_t depth = 0, e = i + 1;
-            while (e < n_ && s_[e] != L'\n') {
+            while (e < n_ && s_[e] != L'\n' && s_[e] != L'\r') {
                 if (s_[e] == L'{') {
                     ++depth;
                 } else if (s_[e] == L'}' && depth > 0 && --depth == 0) {
@@ -3672,9 +3714,10 @@ private:
         for (size_t k = a + 1; k < e;) {
             const wchar_t c = s_[k];
             if (c == L'`' && k + 2 <= e) {
+                const size_t ee = CharEnd(s_, e, k + 1);
                 em_.Add(seg, k, K::String);
-                em_.Add(k, k + 2, K::Escape);
-                k = seg = k + 2;
+                em_.Add(k, ee, K::Escape);
+                k = seg = ee;
                 continue;
             }
             if (c == L'$') {
@@ -4240,7 +4283,7 @@ void ScanCMake(const wchar_t* s, size_t n, Emitter& em) {
             size_t seg = i, j = i + 1;
             while (j < n && s[j] != L'"') {
                 if (s[j] == L'\\') {
-                    const size_t ee = j + 2 < n ? j + 2 : n;
+                    const size_t ee = j + 1 < n ? CharEnd(s, n, j + 1) : n;
                     em.Add(seg, j, K::String);
                     em.Add(j, ee, K::Escape);
                     j = seg = ee;
@@ -4490,8 +4533,9 @@ void ScanLatex(const wchar_t* s, size_t n, Emitter& em) {
                 continue;
             }
             if (c1 != L'\0' && c1 != L'\n') {
-                em.Add(i, i + 2, K::Escape);
-                i += 2;
+                const size_t e = CharEnd(s, n, i + 1);
+                em.Add(i, e, K::Escape);
+                i = e;
                 continue;
             }
             ++i;
