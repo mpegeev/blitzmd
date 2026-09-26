@@ -1893,6 +1893,36 @@ int main(int argc, char** ansi_argv) {
             }
         }
         {
+            // 9000 code points no font has (private use, plane 15), a new
+            // typesetter as for each document: each asked DirectWrite's font
+            // fallback for itself, which takes seconds for thousands while
+            // fonts are cold (#149; a warm cache here hides that, this bounds
+            // the rest).
+            std::wstring pua;
+            for (uint32_t cp = 0xF0000; cp < 0xF0000 + 9000; ++cp) AppendCodepoint(pua, cp);  // (within the formula limit)
+            MathTypesetter fresh;
+            const double t0 = NowMs();
+            const bool typeset = fresh.Init(dw.Get()) && fresh.Layout(pua, true, 16.f) != nullptr;  // (math, glyph by glyph)
+            const double ms = NowMs() - t0;
+            std::printf("  9000 code points without a font: %.0f ms\n", ms);
+            if (!typeset || ms > 1500) {
+                std::printf("FAIL: characters without a font take %.0f ms\n", ms);
+                ++failures;
+            }
+            // CJK: one search finds the font, the rest are in it.
+            std::wstring cjk;
+            for (uint32_t cp = 0x4E00; cp < 0x4E00 + 10000; ++cp) AppendCodepoint(cjk, cp);
+            MathTypesetter fresh2;
+            const double t1 = NowMs();
+            const bool typeset2 = fresh2.Init(dw.Get()) && fresh2.Layout(cjk, true, 16.f) != nullptr;
+            const double ms2 = NowMs() - t1;
+            std::printf("  10000 CJK characters: %.0f ms\n", ms2);
+            if (!typeset2 || ms2 > 1500) {
+                std::printf("FAIL: CJK characters take %.0f ms\n", ms2);
+                ++failures;
+            }
+        }
+        {
             // Emoji are DirectWrite layouts, a draw call each: a bounded number
             // per formula, and only those on screen drawn.
             auto box = ts.Layout(repeat(L"\U0001F600", 9000), false, 16.f);
