@@ -4,15 +4,20 @@
 #
 #   powershell -File scripts/tc-test.ps1 -File samples\gfm\02-github-readme.md
 #   powershell -File scripts/tc-test.ps1 -Stop          # close the test instance
+#
+# -TotalCmd and -SourceIni default to Total Commander's COMMANDER_PATH and
+# COMMANDER_INI (set in what it starts), then to the usual places.
 param(
     [string]$File,
     [string]$Build = 'x64-dev',
     [switch]$Stop,
-    [int]$DarkMode = -1
+    [int]$DarkMode = -1,
+    [string]$TotalCmd = $(if ($env:COMMANDER_PATH) { Join-Path $env:COMMANDER_PATH 'TOTALCMD64.EXE' } else { 'C:\Program Files\totalcmd\TOTALCMD64.EXE' }),
+    [string]$SourceIni = $(if ($env:COMMANDER_INI) { $env:COMMANDER_INI } else { Join-Path $env:APPDATA 'GHISLER\wincmd.ini' })
 )
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-$tc = 'C:\Program Files\totalcmd\TOTALCMD64.EXE'
+$tc = $TotalCmd
 $dir = Join-Path $root 'out\tc'
 $ini = Join-Path $dir 'wincmd.ini'
 
@@ -25,7 +30,7 @@ if ($Stop) { return }
 New-Item -ItemType Directory -Force (Join-Path $dir 'plugin') | Out-Null
 Copy-Item (Join-Path $root "out\build\$Build\mdview.wlx64") (Join-Path $dir 'plugin\mdview.wlx64') -Force
 if (-not (Test-Path $ini)) {
-    Copy-Item (Join-Path $env:APPDATA 'GHISLER\wincmd.ini') $ini
+    Copy-Item $SourceIni $ini
 }
 # Point [ListerPlugins] at the test build only.
 $lines = Get-Content $ini -Encoding Default

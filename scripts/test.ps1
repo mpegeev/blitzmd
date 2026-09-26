@@ -3,8 +3,8 @@
 #   powershell -File scripts/test.ps1                                  # out/build/x64-release
 #   powershell -File scripts/test.ps1 -Build out/build/x86-release -Quick
 #
-# -Quick skips the slower parts (fuzzing, rendering every sample at two widths).
-# Exit code: number of failed steps.
+# -Quick skips the slower parts (rendering every sample at two widths, most of
+# the fuzzing). Exit code: number of failed steps.
 param(
     [string]$Build = 'out/build/x64-release',
     [switch]$Quick
@@ -28,33 +28,36 @@ function Step([string]$Name, [scriptblock]$Command) {
         $failed.Add($Name)
     }
 }
+# A step's last line (its summary), and the FAIL lines before it.
+function Summary {
+    begin { $last = $null }
+    process {
+        if ($null -ne $last -and "$last" -match 'FAIL') { $last }
+        $last = $_
+    }
+    end { $last }
+}
 
 # Spec conformance. md4c's own files for alerts, footnotes and task lists
 # expect md4c's HTML, not GitHub's rendering, so they are not part of this.
-Step 'GFM spec' { & $t spec tests/spec/gfm-spec.txt | Select-Object -Last 1 }
-Step 'CommonMark spec' { & $t spec tests/spec/commonmark-spec.txt | Select-Object -Last 1 }
-Step 'mdview extensions' { & $t spec tests/spec/mdview-extensions.txt --strict | Select-Object -Last 1 }
+Step 'GFM spec' { & $t spec tests/spec/gfm-spec.txt | Summary }
+Step 'CommonMark spec' { & $t spec tests/spec/commonmark-spec.txt | Summary }
+Step 'mdview extensions' { & $t spec tests/spec/mdview-extensions.txt --strict | Summary }
 foreach ($s in 'spec-tables', 'spec-strikethrough', 'spec-permissive-autolinks') {
-    Step $s { & $t spec "tests/spec/$s.txt" | Select-Object -Last 1 }
+    Step $s { & $t spec "tests/spec/$s.txt" | Summary }
 }
 
-Step 'syntax highlighter' { & (Join-Path $bin 'highlight_test.exe') -q | Select-Object -Last 1 }
-Step 'emoji table' { & (Join-Path $bin 'emoji_test.exe') | Select-Object -Last 1 }
-Step 'flag emoji' { & $t flags samples/gfm/17-flags.md | Select-Object -Last 1 }
+Step 'syntax highlighter' { & (Join-Path $bin 'highlight_test.exe') -q | Summary }
+Step 'emoji table' { & (Join-Path $bin 'emoji_test.exe') | Summary }
+Step 'flag emoji' { & $t flags samples/gfm/17-flags.md | Summary }
 Step 'collapsed details' {
     & $t details (Get-ChildItem samples/gfm/*.md | ForEach-Object FullName) | Where-Object { $_ -match 'FAIL|details' }
 }
 Step 'math' { & $t math samples/gfm/18-math.md | Where-Object { $_ -match 'FAIL|math' } }
-Step 'mermaid' { & $t mermaid samples/gfm/20-mermaid-flowchart.md | Where-Object { $_ -match 'FAIL|mermaid' } }
-Step 'mermaid sequence' { & $t mermaid samples/gfm/21-mermaid-sequence.md | Where-Object { $_ -match 'FAIL|mermaid' } }
-Step 'mermaid class' { & $t mermaid samples/gfm/22-mermaid-class.md | Where-Object { $_ -match 'FAIL|mermaid' } }
-Step 'mermaid state' { & $t mermaid samples/gfm/23-mermaid-state.md | Where-Object { $_ -match 'FAIL|mermaid' } }
-Step 'mermaid er' { & $t mermaid samples/gfm/24-mermaid-er.md | Where-Object { $_ -match 'FAIL|mermaid' } }
-Step 'mermaid charts' { & $t mermaid samples/gfm/25-mermaid-charts.md | Where-Object { $_ -match 'FAIL|mermaid' } }
-Step 'mermaid more' { & $t mermaid samples/gfm/26-mermaid-more.md | Where-Object { $_ -match 'FAIL|mermaid' } }
-Step 'mermaid git' { & $t mermaid samples/gfm/27-mermaid-git-kanban.md | Where-Object { $_ -match 'FAIL|mermaid' } }
-Step 'mermaid c4' { & $t mermaid samples/gfm/28-mermaid-c4-architecture.md | Where-Object { $_ -match 'FAIL|mermaid' } }
-Step 'mermaid beta' { & $t mermaid samples/gfm/29-mermaid-beta.md | Where-Object { $_ -match 'FAIL|mermaid' } }
+# Every diagram of the samples; the parse checks, hostile input and fuzzing once.
+Step 'mermaid' {
+    & $t mermaid (Get-ChildItem samples/gfm/2*-mermaid-*.md | ForEach-Object FullName) | Where-Object { $_ -match 'FAIL|mermaid' }
+}
 
 # Every sample renders (parse + layout + Direct2D) without failing.
 $widths = if ($Quick) { @(900) } else { @(320, 900) }
@@ -66,10 +69,12 @@ foreach ($f in Get-ChildItem samples/gfm/*.md) {
 
 # The plugin DLL driven like Total Commander does, and auto-reload.
 # (Not $name: inside Step that is its $Name parameter, PowerShell names ignoring case.)
+# (Each with the default settings: none left in out/test/mdview.ini.)
 foreach ($sample in '02-github-readme.md', '04-code-highlighting.md', '16-front-matter.md') {
-    Step "plugin $sample" { & $t plugin $dll "samples/gfm/$sample" (Join-Path $tmp 'plugin.png') | Select-Object -Last 1 }
+    Remove-Item (Join-Path $tmp 'mdview.ini') -ErrorAction SilentlyContinue
+    Step "plugin $sample" { & $t plugin $dll "samples/gfm/$sample" (Join-Path $tmp 'plugin.png') | Summary }
 }
-Step 'auto-reload' { & $t reload $dll (Join-Path $tmp 'reload') | Select-Object -Last 1 }
+Step 'auto-reload' { & $t reload $dll (Join-Path $tmp 'reload') | Summary }
 Step 'settings dialog' {
     & $t settings $dll samples/gfm/04-code-highlighting.md (Join-Path $tmp 'settings/s') | Where-Object { $_ -match 'FAIL|settings' }
 }
@@ -81,9 +86,8 @@ Step 'search' { & $t search $dll (Join-Path $tmp 'search') | Where-Object { $_ -
 Step 'heavy paragraphs' { & $t heavy 5000 | Where-Object { $_ -match 'FAIL|heavy' } }
 Step 'closed in a modal loop' { & $t modal $dll (Join-Path $tmp 'modal') | Where-Object { $_ -match 'FAIL|modal' } }
 
-if (-not $Quick) {
-    Step 'fuzz' { & $t fuzz 400 | Select-Object -Last 1 }
-}
+$fuzz = if ($Quick) { 100 } else { 400 }
+Step 'fuzz' { & $t fuzz $fuzz | Summary }
 
 if ($failed.Count) {
     Write-Host "`n$($failed.Count) step(s) failed:" -ForegroundColor Red

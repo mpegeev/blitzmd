@@ -1,13 +1,10 @@
-// Standalone test / benchmark for src/core/highlight.{h,cpp}.
+// Standalone test / benchmark for src/core/highlight.{h,cpp}: the CMake
+// target highlight_test (with MDVIEW_HIGHLIGHT_SOURCE), run by scripts/test.ps1.
 //
-// Build (from PowerShell):
-//   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\vcrun.ps1 cl /nologo /std:c++20 /W4 /WX
-//     /permissive- /EHsc /utf-8 /GR- /O2 /Fe:out\hltest\highlight_test.exe /Fo:out\hltest\
-//     tests\highlight_test.cpp src\core\highlight.cpp
-//
-// Usage: highlight_test [-q] [-dump <snippet-name>]
-//   -q          do not print the token dump of every snippet
+// Usage: highlight_test [-q] [-dump <snippet-name>] [-fuzz N]
+//   -q          no token dump of every snippet, and no benchmark
 //   -dump name  print the token dump of one snippet only
+//   -fuzz N     random inputs per language (20000)
 // Exit code 0 only if every assertion passes.
 #include "../src/core/highlight.h"
 
@@ -1518,7 +1515,7 @@ int main(int argc, char** argv) {
     TestTruncations();
     TestFuzz(fuzzIterations);
     TestPathological();
-    Benchmark();
+    if (!quiet) Benchmark();
     const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     std::printf("\n%d checks, %d failures (%.1f s)\n%s\n", g_checks, g_failures, sec,
                 g_failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED");

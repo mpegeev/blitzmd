@@ -139,7 +139,7 @@ target_compile_options(mdview_test PRIVATE ${MDVIEW_CXX_OPTIONS})
 set_target_properties(mdview_test PROPERTIES LINK_FLAGS "/SUBSYSTEM:CONSOLE")
 
 # ---- unit tests of self-contained modules -----------------------------------
-add_executable(highlight_test tests/highlight_test.cpp src/core/highlight.cpp)
+add_executable(highlight_test tests/highlight_test.cpp ${MDVIEW_HIGHLIGHT_SOURCE})
 target_compile_options(highlight_test PRIVATE ${MDVIEW_CXX_OPTIONS})
 add_executable(emoji_test tests/emoji_test.cpp src/core/emoji.cpp)
 target_compile_options(emoji_test PRIVATE ${MDVIEW_CXX_OPTIONS})

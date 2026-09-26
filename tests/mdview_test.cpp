@@ -1,21 +1,46 @@
-// mdview_test — developer tool for the mdview Lister plugin.
+// mdview_test — developer tool for the mdview Lister plugin. Each command
+// prints what it checks and exits with a nonzero code if something fails
+// (details at each command below; <dll> is mdview.wlx64 or mdview.wlx).
 //
-//   mdview_test spec <spec.txt> [-v] [-n N] [--strict]
-//                                               run CommonMark/GFM spec examples
-//                                               (--strict: every mismatch fails)
-//   mdview_test dump <file.md>                  print the parsed document as HTML
-//   mdview_test render <file.md> <out.png> [--width W] [--scale S] [--dark]
-//                      [--zoom Z] [--scroll Y] [--height H] [--remote] [--nowrap]
-//                                               render a document (region) to PNG
-//   mdview_test bench <file.md> [--width W]     parse + layout timing
-//   mdview_test settings <dll> <file.md> <out-prefix>
-//                                               settings dialog: live preview, Cancel, OK
+//   spec <spec.txt> [-v] [-n N] [--strict]   CommonMark/GFM spec examples
+//                                            (--strict: every mismatch fails)
+//   dump <file.md>                           the parsed document as HTML
+//   render <file.md> <out.png> [--width W] [--scale S] [--dark] [--zoom Z]
+//          [--scroll Y] [--height H] [--remote] [--nowrap]
+//                                            a document (region) to PNG
+//   bench <file.md> [--width W]              parse + first screen timing
+//   pages <file.md> <out-prefix>             pages as printed, a PNG each
+//   text <file.md>                           the text "Select all + Copy" gives
+//   clip get                                 the Unicode text on the clipboard
+//   snap <out.png> [window class | 0xHWND]   captures a window
+//   post <class> <msg> <wparam> [lparam] [--async]
+//                                            sends a message to a window
+//   plugin <dll> <file.md> <out.png> [search text] [--dark] [--hover X Y] [--idle]
+//                                            the DLL driven like Total Commander
+//   settings <dll> <file.md> <out-prefix>    settings dialog: preview, Cancel, OK
+//   zoom <dll> <file.md> <out-prefix>        zooming an image with the mouse
+//   reload <dll> <dir>                       auto-reload after an editor's save
+//   modal <dll> <out-dir>                    closed while a modal loop runs
+//   search <dll> <out-dir>                   ListSearchTextW both ways
+//   remote <dll> <out-dir>                   pictures on a server that never answers
+//   longpath <out-dir>                       a picture in a path past MAX_PATH
+//   inputs all                               data: URIs, text encodings, SVG sniffing
+//   heavy <limit-ms>                         paragraphs of tens of thousands of pieces
+//   details <file.md>...                     blocks around collapsed <details>
+//   flags <file.md>                          flag emoji
+//   math <file.md> [iterations]              TeX parsing and layout, hostile input
+//   tex "<TeX source>"                       a formula's parsed tree
+//   mermaid <file.md>... [fuzz iterations]   diagrams, parse checks, hostile input
+//   mmd <diagram.mmd> <out.png> [--dark] [--scale S] [--search TEXT]
+//                                            one diagram to PNG
+//   fuzz <iterations> [seed]                 random documents through everything
 #include <windows.h>
 #include <dwmapi.h>
 #include <psapi.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -51,12 +76,21 @@ namespace {
 
 int Usage() {
     std::fprintf(stderr,
-                 "usage:\n"
-                 "  mdview_test spec <spec.txt> [-v] [-n N] [--strict]\n"
-                 "  mdview_test dump <file.md>\n"
-                 "  mdview_test render <file.md> <out.png> [--width W] [--scale S] [--dark] [--zoom Z]\n"
-                 "              [--scroll Y] [--height H] [--remote] [--nowrap]\n"
-                 "  mdview_test bench <file.md> [--width W]\n");
+                 "usage: mdview_test <command> ... (see tests/mdview_test.cpp)\n"
+                 "  spec <spec.txt> [-v] [-n N] [--strict]      dump <file.md>\n"
+                 "  render <file.md> <out.png> [--width W] [--scale S] [--dark] [--zoom Z]\n"
+                 "         [--scroll Y] [--height H] [--remote] [--nowrap]\n"
+                 "  bench <file.md> [--width W]                 pages <file.md> <out-prefix>\n"
+                 "  text <file.md>    clip get    snap <out.png> [window class]\n"
+                 "  post <class> <msg> <wparam> [lparam] [--async]\n"
+                 "  plugin <dll> <file.md> <out.png> [search text] [--dark] [--hover X Y] [--idle]\n"
+                 "  settings|zoom <dll> <file.md> <out-prefix>  reload <dll> <dir>\n"
+                 "  modal|search|remote <dll> <out-dir>         longpath <out-dir>    inputs all\n"
+                 "  heavy <limit-ms>    details <file.md>...    flags <file.md>\n"
+                 "  math <file.md> [iterations]                 tex \"<TeX source>\"\n"
+                 "  mermaid <file.md>... [fuzz iterations]\n"
+                 "  mmd <diagram.mmd> <out.png> [--dark] [--scale S] [--search TEXT]\n"
+                 "  fuzz <iterations> [seed]\n");
     return 2;
 }
 
@@ -75,6 +109,17 @@ std::wstring FullPath(const char* p) {
     wchar_t buf[2048];
     const DWORD n = GetFullPathNameW(w.c_str(), 2048, buf, nullptr);
     return n > 0 && n < 2048 ? std::wstring(buf, n) : w;
+}
+
+// A path as Total Commander passes DefaultIniName: in the ANSI code page (the
+// plugin reads it so; UTF-8 broke a checkout in a non-ASCII directory).
+std::string AnsiPath(const std::wstring& w) {
+    const int n = WideCharToMultiByte(CP_ACP, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (n <= 0) return {};
+    std::string s(static_cast<size_t>(n), '\0');
+    WideCharToMultiByte(CP_ACP, 0, w.c_str(), -1, s.data(), n, nullptr, nullptr);
+    s.resize(static_cast<size_t>(n) - 1);
+    return s;
 }
 
 // Captures a window (Direct2D content and the dark title bar included) to PNG
@@ -324,8 +369,14 @@ int main(int argc, char** ansi_argv) {
         const UINT msg = static_cast<UINT>(std::strtoul(argv[3], nullptr, 0));
         const WPARAM wp = static_cast<WPARAM>(std::strtoull(argv[4], nullptr, 0));
         const LPARAM lp = argc >= 6 ? static_cast<LPARAM>(std::strtoll(argv[5], nullptr, 0)) : 0;
-        if (argc >= 7 && !std::strcmp(argv[6], "--async")) PostMessageW(hwnd, msg, wp, lp);
-        else SendMessageW(hwnd, msg, wp, lp);
+        if (argc >= 7 && !std::strcmp(argv[6], "--async")) {
+            if (!PostMessageW(hwnd, msg, wp, lp)) {
+                std::fprintf(stderr, "PostMessage failed (%lu)\n", GetLastError());
+                return 1;
+            }
+        } else {
+            SendMessageW(hwnd, msg, wp, lp);
+        }
         return 0;
     }
     if (cmd == "plugin" && argc >= 5) {
@@ -370,7 +421,7 @@ int main(int argc, char** ansi_argv) {
             } else query = argv[i];
         }
         DefaultParams dp{sizeof(DefaultParams), 13, 2, {}};
-        const std::string ini = WideToUtf8(DirectoryOf(FullPath(argv[4]))) + "lsplugin.ini";
+        const std::string ini = AnsiPath(DirectoryOf(FullPath(argv[4])) + L"lsplugin.ini");
         strncpy_s(dp.ini, ini.c_str(), _TRUNCATE);
         set_params(&dp);
 
@@ -442,7 +493,8 @@ int main(int argc, char** ansi_argv) {
         };
         auto suffixed = [&](const char* suffix) {
             std::string tp = argv[4];
-            tp.insert(tp.size() - 4, suffix);
+            const size_t dot = tp.rfind('.'), slash = tp.find_last_of("\\/");
+            tp.insert(dot != std::string::npos && (slash == std::string::npos || dot > slash) ? dot : tp.size(), suffix);
             return tp;
         };
         if (idle) {
@@ -611,7 +663,7 @@ int main(int argc, char** ansi_argv) {
             DWORD lo, hi;
             char ini[MAX_PATH];
         } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
-        strncpy_s(dp.ini, WideToUtf8(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        strncpy_s(dp.ini, AnsiPath(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
         set_params(&dp);
         auto write_doc = [&](const wchar_t* name, int pictures) {
             std::string md = "# Remote pictures\n\n";
@@ -690,7 +742,7 @@ int main(int argc, char** ansi_argv) {
             DWORD lo, hi;
             char ini[MAX_PATH];
         } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
-        strncpy_s(dp.ini, WideToUtf8(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        strncpy_s(dp.ini, AnsiPath(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
         set_params(&dp);
         std::string md;
         for (int i = 0; i < 300; ++i) md += "Paragraph " + std::to_string(i) + " with foo in it.\n\n";
@@ -761,7 +813,7 @@ int main(int argc, char** ansi_argv) {
             DWORD lo, hi;
             char ini[MAX_PATH];
         } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
-        strncpy_s(dp.ini, WideToUtf8(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        strncpy_s(dp.ini, AnsiPath(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
         set_params(&dp);
         auto write = [&](const wchar_t* name, const std::string& text) {
             HANDLE f = CreateFileW((dir + name).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
@@ -906,7 +958,7 @@ int main(int argc, char** ansi_argv) {
             DWORD lo, hi;
             char ini[MAX_PATH];
         } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
-        strncpy_s(dp.ini, WideToUtf8(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        strncpy_s(dp.ini, AnsiPath(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
         set_params(&dp);
         WNDCLASSW wc{};
         wc.lpfnWndProc = DefWindowProcW;
@@ -935,7 +987,10 @@ int main(int argc, char** ansi_argv) {
         struct Shot {
             int w = 0, h = 0;
             std::vector<uint32_t> px;
-            uint32_t at(int x, int y) const { return px[static_cast<size_t>(y) * w + x] & 0xFFFFFF; }
+            uint32_t at(int x, int y) const {
+                if (x < 0 || y < 0 || x >= w || y >= h || px.empty()) return 0;
+                return px[static_cast<size_t>(y) * w + x] & 0xFFFFFF;
+            }
         };
         ComPtr<IWICImagingFactory> wic;
         CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
@@ -959,11 +1014,18 @@ int main(int argc, char** ansi_argv) {
             bi.bmiHeader.biPlanes = 1;
             bi.bmiHeader.biBitCount = 32;
             void* bits = nullptr;
-            HBITMAP dib = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
+            HBITMAP dib = s.w > 0 && s.h > 0 ? CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, nullptr, 0) : nullptr;
+            if (!dib || !bits) {
+                std::printf("FAIL: cannot capture %s (%dx%d)\n", name, s.w, s.h);
+                if (dib) DeleteObject(dib);
+                DeleteDC(mem);
+                ReleaseDC(nullptr, screen);
+                return Shot{};
+            }
             HGDIOBJ old = SelectObject(mem, dib);
             PrintWindow(viewer, mem, PW_CLIENTONLY | PW_RENDERFULLCONTENT);
             SelectObject(mem, old);
-            s.px.assign(static_cast<const uint32_t*>(bits), static_cast<const uint32_t*>(bits) + s.w * s.h);
+            s.px.assign(static_cast<const uint32_t*>(bits), static_cast<const uint32_t*>(bits) + static_cast<size_t>(s.w) * s.h);
             ComPtr<IWICBitmap> bmp;
             if (wic && SUCCEEDED(wic->CreateBitmapFromHBITMAP(dib, nullptr, WICBitmapIgnoreAlpha, &bmp))) {
                 SaveBitmapPng(bmp.Get(), Utf8ToWide(prefix + name + ".png"));
@@ -1147,7 +1209,7 @@ int main(int argc, char** ansi_argv) {
             DWORD lo, hi;
             char ini[MAX_PATH];
         } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
-        strncpy_s(dp.ini, WideToUtf8(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        strncpy_s(dp.ini, AnsiPath(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
         set_params(&dp);
 
         WNDCLASSW wc{};
@@ -1313,7 +1375,7 @@ int main(int argc, char** ansi_argv) {
             DWORD lo, hi;
             char ini[MAX_PATH];
         } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
-        strncpy_s(dp.ini, WideToUtf8(dir + L"\\lsplugin.ini").c_str(), _TRUNCATE);
+        strncpy_s(dp.ini, AnsiPath(dir + L"\\lsplugin.ini").c_str(), _TRUNCATE);
         auto write = [](const std::wstring& path, const std::string& text) {
             HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
             DWORD n = 0;
@@ -1347,14 +1409,24 @@ int main(int argc, char** ansi_argv) {
             set_params(&dp);  // settings load once per process: first round only
             write(file, "# Reload test\n\nfirst version\n");
             HWND v = load(host, file.c_str(), 0);
-            pump(300);
-            const std::string marker = enabled ? "second-version-marker" : "third-version-marker";
-            save_like_editor("# Reload test\n\n" + marker + "\n");
-            pump(1500);
-            const bool found = search(v, Utf8ToWide(marker).c_str(), 1) == 0;
-            std::printf("AutoReload=%d: new text %s\n", enabled, found ? "shown" : "not shown");
-            if (found != (enabled == 1)) ++failures;
-            close(v);
+            if (!v) {
+                std::printf("FAIL: AutoReload=%d: the document did not open\n", enabled);
+                ++failures;
+            } else {
+                pump(300);
+                const std::string marker = enabled ? "second-version-marker" : "third-version-marker";
+                save_like_editor("# Reload test\n\n" + marker + "\n");
+                // Up to a poll period (kWatchPollMs, 2 s; the watch is quicker)
+                // and the reload delay: switched off, not shown after as long.
+                bool found = false;
+                for (const double end = NowMs() + 3500; !found && NowMs() < end;) {
+                    pump(100);
+                    found = search(v, Utf8ToWide(marker).c_str(), 1) == 0;
+                }
+                std::printf("AutoReload=%d: new text %s\n", enabled, found ? "shown" : "not shown");
+                if (found != (enabled == 1)) ++failures;
+                close(v);
+            }
             // Settings are cached per process: flip the switch as the menu would.
             FreeLibrary(dll);
             dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
@@ -2010,18 +2082,30 @@ int main(int argc, char** ansi_argv) {
         if (!pr.Init(*doc, cfg, width, 96.f, static_cast<UINT>(page_h) + 1)) return 1;
         const auto pages = pr.Paginate(page_h);
         std::printf("%zu pages\n", pages.size());
+        int failures = pages.empty() ? 1 : 0;
         for (size_t p = 0; p < pages.size() && p < 50; ++p) {
             IWICBitmap* bmp = pr.RenderBand(pages[p].first, page_h, pages[p].second);
             const std::string out = std::string(argv[3]) + std::to_string(p + 1) + ".png";
-            SaveBitmapPng(bmp, Utf8ToWide(out));
+            if (!bmp || !SaveBitmapPng(bmp, Utf8ToWide(out))) {
+                std::fprintf(stderr, "cannot write %s\n", out.c_str());
+                ++failures;
+            }
         }
-        return 0;
+        return failures ? 1 : 0;
     }
     if (cmd == "mermaid") {
-        // mermaid <file.md> [fuzz iterations]: every diagram of the file lays
-        // out, parse checks, hostile input stays bounded, random sources
-        // never crash.
+        // mermaid <file.md>... [fuzz iterations]: every diagram of the files
+        // lays out; then (once) parse checks, hostile input stays bounded,
+        // random sources never crash.
         int failures = 0;
+        std::vector<const char*> files;
+        int fuzz_iterations = 2000;
+        for (int i = 2; i < argc; ++i) {
+            char* end = nullptr;
+            const long n = std::strtol(argv[i], &end, 10);
+            if (*argv[i] && !*end) fuzz_iterations = static_cast<int>(n);
+            else files.push_back(argv[i]);
+        }
         ComPtr<IDWriteFactory> dwf;
         DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(dwf.GetAddressOf()));
         auto sane = [](const DiagramScene& s) {
@@ -2041,22 +2125,24 @@ int main(int argc, char** ansi_argv) {
         auto layout = [&](const std::wstring& src, std::wstring* error) {
             return CheckMermaid(src, error) ? LayoutMermaid(src, dwf.Get(), L"Segoe UI", 16.f, error) : nullptr;
         };
-        // Every diagram of the file.
-        std::string md;
-        if (!LoadMarkdown(argv[2], md)) return 1;
-        auto doc = ParseMarkdown(md, FullPath(argv[2]));
-        for (const DiagramRef& d : doc->diagrams) {
-            std::wstring error;
-            const auto scene = layout(d.source, &error);
-            if (!scene || !sane(*scene)) {
-                std::printf("FAIL: diagram %s: %s\n", WideToUtf8(d.source.substr(0, 40)).c_str(), WideToUtf8(error).c_str());
+        // Every diagram of the files.
+        for (const char* file : files) {
+            std::string md;
+            if (!LoadMarkdown(file, md)) return 1;
+            auto doc = ParseMarkdown(md, FullPath(file));
+            for (const DiagramRef& d : doc->diagrams) {
+                std::wstring error;
+                const auto scene = layout(d.source, &error);
+                if (!scene || !sane(*scene)) {
+                    std::printf("FAIL: diagram %s: %s\n", WideToUtf8(d.source.substr(0, 40)).c_str(), WideToUtf8(error).c_str());
+                    ++failures;
+                }
+            }
+            std::printf("%zu diagrams of %s laid out\n", doc->diagrams.size(), file);
+            if (doc->diagrams.empty()) {  // (a parser that stopped making diagrams would pass otherwise)
+                std::printf("FAIL: no diagram in %s\n", file);
                 ++failures;
             }
-        }
-        std::printf("%zu diagrams of %s laid out\n", doc->diagrams.size(), argv[2]);
-        if (doc->diagrams.empty()) {  // (a parser that stopped making diagrams would pass otherwise)
-            std::printf("FAIL: no diagram in %s\n", argv[2]);
-            ++failures;
         }
         // Parsing: what is accepted, and errors with their line.
         struct Case {
@@ -2987,7 +3073,7 @@ int main(int argc, char** ansi_argv) {
             seed ^= seed << 5;
             return seed;
         };
-        const int iterations = argc >= 4 ? std::atoi(argv[3]) : 2000;
+        const int iterations = fuzz_iterations;
         const double f0 = NowMs();
         int drawn = 0;
         for (int it = 0; it < iterations; ++it) {
@@ -3535,9 +3621,9 @@ int main(int argc, char** ansi_argv) {
                 }
                 src += L"\n";
             }
-            static const wchar_t* kArrow[] = {L" -> ", L" --> ", L" -.-> ", L" > ", L" +> ", L" +< ", L" +<> ", L" +'why'> ", L" "};
+            static const wchar_t* kArrow[] = {L" -> ", L" --> ", L" -.-> ", L" > ", L" +> ", L" +< ", L" +<> ", L" +'why'> "};
             for (int k = 0, links = static_cast<int>(rnd() % 15); k < links; ++k) {
-                src += L"N" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + kArrow[rnd() % 8] + L"N" + std::to_wstring(rnd() % static_cast<uint32_t>(count));
+                src += L"N" + std::to_wstring(rnd() % static_cast<uint32_t>(count)) + kArrow[rnd() % std::size(kArrow)] + L"N" + std::to_wstring(rnd() % static_cast<uint32_t>(count));
                 if (rnd() % 4 == 0) src += L"; label";
                 src += L"\n";
             }
@@ -4064,6 +4150,10 @@ int main(int argc, char** ansi_argv) {
         const double t2 = NowMs();
         ComPtr<IWICBitmap> bmp = RenderToBitmap(*doc, o, &stats);
         const double t3 = NowMs();
+        if (!bmp) {
+            std::fprintf(stderr, "cannot render\n");
+            return 1;
+        }
         std::printf("first screen: layout %.1f ms, render %.1f ms, total %.1f ms, doc height %.0f\n",
                     stats.layout_ms, stats.render_ms, t3 - t2, stats.doc_height);
         std::printf("working set: %.1f MB\n", WorkingSetMb());

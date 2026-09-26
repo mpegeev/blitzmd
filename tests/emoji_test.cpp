@@ -1,9 +1,5 @@
-// Standalone test for mdv::LookupEmojiShortcode (src/core/emoji.cpp).
-//
-// Build (from PowerShell, MSVC environment via scripts/vcrun.ps1):
-//   cl /nologo /std:c++20 /W4 /WX /permissive- /EHsc /utf-8 /GR- /O2
-//      /Fe:out\emojitest\emoji_test.exe /Fo:out\emojitest\
-//      tests\emoji_test.cpp src\core\emoji.cpp
+// Standalone test for mdv::LookupEmojiShortcode (src/core/emoji.cpp): the
+// CMake target emoji_test, run by scripts/test.ps1.
 //
 // Exit code 0 only if every check passes.
 
