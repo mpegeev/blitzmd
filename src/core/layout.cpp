@@ -15,6 +15,7 @@ namespace {
 constexpr float kHugeWidth = 100000.f;
 constexpr wchar_t kObjectChar = 0xFFFC;
 constexpr float kMathRefSize = 64.f;  // formulas are typeset once at this size and scaled
+constexpr size_t kMaxRefineChars = 200000;  // longer leaves are measured near the view only
 
 bool IsStrongRtl(wchar_t c) {
     return (c >= 0x0590 && c <= 0x08FF) || (c >= 0xFB1D && c <= 0xFDFF) || (c >= 0xFE70 && c <= 0xFEFF);
@@ -1260,6 +1261,7 @@ float LayoutEngine::LayoutLeaf(Block* b, float x, float y, float w, const Ctx& c
         s.layout.Reset();
         s.exact = false;
         s.minmax_valid = false;
+        s.width = -1;  // (nor is an estimate for it any good)
     }
     s.style = st;
 
@@ -1280,12 +1282,20 @@ float LayoutEngine::LayoutLeaf(Block* b, float x, float y, float w, const Ctx& c
     if (s.exact && s.width == tw) {
         th = s.text_h;
     } else {
-        const float est = EstimateLeaf(b, s, tw);
+        // An estimate for this width is kept (estimating reads all the text,
+        // and every layout of the document passes every leaf).
+        const float est = !s.exact && s.width == tw ? s.text_h : EstimateLeaf(b, s, tw);
         const bool is_near = y < exact_y1_ && y + est + pad_t + pad_b > exact_y0_;
         // Images can't be estimated (their sizes vary too much): measured right away.
         const bool images = std::any_of(b->objects.begin(), b->objects.end(),
                                         [](const InlineObject& o) { return o.image >= 0 && o.length == 1; });
-        th = MeasureLeaf(b, tw, is_near || images || s.layout != nullptr);
+        if (is_near || images || s.layout != nullptr) {
+            th = MeasureLeaf(b, tw, true);
+        } else {
+            s.exact = false;
+            s.width = tw;
+            th = s.text_h = est;
+        }
     }
     if (!s.exact) ++estimated_count_;
     // A formula too wide for its column even after shrinking: the leaf
@@ -1695,6 +1705,9 @@ bool LayoutEngine::Refine(double budget_ms) {
         LeafState& s = leaves_[i];
         Block* b = doc_->leaves[i];
         if (!b->visible || s.exact || s.width <= 0) continue;
+        // A huge leaf takes seconds in one piece, far beyond a step's budget:
+        // measured only once near the view (Layout does that).
+        if (b->text.size() > kMaxRefineChars) continue;
         MeasureLeaf(b, s.width, true);
         const bool is_near = b->y < exact_y1_ + 2000.f && b->y + b->h > exact_y0_ - 2000.f;
         if (!is_near) s.layout.Reset();

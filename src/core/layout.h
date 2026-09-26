@@ -149,7 +149,8 @@ public:
     bool laid_out() const { return viewport_w_ > 0; }
 
     // Measures estimated leaves for up to budget_ms. Returns true if any
-    // leaf changed (a new Layout pass is needed).
+    // leaf changed (a new Layout pass is needed); false if none is left that
+    // it measures (huge ones are only measured near the view).
     bool Refine(double budget_ms);
     bool HasEstimates() const { return estimated_count_ > 0; }
 

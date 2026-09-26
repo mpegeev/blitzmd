@@ -4324,36 +4324,55 @@ int main(int argc, char** ansi_argv) {
             }
         }
         {
-            // A table with <div align> in its cells refines to the end, as the
-            // viewer's timer does it: the cells were measured with another
-            // style than laid out, so each layout dropped what the refinement
-            // measured and the timer never stopped (#146).
+            // Refining as the viewer's timer does: Refine, then Layout with a
+            // screen around the view exactly, until Refine has nothing left.
+            // True if it ends; the rounds and the longest one.
+            ComPtr<IDWriteFactory> dwf;
+            DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(dwf.GetAddressOf()));
+            auto refine = [&](const std::string& md, int& rounds, double& worst_ms) {
+                auto refined = ParseMarkdown(md, L"C:\\heavy.md");
+                Palette palette;
+                ImageStore images;
+                images.Attach(refined.get(), nullptr, false, false);
+                LayoutEngine engine;
+                engine.Init(dwf.Get(), &palette, &images);
+                engine.SetConfig(LayoutConfig{});
+                engine.SetDocument(refined.get());
+                engine.Layout(900.f, -700.f, 1400.f);
+                rounds = 0;
+                worst_ms = 0;
+                for (; engine.HasEstimates() && rounds < 2000; ++rounds) {
+                    const double t0 = NowMs();
+                    const bool more = engine.Refine(6.0);
+                    if (more) engine.Layout(900.f, -700.f, 1400.f);
+                    worst_ms = std::max(worst_ms, NowMs() - t0);
+                    if (!more) break;
+                }
+                engine.SetDocument(nullptr);
+                return rounds < 2000;
+            };
+            int rounds = 0;
+            double worst = 0;
+            // A table with <div align> in its cells: they were measured with
+            // another style than laid out, so each layout dropped what the
+            // refinement measured and the timer never stopped (#146).
             std::string md = "<table>\n";
             for (int i = 0; i < 2000; ++i) md += "<tr><td><div align=\"center\">c" + std::to_string(i) + "</div></td><td>p</td></tr>\n";
             md += "</table>\n";
-            auto table_doc = ParseMarkdown(md, L"C:\\heavy.md");
-            ComPtr<IDWriteFactory> dwf;
-            DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory), reinterpret_cast<IUnknown**>(dwf.GetAddressOf()));
-            Palette palette;
-            ImageStore images;
-            images.Attach(table_doc.get(), nullptr, false, false);
-            LayoutEngine engine;
-            engine.Init(dwf.Get(), &palette, &images);
-            engine.SetConfig(LayoutConfig{});
-            engine.SetDocument(table_doc.get());
-            engine.Layout(900.f, -700.f, 1400.f);  // (the viewer lays out a screen around the view exactly)
-            int rounds = 0;
-            for (; engine.HasEstimates() && rounds < 2000; ++rounds) {
-                engine.Refine(6.0);
-                engine.Layout(900.f, -700.f, 1400.f);
-            }
-            std::printf("  a table with <div align> in its cells: %s after %d rounds of refining\n",
-                        engine.HasEstimates() ? "still estimated" : "measured", rounds);
-            if (engine.HasEstimates()) {
+            const bool table_done = refine(md, rounds, worst);
+            std::printf("  a table with <div align> in its cells: refining %s after %d rounds\n", table_done ? "ends" : "goes on", rounds);
+            if (!table_done) {
                 std::printf("FAIL: refining never ends\n");
                 ++failures;
             }
-            engine.SetDocument(nullptr);
+            // A 6 MB code block below 300 paragraphs: a step of refining took
+            // 1.4 s measuring it (#147); it is measured near the view instead.
+            const bool far_done = refine(repeat("para\n\n", 300) + "```\n" + repeat("0123456789abcdef x\n", 330000) + "```\n", rounds, worst);
+            std::printf("  a 6 MB code block far below: %d rounds of refining, the longest %.0f ms\n", rounds, worst);
+            if (!far_done || worst > 500) {
+                std::printf("FAIL: a step of refining takes %.0f ms\n", worst);
+                ++failures;
+            }
         }
         {
             // More blocks than allowed: the parse stops there, and a warning
