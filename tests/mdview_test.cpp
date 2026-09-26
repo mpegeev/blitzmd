@@ -2871,6 +2871,22 @@ int main(int argc, char** ansi_argv) {
                 }
                 return s;
             }(),
+            [&] {  // venn: thousands of three-set unions, which the optimizer's budget underrated (1.7 s: #152)
+                const std::wstring sets = L"abcdefghijklmnopqrstuvwx";
+                std::wstring s = L"venn-beta\n";
+                for (const wchar_t c : sets) s += L"set " + std::wstring(1, c) + L":9\n";
+                for (int i = 0; i < 24; ++i) {
+                    for (int j = i + 1; j < 24; ++j) s += L"union " + std::wstring(1, sets[i]) + L"," + sets[j] + L":6\n";
+                }
+                std::vector<std::wstring> triples;
+                for (int i = 0; i < 24; ++i) {
+                    for (int j = i + 1; j < 24; ++j) {
+                        for (int k = j + 1; k < 24; ++k) triples.push_back(std::wstring{sets[i], L',', sets[j], L',', sets[k]});
+                    }
+                }
+                for (size_t n = 0; n < 3300; ++n) s += L"union " + triples[n % 700] + L":1\n";  // (700 distinct: 1000 areas at most)
+                return s;
+            }(),
             [&] {  // venn: every pair declared again and again (cubic in the repeats: #138)
                 std::wstring s = L"venn-beta\n";
                 for (int i = 0; i < 24; ++i) s += L"set s" + std::to_wstring(i) + L": 9\n";

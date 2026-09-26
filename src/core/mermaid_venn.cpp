@@ -802,9 +802,14 @@ public:
 
     std::vector<Circle> Solve() {
         AddMissingAreas();
+        // The optimizer's evaluations for about a second at most. A pair costs
+        // one overlap, an area of k sets its intersection: some k^3, but
+        // nearer 50 pairs for small k (allocations, atan2...).
         double work = 0;
-        for (const Area& a : areas_) work += a.sets.size() < 3 ? 1.0 : std::pow(static_cast<double>(a.sets.size()), 3);
-        max_evals_ = static_cast<size_t>(std::max(100.0, 1e8 / std::max(work, 1.0)));
+        for (const Area& a : areas_) {
+            work += a.sets.size() < 3 ? 1.0 : std::max(50.0, std::pow(static_cast<double>(a.sets.size()), 3));
+        }
+        max_evals_ = static_cast<size_t>(std::max(100.0, 2e7 / std::max(work, 1.0)));
         std::vector<Circle> circles = Greedy();
         if (areas_.size() >= 8) {
             std::vector<Circle> mds = ConstrainedMds();
