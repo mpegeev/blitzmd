@@ -2643,6 +2643,10 @@ int main(int argc, char** ansi_argv) {
             L"gantt\nexcludes monday tuesday wednesday thursday friday saturday sunday\n" + repeat(L"Never :30d\n", 500),
             L"gantt\ntickInterval 1millisecond\nA :-9999-01-01, 2024-01-01\nB :9999-01-01, 1d",
             L"gantt\ndateFormat x\nA :0, 1ms\nB :1, 1ms\ntickInterval 1year",
+            // Every excluded date matched against a huge format, and every axis
+            // label a huge format expanded: 37 s and 28 s (#139, #140).
+            L"gantt\ndateFormat " + repeat(L"[]", 12400) + L"\nexcludes " + repeat(L"1 ", 12400) + L"\na : 2024-01-01, 1d\n",
+            L"gantt\ndateFormat YYYY-MM-DD\ntickInterval 1day\naxisFormat " + repeat(L"%c", 24000) + L"\na : 2024-01-01, 198d\n",
             L"gantt\n" + repeat(L"section " + std::wstring(300, L's') + L"\nT :2024-01-01, 1d\n", 450),
             L"timeline\n" + repeat(L"period : " + std::wstring(100, L'e') + L" : two\n", 480),
             L"timeline TD\n" + repeat(L"section S\np : e : f : g\n", 480),
