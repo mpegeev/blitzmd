@@ -499,19 +499,23 @@ int main(int argc, char** ansi_argv) {
         const double t3 = NowMs();
         HBITMAP thumb = preview(FullPath(argv[3]).c_str(), 256, 256, nullptr, 0);
         const double t4 = NowMs();
+        bool thumb_ok = false;
         if (thumb) {
             BITMAP bm{};
             GetObjectW(thumb, sizeof bm, &bm);
             std::printf("ListGetPreviewBitmapW: %ldx%ld in %.1f ms\n", bm.bmWidth, bm.bmHeight, t4 - t3);
+            thumb_ok = bm.bmWidth > 0 && bm.bmWidth <= 256 && bm.bmHeight > 0 && bm.bmHeight <= 256;
             ComPtr<IWICBitmap> tb;
             if (wic && SUCCEEDED(wic->CreateBitmapFromHBITMAP(thumb, nullptr, WICBitmapIgnoreAlpha, &tb))) {
                 SaveBitmapPng(tb.Get(), Utf8ToWide(suffixed("-thumb")));
             }
             DeleteObject(thumb);
-        } else {
-            std::printf("ListGetPreviewBitmapW failed\n");
         }
         FreeLibrary(dll);
+        if (!thumb_ok) {
+            std::printf("FAIL: ListGetPreviewBitmapW: %s\n", thumb ? "not the size asked for" : "no bitmap");
+            return 1;
+        }
         std::printf("plugin OK\n");
         return 0;
     }
