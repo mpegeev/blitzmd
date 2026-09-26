@@ -759,11 +759,12 @@ void ImageStore::LoadAll() {
                 continue;
             }
             if (impl_->wic) ReadImageSize(impl_->wic.Get(), e.url, e.px_w, e.px_h);
-            if (!impl_->sync && e.px_w > 0 && e.px_h > 0) {
-                // The size is known: beyond half the budget, pixels are
-                // decoded only once the image is first drawn.
+            if (e.px_w > 0 && e.px_h > 0) {
+                // The size is known: pixels are decoded only once the image
+                // is first drawn — offscreen always (a thumbnail shows few of
+                // a document's pictures), on screen beyond half the budget.
                 const uint64_t est = std::min<uint64_t>(static_cast<uint64_t>(e.px_w) * e.px_h, kMaxDecodePixels) * 4;
-                if (eager_bytes + est > kImageMemoryBudget / 2) {
+                if (impl_->sync || eager_bytes + est > kImageMemoryBudget / 2) {
                     e.state = ImageState::Ready;
                     continue;
                 }
@@ -984,6 +985,11 @@ void ImageStore::Draw(ID2D1RenderTarget* rt, int index, const D2D1_RECT_F& r, Pa
         if (impl_->bitmap_rt[i] != rt) {
             e.bitmap.Reset();
             impl_->bitmap_rt[i] = nullptr;
+        }
+        if (impl_->sync && !e.bitmap && !e.animation && !e.encoded && impl_->pending_pixels[i].data.empty()) {
+            // Offscreen, drawn the first time: decoded now (see LoadAll).
+            impl_->Submit(index, e.url, e.remote);  // (runs inline)
+            CompletePending();
         }
         if (e.encoded) {
             // First time on screen: start playing (frame 0 is already decoded).

@@ -3477,6 +3477,20 @@ int main(int argc, char** ansi_argv) {
                 std::printf("FAIL: a GIF frame bigger than its canvas takes %.0f MB\n", grew);
                 ++failures;
             }
+            // Offscreen (a thumbnail): 30 pictures of 2400 x 300, one or two in
+            // view. Only those drawn are decoded (all 30 were: ~90 MB).
+            const double before2 = peak_mb();
+            auto pics = ParseMarkdown(repeat("![w](img/wide-2400x300.png)\n\n", 30), FullPath("samples/gfm/heavy.md"));
+            OffscreenOptions thumb;
+            thumb.width = 600.f;
+            thumb.max_height = 200.f;
+            bmp = RenderToBitmap(*pics, thumb);
+            const double grew2 = peak_mb() - before2;
+            std::printf("  30 big pictures, a thumbnail's worth drawn: peak memory +%.0f MB\n", grew2);
+            if (!bmp || grew2 > 40) {
+                std::printf("FAIL: pictures out of view are decoded offscreen (+%.0f MB)\n", grew2);
+                ++failures;
+            }
         }
         {
             // SVG: a long font-family inherited by 20000 elements, and 20000
