@@ -35,6 +35,7 @@
 //                                            one diagram to PNG
 //   fuzz <iterations> [seed]                 random documents through everything
 #include <windows.h>
+#include <winsock2.h>
 #include <dwmapi.h>
 #include <psapi.h>
 #include <shellapi.h>
@@ -642,9 +643,11 @@ int main(int argc, char** ansi_argv) {
     }
     if (cmd == "remote" && argc >= 4) {
         // remote <mdview.wlx64> <out-dir>: a document with 60 pictures on a
-        // server that doesn't answer (10.255.255.1): the downloads queue up in
-        // a few threads instead of one thread each. (Where that address fails
-        // at once instead, nothing piles up either way.)
+        // server that doesn't answer (192.0.2.1, reserved for documentation):
+        // the downloads queue up in a few threads instead of one thread each.
+        // (Where that address fails at once instead, nothing piles up either
+        // way.) Then pictures on this computer's own server are never asked
+        // for, and which hosts count as the local network.
         HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
         using SetParamsFn = void(__stdcall*)(void*);
         using LoadFn = HWND(__stdcall*)(HWND, const wchar_t*, int);
@@ -668,7 +671,7 @@ int main(int argc, char** ansi_argv) {
         set_params(&dp);
         auto write_doc = [&](const wchar_t* name, int pictures) {
             std::string md = "# Remote pictures\n\n";
-            for (int i = 0; i < pictures; ++i) md += "![p](http://10.255.255.1/p" + std::to_string(i) + ".png) ";
+            for (int i = 0; i < pictures; ++i) md += "![p](http://192.0.2.1/p" + std::to_string(i) + ".png) ";
             HANDLE f = CreateFileW((dir + name).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
             DWORD n = 0;
             if (f != INVALID_HANDLE_VALUE) {
@@ -709,12 +712,73 @@ int main(int argc, char** ansi_argv) {
             if (viewer) close(viewer);
             return n;
         };
+        bool ok = true;
+        // (First: the pictures of the test below keep the download threads busy.)
+        // A server on this computer: pictures there, by address and by name,
+        // must not even connect (#184).
+        WSADATA wsa{};
+        WSAStartup(MAKEWORD(2, 2), &wsa);
+        SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        sockaddr_in at{};
+        at.sin_family = AF_INET;
+        at.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        int at_len = sizeof at;
+        if (listener == INVALID_SOCKET || bind(listener, reinterpret_cast<sockaddr*>(&at), sizeof at) != 0 ||
+            listen(listener, 16) != 0 || getsockname(listener, reinterpret_cast<sockaddr*>(&at), &at_len) != 0) {
+            std::printf("FAIL: no local server for the test\n");
+            ok = false;
+        } else {
+            const std::string port = std::to_string(ntohs(at.sin_port));
+            std::string md = "# Local pictures\n\n";
+            for (const char* h : {"127.0.0.1", "localhost", "127.1"}) md += "![p](http://" + std::string(h) + ":" + port + "/p.png) ";
+            HANDLE f = CreateFileW((dir + L"local.md").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD n = 0;
+            if (f != INVALID_HANDLE_VALUE) {
+                WriteFile(f, md.data(), static_cast<DWORD>(md.size()), &n, nullptr);
+                CloseHandle(f);
+            }
+            threads_with(L"local.md");
+            u_long nonblocking = 1;
+            ioctlsocket(listener, FIONBIO, &nonblocking);
+            int connections = 0;
+            for (SOCKET s; (s = accept(listener, nullptr, nullptr)) != INVALID_SOCKET;) {
+                ++connections;
+                closesocket(s);
+            }
+            std::printf("pictures on this computer's server: %d connections\n", connections);
+            if (connections) {
+                std::printf("FAIL: pictures loaded from this computer\n");
+                ok = false;
+            }
+        }
+        if (listener != INVALID_SOCKET) closesocket(listener);
+        WSACleanup();
         const int one = threads_with(L"remote1.md");
         const int sixty = threads_with(L"remote60.md");
-        DestroyWindow(host);
         std::printf("threads: %d with 1 picture loading, %d with 60\n", one, sixty);
-        const bool ok = one > 0 && sixty > 0 && sixty - one <= 20;
-        if (!ok) std::printf("FAIL: %s\n", one > 0 && sixty > 0 ? "a thread per picture" : "ListLoadW failed");
+        if (!(one > 0 && sixty > 0 && sixty - one <= 20)) {
+            std::printf("FAIL: %s\n", one > 0 && sixty > 0 ? "a thread per picture" : "ListLoadW failed");
+            ok = false;
+        }
+        DestroyWindow(host);
+        // Which hosts are the local network (names resolve through the
+        // system; unresolvable ones are left to the network).
+        const struct {
+            const wchar_t* host;
+            bool local;
+        } hosts[] = {
+            {L"localhost", true},     {L"nas", true},          {L"printer.local", true},  {L"127.0.0.1", true},
+            {L"10.1.2.3", true},      {L"172.20.0.1", true},   {L"192.168.1.1", true},    {L"169.254.169.254", true},
+            {L"[::1]", true},         {L"[fe80::1]", true},    {L"[fd00::1]", true},      {L"[::ffff:10.0.0.1]", true},
+            {L"0.0.0.0", true},       {L"8.8.8.8", false},     {L"192.0.2.1", false},     {L"[2001:db8::1]", false},
+            {L"172.32.0.1", false},   {L"unresolvable.invalid", false},
+        };
+        for (const auto& h : hosts) {
+            if (IsLocalNetworkHost(h.host) != h.local) {
+                std::printf("FAIL: %s %s the local network\n", WideToUtf8(h.host).c_str(), h.local ? "is" : "is not");
+                ok = false;
+            }
+        }
         std::printf(ok ? "remote OK\n" : "remote FAILED\n");
         // (The DLL stays loaded: the pending jobs hold it until they give up.)
         return ok ? 0 : 1;

@@ -88,6 +88,12 @@ private:
 // Registered window message sent when asynchronous image work completes.
 UINT ImageLoadedMessage();
 
+// Whether a URL's host is this computer or on its local network (a name
+// without a dot, .local, or an address, the name's included, that is
+// loopback, private, link-local...). Remote pictures are never loaded from
+// there: the request would come from inside the user's network.
+bool IsLocalNetworkHost(std::wstring_view host);
+
 // Resolves a (possibly relative) URL against the document directory.
 // Returns an absolute file path, an http(s) URL, or empty if unsupported.
 std::wstring ResolveResourceUrl(const std::wstring& base_dir, std::wstring_view url, bool* remote);

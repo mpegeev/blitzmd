@@ -108,7 +108,7 @@ add_library(mdview_core STATIC
 )
 target_include_directories(mdview_core PUBLIC src)
 target_link_libraries(mdview_core PUBLIC md4c
-    d2d1 dwrite windowscodecs winhttp shlwapi uxtheme comctl32 shell32 ole32 oleaut32 user32 gdi32)
+    d2d1 dwrite windowscodecs winhttp ws2_32 shlwapi uxtheme comctl32 shell32 ole32 oleaut32 user32 gdi32)
 
 set(MDVIEW_CXX_OPTIONS /W4 /permissive- /utf-8 /Zc:__cplusplus /Zc:inline /EHsc /GR- /MP)
 set(MDVIEW_DEFINITIONS UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 WINVER=0x0A00
@@ -124,7 +124,7 @@ set_source_files_properties(src/plugin.rc tests/mdview_test.rc PROPERTIES OBJECT
 add_library(mdview SHARED src/plugin.cpp src/plugin.def src/plugin.rc)
 target_link_libraries(mdview PRIVATE mdview_core delayimp)
 # Load rarely needed system DLLs only when used (remote images, printing).
-target_link_options(mdview PRIVATE /DELAYLOAD:winhttp.dll /DELAYLOAD:comdlg32.dll /DELAYLOAD:dwmapi.dll)
+target_link_options(mdview PRIVATE /DELAYLOAD:winhttp.dll /DELAYLOAD:ws2_32.dll /DELAYLOAD:comdlg32.dll /DELAYLOAD:dwmapi.dll)
 target_compile_options(mdview PRIVATE ${MDVIEW_CXX_OPTIONS})
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set_target_properties(mdview PROPERTIES PREFIX "" SUFFIX ".wlx64")
