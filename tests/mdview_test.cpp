@@ -3712,6 +3712,7 @@ int main(int argc, char** ansi_argv) {
         };
         const size_t n_yaml = sizeof(kYaml) / sizeof(kYaml[0]);
         double total = 0;
+        int failed = 0;
         for (int it = 0; it < iterations; ++it) {
             std::string md;
             if (rnd() % 3 == 0) {
@@ -3736,9 +3737,14 @@ int main(int argc, char** ansi_argv) {
             ComPtr<IWICBitmap> bmp = RenderToBitmap(*doc, o);
             total += NowMs() - t0;
             if (!bmp) {
-                std::printf("iteration %d: render failed\n", it);
+                std::printf("FAIL: iteration %d: render failed\n", it);
+                ++failed;
             }
             if ((it + 1) % 200 == 0) std::printf("%d iterations, avg %.2f ms\n", it + 1, total / (it + 1));
+        }
+        if (failed) {
+            std::printf("fuzz FAILED: %d of %d iterations\n", failed, iterations);
+            return 1;
         }
         std::printf("fuzz OK: %d iterations\n", iterations);
         return 0;
