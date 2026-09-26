@@ -3,6 +3,8 @@
 #include <d2d1_1.h>
 #include <shlwapi.h>
 #include <winhttp.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 
 #include <algorithm>
 #include <atomic>
@@ -313,13 +315,61 @@ HINTERNET HttpSession() {
     return session;
 }
 
-// `cancelled`: the viewer is gone. A download also gives up after a minute
-// in all (a server may trickle a byte at a time, each within the timeouts).
-bool HttpGet(const std::wstring& url, std::string& out, const std::atomic<bool>& cancelled) {
-    constexpr double kDeadlineMs = 60000;
-    const double deadline = NowMs() + kDeadlineMs;
-    HINTERNET session = HttpSession();
-    if (!session) return false;
+bool IsPrivateAddress(const sockaddr* sa) {
+    if (sa->sa_family == AF_INET) {
+        const auto* b = reinterpret_cast<const uint8_t*>(&reinterpret_cast<const sockaddr_in*>(sa)->sin_addr);
+        return b[0] == 0 || b[0] == 10 || b[0] == 127 || (b[0] == 169 && b[1] == 254) ||  // this network, private, loopback, link-local
+               (b[0] == 172 && (b[1] & 0xF0) == 16) || (b[0] == 192 && b[1] == 168) ||
+               (b[0] == 100 && (b[1] & 0xC0) == 64) || b[0] >= 224;                      // carrier NAT, multicast and up
+    }
+    if (sa->sa_family == AF_INET6) {
+        const uint8_t* b = reinterpret_cast<const sockaddr_in6*>(sa)->sin6_addr.u.Byte;
+        static constexpr uint8_t kZero[12] = {};
+        if (std::memcmp(b, kZero, 10) == 0 && b[10] == 0xFF && b[11] == 0xFF) {  // ::ffff:a.b.c.d
+            sockaddr_in v4{};
+            v4.sin_family = AF_INET;
+            std::memcpy(&v4.sin_addr, b + 12, 4);
+            return IsPrivateAddress(reinterpret_cast<const sockaddr*>(&v4));
+        }
+        return (std::memcmp(b, kZero, 12) == 0 && b[12] == 0 && b[13] == 0 && b[14] == 0 && b[15] <= 1) ||  // :: and ::1
+               (b[0] & 0xFE) == 0xFC || (b[0] == 0xFE && (b[1] & 0xC0) == 0x80) || b[0] == 0xFF;  // unique local, link-local, multicast
+    }
+    return true;
+}
+
+}  // namespace
+
+bool IsLocalNetworkHost(std::wstring_view host) {
+    if (host.size() >= 2 && host.front() == L'[' && host.back() == L']') host = host.substr(1, host.size() - 2);
+    if (host.empty()) return true;
+    // A name without a dot (localhost, nas) is found on the local network.
+    if (host.find_first_of(L".:") == std::wstring_view::npos) return true;
+    const std::wstring name = ToLower(host);
+    for (const wchar_t* suffix : {L".localhost", L".local", L"."}) {
+        if (name.size() >= wcslen(suffix) && name.compare(name.size() - wcslen(suffix), wcslen(suffix), suffix) == 0) return true;
+    }
+    // Where the name leads (an address is its own). Unresolved here (behind
+    // a proxy, say): left to the proxy and the network.
+    WSADATA wsa{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
+    bool local = false;
+    ADDRINFOW hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    ADDRINFOW* found = nullptr;
+    if (GetAddrInfoW(name.c_str(), nullptr, &hints, &found) == 0) {
+        for (const ADDRINFOW* a = found; a && !local; a = a->ai_next) local = a->ai_addr && IsPrivateAddress(a->ai_addr);
+        FreeAddrInfoW(found);
+    }
+    WSACleanup();
+    return local;
+}
+
+namespace {
+
+// One GET of `url`: its status, and a redirect's target in `location`.
+DWORD HttpRequest(HINTERNET session, const std::wstring& url, std::string& out, const std::atomic<bool>& cancelled,
+                  double deadline, std::wstring& location) {
     URL_COMPONENTS uc{};
     uc.dwStructSize = sizeof uc;
     wchar_t host[256] = {};
@@ -327,43 +377,53 @@ bool HttpGet(const std::wstring& url, std::string& out, const std::atomic<bool>&
     uc.dwHostNameLength = static_cast<DWORD>(std::size(host));
     uc.dwUrlPathLength = static_cast<DWORD>(-1);
     uc.dwExtraInfoLength = static_cast<DWORD>(-1);
-    if (!WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &uc)) return false;
+    if (!WinHttpCrackUrl(url.c_str(), static_cast<DWORD>(url.size()), 0, &uc)) return 0;
+    if (uc.nScheme != INTERNET_SCHEME_HTTP && uc.nScheme != INTERNET_SCHEME_HTTPS) return 0;
+    // A picture is a GET made from inside the user's network: never to this
+    // computer or the local network, which the document's author can't reach.
+    if (IsLocalNetworkHost(host)) return 0;
     std::wstring path(uc.lpszUrlPath ? std::wstring(uc.lpszUrlPath, uc.dwUrlPathLength) : L"/");
     if (uc.lpszExtraInfo) path.append(uc.lpszExtraInfo, uc.dwExtraInfoLength);
     if (const size_t hash = path.find(L'#'); hash != std::wstring::npos) path.resize(hash);  // (never sent)
     const bool secure = uc.nScheme == INTERNET_SCHEME_HTTPS;
     HINTERNET conn = WinHttpConnect(session, host, uc.nPort, 0);
-    if (!conn) return false;
-    bool ok = false;
+    if (!conn) return 0;
+    DWORD status = 0;
     HINTERNET req = WinHttpOpenRequest(conn, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER,
                                        WINHTTP_DEFAULT_ACCEPT_TYPES, secure ? WINHTTP_FLAG_SECURE : 0);
     if (req) {
         // A document's pictures never log on with the user's Windows account:
         // by default WinHTTP answers an intranet host's NTLM/Negotiate
-        // challenge with it (after redirects too). The autologon policy
-        // (WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH) doesn't stop that for
-        // localhost; turning authentication off does.
-        DWORD no_auth = WINHTTP_DISABLE_AUTHENTICATION;
-        WinHttpSetOption(req, WINHTTP_OPTION_DISABLE_FEATURE, &no_auth, sizeof no_auth);
+        // challenge with it. The autologon policy (..._SECURITY_LEVEL_HIGH)
+        // doesn't stop that for localhost; turning authentication off does.
+        // Redirects are followed by HttpGet, which checks where they lead.
+        DWORD off = WINHTTP_DISABLE_AUTHENTICATION | WINHTTP_DISABLE_REDIRECTS;
+        WinHttpSetOption(req, WINHTTP_OPTION_DISABLE_FEATURE, &off, sizeof off);
         const wchar_t* headers = L"Accept: image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5\r\n";
         if (WinHttpSendRequest(req, headers, static_cast<DWORD>(-1L), WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
             WinHttpReceiveResponse(req, nullptr)) {
-            DWORD status = 0, len = sizeof status;
+            DWORD len = sizeof status;
             WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
                                 &status, &len, WINHTTP_NO_HEADER_INDEX);
-            if (status == 200) {
-                ok = true;
+            if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+                wchar_t target[2048];
+                DWORD bytes = sizeof target;
+                if (WinHttpQueryHeaders(req, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, target, &bytes,
+                                        WINHTTP_NO_HEADER_INDEX)) {
+                    location.assign(target, bytes / sizeof(wchar_t));
+                }
+            } else if (status == 200) {
                 char buf[16384];
                 for (;;) {
                     DWORD got = 0;
                     if (cancelled || NowMs() > deadline || !WinHttpReadData(req, buf, sizeof buf, &got)) {
-                        ok = false;
+                        status = 0;
                         break;
                     }
                     if (got == 0) break;
                     out.append(buf, got);
                     if (out.size() > kMaxImageBytes) {
-                        ok = false;
+                        status = 0;
                         break;
                     }
                 }
@@ -372,7 +432,33 @@ bool HttpGet(const std::wstring& url, std::string& out, const std::atomic<bool>&
         WinHttpCloseHandle(req);
     }
     WinHttpCloseHandle(conn);
-    return ok && !out.empty();
+    return status;
+}
+
+// `cancelled`: the viewer is gone. A download also gives up after a minute
+// in all (a server may trickle a byte at a time, each within the timeouts).
+bool HttpGet(const std::wstring& url, std::string& out, const std::atomic<bool>& cancelled) {
+    constexpr double kDeadlineMs = 60000;
+    constexpr int kMaxRedirects = 5;
+    const double deadline = NowMs() + kDeadlineMs;
+    HINTERNET session = HttpSession();
+    if (!session) return false;
+    std::wstring current = url;
+    for (int hop = 0; hop <= kMaxRedirects && !cancelled; ++hop) {
+        std::wstring location;
+        out.clear();
+        const DWORD status = HttpRequest(session, current, out, cancelled, deadline, location);
+        if (status == 200) return !out.empty();
+        if (location.empty()) return false;
+        // Relative to the URL redirected, and never from https down to http
+        // (as WinHTTP's own redirects).
+        wchar_t next[2048];
+        DWORD n = static_cast<DWORD>(std::size(next));
+        if (FAILED(UrlCombineW(current.c_str(), location.c_str(), next, &n, 0))) return false;
+        if (StartsWithNoCase(current, L"https:") && !StartsWithNoCase(next, L"https:")) return false;
+        current.assign(next, n);
+    }
+    return false;
 }
 
 // Process-wide cache of downloaded image bytes (LRU, bounded).
