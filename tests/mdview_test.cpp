@@ -2754,6 +2754,16 @@ int main(int argc, char** ansi_argv) {
                 }
                 return s;
             }(),
+            [&] {  // venn: every pair declared again and again (cubic in the repeats: #138)
+                std::wstring s = L"venn-beta\n";
+                for (int i = 0; i < 24; ++i) s += L"set s" + std::to_wstring(i) + L": 9\n";
+                for (int n = 0, k = 0; n < 1950; ++n, k = (k + 1) % 276) {
+                    int i = 0, j = k;
+                    while (j >= 23 - i) j -= 23 - i++;
+                    s += L"union s" + std::to_wstring(i) + L",s" + std::to_wstring(i + 1 + j) + L": " + std::to_wstring(1 + n / 276 % 8) + L"\n";
+                }
+                return s;
+            }(),
             L"venn-beta\n" + repeat(L"set s\n", 30) + L"set a: 1" + std::wstring(400, L'0') + L"\nset b: 0." + std::wstring(400, L'0') + L"1\n",
             L"venn-beta\nset a: 1000000000000000000000000000000\nset b: 0.000000000000000000000000000001\nunion a,b: 0.0000000000000000000000000000001\n",
             L"venn-beta\nset a\nset b\nunion a,b\n" + repeat(L"  text \"" + std::wstring(10, L'x') + L" y\"\n", 1900),
