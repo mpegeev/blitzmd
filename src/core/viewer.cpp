@@ -2074,7 +2074,12 @@ bool Viewer::Search(const std::wstring& text, int flags) {
 
     // Starting point.
     uint32_t from;
-    if (flags & lcs_findfirst) {
+    if (backwards && selection_.end <= selection_.start) {
+        // Nothing selected (just opened, or a click): back from the bottom
+        // of the view, as forward starts at its top.
+        Block* last = LeafAtY(scroll_y_ + ViewHeight());
+        from = last ? last->text_end() : doc_->text_length;
+    } else if (flags & lcs_findfirst) {
         Block* first = LeafAtY(scroll_y_);
         from = first ? first->text_start : 0;
         if (backwards) from = selection_.start;
