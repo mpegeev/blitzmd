@@ -4217,6 +4217,57 @@ int main(int argc, char** ansi_argv) {
                 std::printf("FAIL: an SVG named many times is parsed for each (+%.0f MB)\n", grew3);
                 ++failures;
             }
+            // An SVG of 8 SVGs of 8 embedded 1024 x 1024 PNGs (of one color:
+            // a few KB each): the decoded pixels of the whole tree are
+            // bounded (all 64 x 4 MB were decoded and kept: #144).
+            std::string png;
+            {
+                ComPtr<IWICImagingFactory> wic;
+                ComPtr<IWICBitmap> px;
+                ComPtr<IStream> st;
+                ComPtr<IWICBitmapEncoder> enc;
+                ComPtr<IWICBitmapFrameEncode> fr;
+                HGLOBAL mem = nullptr;
+                STATSTG stat{};
+                if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
+                    SUCCEEDED(wic->CreateBitmap(1024, 1024, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &px)) &&
+                    SUCCEEDED(CreateStreamOnHGlobal(nullptr, TRUE, &st)) &&
+                    SUCCEEDED(wic->CreateEncoder(GUID_ContainerFormatPng, nullptr, &enc)) &&
+                    SUCCEEDED(enc->Initialize(st.Get(), WICBitmapEncoderNoCache)) &&
+                    SUCCEEDED(enc->CreateNewFrame(&fr, nullptr)) && SUCCEEDED(fr->Initialize(nullptr)) &&
+                    SUCCEEDED(fr->WriteSource(px.Get(), nullptr)) && SUCCEEDED(fr->Commit()) && SUCCEEDED(enc->Commit()) &&
+                    SUCCEEDED(GetHGlobalFromStream(st.Get(), &mem)) && SUCCEEDED(st->Stat(&stat, STATFLAG_NONAME))) {
+                    png.assign(static_cast<const char*>(GlobalLock(mem)), static_cast<size_t>(stat.cbSize.QuadPart));
+                    GlobalUnlock(mem);
+                }
+            }
+            auto base64 = [](const std::string& s) {
+                static const char k[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+                std::string out;
+                for (size_t i = 0; i < s.size(); i += 3) {
+                    uint32_t v = static_cast<uint8_t>(s[i]) << 16;
+                    if (i + 1 < s.size()) v |= static_cast<uint8_t>(s[i + 1]) << 8;
+                    if (i + 2 < s.size()) v |= static_cast<uint8_t>(s[i + 2]);
+                    out += k[v >> 18 & 63];
+                    out += k[v >> 12 & 63];
+                    out += i + 1 < s.size() ? k[v >> 6 & 63] : '=';
+                    out += i + 2 < s.size() ? k[v & 63] : '=';
+                }
+                return out;
+            };
+            const std::string open_svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\">";
+            const std::string inner =
+                open_svg + repeat("<image width=\"10\" height=\"10\" href=\"data:image/png;base64," + base64(png) + "\"/>", 8) + "</svg>";
+            const std::string outer =
+                open_svg + repeat("<image width=\"10\" height=\"10\" href=\"data:image/svg+xml;base64," + base64(inner) + "\"/>", 8) + "</svg>";
+            const double before4 = peak_mb();
+            auto tree = SvgImage::Parse(outer);
+            const double grew4 = peak_mb() - before4;
+            std::printf("  an SVG of 8 SVGs of 8 PNGs of 1024 x 1024 (%zu KB): peak memory +%.0f MB\n", outer.size() >> 10, grew4);
+            if (png.empty() || !tree || grew4 > 40) {
+                std::printf("FAIL: an SVG's embedded pictures are not bounded (+%.0f MB)\n", grew4);
+                ++failures;
+            }
         }
         {
             // SVG: a long font-family inherited by 20000 elements, and 20000

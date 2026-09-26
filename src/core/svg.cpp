@@ -153,9 +153,14 @@ D2D1_MATRIX_3X2_F ParseTransform(std::wstring_view s) {
 constexpr int kMaxSvgNesting = 2;         // SVG in <image> in SVG...
 constexpr size_t kMaxSvgImages = 32;      // <image> elements per document
 constexpr UINT kMaxEmbeddedRaster = 1024; // width/height of embedded bitmaps
+// Decoded embedded bitmaps of one SVG, those of nested SVGs included: the
+// limits above allow some 1000 of 4 MB each, and a 1024 x 1024 PNG of one
+// color takes 3 KB of source.
+constexpr size_t kMaxSvgRasterBytes = 16u << 20;
 
-// Decodes an embedded bitmap (PNG, JPEG, GIF...) to 32bpp PBGRA.
-bool DecodeRaster(const std::string& bytes, UINT& w, UINT& h, std::vector<uint8_t>& out) {
+// Decodes an embedded bitmap (PNG, JPEG, GIF...) to 32bpp PBGRA, if its
+// pixels take at most `budget` bytes.
+bool DecodeRaster(const std::string& bytes, size_t budget, UINT& w, UINT& h, std::vector<uint8_t>& out) {
     ComPtr<IWICImagingFactory> wic;
     if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) {
         return false;
@@ -168,7 +173,8 @@ bool DecodeRaster(const std::string& bytes, UINT& w, UINT& h, std::vector<uint8_
     if (!stream ||
         FAILED(wic->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder)) ||
         FAILED(decoder->GetFrame(0, &frame)) || FAILED(frame->GetSize(&w, &h)) || w == 0 || h == 0 ||
-        w > kMaxEmbeddedRaster || h > kMaxEmbeddedRaster || FAILED(wic->CreateFormatConverter(&conv)) ||
+        w > kMaxEmbeddedRaster || h > kMaxEmbeddedRaster || static_cast<uint64_t>(w) * h * 4 > budget ||
+        FAILED(wic->CreateFormatConverter(&conv)) ||
         FAILED(conv->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0,
                                 WICBitmapPaletteTypeMedianCut))) {
         return false;
@@ -220,14 +226,19 @@ std::wstring PickFamily(IDWriteFactory* dw, std::wstring_view list) {
 
 }  // namespace
 
-std::shared_ptr<SvgImage> SvgImage::Parse(std::string bytes) { return Parse(std::move(bytes), 0); }
+std::shared_ptr<SvgImage> SvgImage::Parse(std::string bytes) {
+    size_t raster_left = kMaxSvgRasterBytes;
+    return Parse(std::move(bytes), 0, &raster_left);
+}
 
-std::shared_ptr<SvgImage> SvgImage::Parse(std::string bytes, int depth) {
+std::shared_ptr<SvgImage> SvgImage::Parse(std::string bytes, int depth, size_t* raster_left) {
     if (bytes.find("<svg") == std::string::npos) return nullptr;  // (after any prolog: a license in a comment...)
     auto img = std::make_shared<SvgImage>();
     img->source_ = std::move(bytes);
     img->depth_ = depth;
+    img->raster_left_ = raster_left;
     img->ParseStructure();
+    img->raster_left_ = nullptr;
     if (img->source_.find("<a") != std::string::npos) UnwrapLinks(img->source_);
     return img;
 }
@@ -237,10 +248,12 @@ void SvgImage::AddImage(Image im, std::wstring_view href) {
     if (images_.size() >= kMaxSvgImages || depth_ >= kMaxSvgNesting) return;
     std::string bytes;
     if (!DecodeDataUri(Trim(href), bytes) || bytes.size() > (4u << 20)) return;
-    if (auto nested = Parse(bytes, depth_ + 1)) {
+    if (auto nested = Parse(bytes, depth_ + 1, raster_left_)) {
         im.svg = std::move(nested);
-    } else if (!DecodeRaster(bytes, im.px_w, im.px_h, im.pixels)) {
+    } else if (!raster_left_ || !DecodeRaster(bytes, *raster_left_, im.px_w, im.px_h, im.pixels)) {
         return;
+    } else {
+        *raster_left_ -= im.pixels.size();
     }
     images_.push_back(std::move(im));
 }
