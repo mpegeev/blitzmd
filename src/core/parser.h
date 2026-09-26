@@ -14,6 +14,10 @@ struct ParseOptions {
     bool mermaid = true;            // ```mermaid blocks as diagrams
     bool highlight_code = true;     // syntax highlighting in code blocks
     int footnote_nesting = 0;       // internal: footnote bodies parse recursively
+    // At most this many blocks (a few hundred bytes each: tiny paragraphs
+    // make a model ~100 times the file). Past it the parse stops and the
+    // document ends with a warning.
+    size_t max_blocks = sizeof(void*) == 8 ? 2'000'000 : 500'000;
 };
 
 // Parses UTF-8 Markdown (GitHub Flavored Markdown + GitHub extensions:
