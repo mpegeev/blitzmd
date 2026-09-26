@@ -277,8 +277,16 @@ private:
             Element& x = elements[static_cast<size_t>(old->second)];
             const bool was_boundary = x.kind == Kind::Boundary || x.kind == Kind::Node, is_boundary = e.kind == Kind::Boundary || e.kind == Kind::Node;
             if (was_boundary == is_boundary) {
-                // It moves to where it is declared now.
+                // It moves to where it is declared now: not into itself, and
+                // with what it holds no deeper than any boundary may be.
                 const int index = old->second;
+                int depth = 1;
+                for (int q = parent; q >= 0; q = elements[static_cast<size_t>(q)].parent, ++depth) {
+                    if (q == index) Error(at, Tr(L"A boundary inside itself", L"Граница внутри самой себя"));
+                }
+                if (depth + Height(index) > kMaxNesting) {
+                    Error(at, Tr(L"Boundaries nested too deep", L"Слишком глубокая вложенность границ"));
+                }
                 std::vector<int>& from = x.parent >= 0 ? elements[static_cast<size_t>(x.parent)].children : roots;
                 from.erase(std::remove(from.begin(), from.end(), index), from.end());
                 e.children = std::move(x.children);
@@ -321,6 +329,16 @@ private:
         auto it = ids_.find(alias);
         if (it == ids_.end()) Error(at, Tr(L"Unknown element: ", L"Неизвестный элемент: ") + alias);
         return it->second;
+    }
+
+    // Levels of boundaries below element i (at most kMaxNesting).
+    int Height(int i) const {
+        int h = 0;
+        for (int c : elements[static_cast<size_t>(i)].children) {
+            const Kind k = elements[static_cast<size_t>(c)].kind;
+            if (k == Kind::Boundary || k == Kind::Node) h = std::max(h, 1 + Height(c));
+        }
+        return h;
     }
 
     [[noreturn]] void Error(size_t at, std::wstring message) {
