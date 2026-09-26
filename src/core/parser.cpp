@@ -499,19 +499,27 @@ void Builder::Pop() {
         break;
     case BlockType::CodeBlock:
         FinalizeCode(b);
+        leaf_anchors_.clear();  // (bound to it for good: not to move on with an empty next paragraph)
         break;
     case BlockType::FootnoteDef:
         AddFootnoteBackrefs(b);
         break;
-    case BlockType::Details:
-        if (b->children.empty() || b->children.front()->type != BlockType::Summary) {
+    case BlockType::Details: {
+        // Its first <summary> is its summary wherever it stands (a browser
+        // moves it up); without one it reads "Details".
+        auto& kids = b->children;
+        const auto first = std::find_if(kids.begin(), kids.end(), [](const Block* c) { return c->type == BlockType::Summary; });
+        if (first != kids.end()) {
+            std::rotate(kids.begin(), first, first + 1);
+        } else {
             Block* s = doc_.NewBlock(BlockType::Summary);
             s->parent = b;
             s->from_html = true;
             AppendToLeaf(s, L"Details", 0, -1);
-            b->children.insert(b->children.begin(), s);
+            kids.insert(kids.begin(), s);
         }
         break;
+    }
     default:
         break;
     }
@@ -603,11 +611,13 @@ void Builder::FinalizeLeaf(Block* b) {
         for (wchar_t c : b->text) {
             if (c != kObjectChar) plain.push_back(c == kLineBreak ? L' ' : c);
         }
-        std::wstring slug = MakeSlug(plain);
-        int& n = slug_counts_[slug];
+        const std::wstring base = MakeSlug(plain);
+        int& n = slug_counts_[base];
+        std::wstring slug = base;
         if (n > 0) slug += L"-" + std::to_wstring(n);
         ++n;
-        doc_.anchors.try_emplace(slug, Anchor{b, 0});
+        // (Taken by a heading that is literally "Dup 1": GitHub goes on to dup-1-1.)
+        while (!doc_.anchors.try_emplace(slug, Anchor{b, 0}).second) slug = base + L"-" + std::to_wstring(n++);
     }
 }
 
