@@ -2113,6 +2113,11 @@ int main(int argc, char** ansi_argv) {
             L"railroad-abnf-beta\na = " + repeat(L"999999999*999999999 b / ", 2000) + L"c ;",
             L"railroad-peg-beta\nA <- " + repeat(L"( ", 30) + L"B" + repeat(L" )", 30) + L" ;",
             L"railroad-beta\na = choice(" + repeat(L"terminal(\"x\"), ", 2900) + L"terminal(\"y\"));",
+            // Many comments (each one used to cost a level of recursion).
+            L"railroad-abnf-beta\na = b ;\n" + repeat(L";c\n", 15000),
+            L"railroad-ebnf-beta\na = b ;\n" + repeat(L"(*c*)\n", 8000),
+            L"railroad-peg-beta\nA <- B ;\n" + repeat(L"#c\n", 15000),
+            L"railroad-beta\na = terminal(\"x\");\n" + repeat(L"/**/\n", 9000),
             L"eventmodeling\n" + repeat(L"tf 01 ui N" + std::wstring(3000, L'n') + L".A ->> 01 { " + std::wstring(3000, L'd') + L" }\n", 60),
             L"eventmodeling\n" + repeat(L"tf 99 evt S.E ->> 99 ->> 99 ->> 99\ntf 98 cmd C.D\n", 1000),
             L"eventmodeling\ndata D {\n" + repeat(repeat(L"y ", 30) + L"\n", 60) + L"}\n" + repeat(L"tf 01 rmo R [[D]]\n", 1300),
