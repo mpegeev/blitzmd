@@ -881,8 +881,8 @@ float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width
         return lines * line_h;
     }
     // Formulas count with their typeset size where known: display ones are
-    // typeset for it (they change the height most), inline ones not yet
-    // typeset are guessed from their source.
+    // typeset for it (they change the height most) while this pass's time
+    // allows, others not yet typeset are guessed from their source.
     // Diagrams fill lines of their own.
     float formulas_w = 0, extra_h = 0, units = 0, breaks = 0, diagrams = 0;
     size_t next = 0;
@@ -901,7 +901,7 @@ float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width
             }
             if (o.math >= 0) {
                 const bool display = doc_->maths[static_cast<size_t>(o.math)].display;
-                if (const auto box = MathFormula(o.math, display)) {
+                if (const auto box = MathFormula(o.math, display && NowMs() < estimate_math_until_)) {
                     const float k = MathSize(st.mono ? mono_family_ : cfg_.font_family, st.size) / kMathRefSize;
                     formulas_w += box->width * k;
                     extra_h += std::max(0.f, (box->ascent + box->descent) * k - line_h);
@@ -1136,6 +1136,8 @@ void LayoutEngine::Layout(float viewport_w, float exact_y0, float exact_y1) {
     exact_y0_ = exact_y0;
     exact_y1_ = exact_y1;
     estimated_count_ = 0;
+    // (A formula of the longest kind takes up to a quarter of a second.)
+    estimate_math_until_ = NowMs() + 50.0;
 
     const float vw = viewport_w_;
     if (cfg_.page_padding >= 0) {
