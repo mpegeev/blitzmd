@@ -91,8 +91,9 @@ void LoadSettings() {
     PublishSettings();
 }
 
-void SaveSettings() {
-    const Settings& s = GlobalSettings();
+void SaveSettings() { SaveSettings(GlobalSettings()); }
+
+void SaveSettings(const Settings& s) {
     WriteInt(L"Theme", static_cast<int>(s.theme));
     WriteString(L"Font", s.font_family);
     WriteString(L"MonoFont", s.mono_family);

@@ -47,6 +47,7 @@ void SetSettingsPath(const std::wstring& ini_path);
 const std::wstring& SettingsPath();
 
 void LoadSettings();
-void SaveSettings();
+void SaveSettings();                    // GlobalSettings()
+void SaveSettings(const Settings& s);
 
 }  // namespace mdv

@@ -188,7 +188,7 @@ public:
     explicit SettingsDialog(HWND viewer) : viewer_(viewer), original_(GlobalSettings()) {}
     ~SettingsDialog();
     void Run();
-    void Refresh();
+    void ChangedOutside(const std::function<void(Settings&)>& edit);
     HWND hwnd() const { return dlg_; }
 
 private:
@@ -568,11 +568,13 @@ void SettingsDialog::Restore() {
     ApplySettingsToViewers(old);
 }
 
-// Settings changed from a viewer's menu: they are saved already.
-void SettingsDialog::Refresh() {
+// A setting changed from a viewer's menu (in GlobalSettings() already):
+// Cancel keeps it, and only it is saved, not the dialog's own changes.
+void SettingsDialog::ChangedOutside(const std::function<void(Settings&)>& edit) {
     KillTimer(dlg_, kTimerApply);
-    original_ = GlobalSettings();
-    Fill(original_);
+    edit(original_);
+    SaveSettings(original_);
+    Fill(GlobalSettings());
     UpdateLook();
 }
 
@@ -709,8 +711,12 @@ void ShowSettingsDialog(HWND viewer) {
     dialog.Run();
 }
 
-void RefreshSettingsDialog() {
-    if (g_dialog && g_dialog->hwnd()) g_dialog->Refresh();
+void SaveSettingChange(const std::function<void(Settings&)>& edit) {
+    if (g_dialog && g_dialog->hwnd()) {
+        g_dialog->ChangedOutside(edit);
+    } else {
+        SaveSettings();
+    }
 }
 
 }  // namespace mdv

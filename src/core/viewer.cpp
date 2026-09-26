@@ -1922,9 +1922,8 @@ void Viewer::SetZoom(int percent) {
     if (percent == zoom_percent_) return;
     zoom_percent_ = percent;
     GlobalSettings().zoom_percent = percent;
-    SaveSettings();
+    SaveSettingChange([percent](Settings& s) { s.zoom_percent = percent; });
     ApplySettings(true);
-    RefreshSettingsDialog();
     FlashStatus(std::wstring(Tr(L"Zoom: ", L"Масштаб: ")) + std::to_wstring(percent) + L"%");
 }
 
@@ -2465,9 +2464,8 @@ void Viewer::OnContextMenu(int sx, int sy) {
     auto change = [](auto&& edit) {
         const Settings old = GlobalSettings();
         edit(GlobalSettings());
-        SaveSettings();
         ApplySettingsToViewers(old);
-        RefreshSettingsDialog();
+        SaveSettingChange(edit);  // (only this change, if the settings dialog is open; it follows the viewers' look)
     };
     if (cmd >= kMenuTocBase && cmd < kMenuTocBase + toc.size()) {
         Block* heading = toc[cmd - kMenuTocBase];

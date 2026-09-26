@@ -1304,7 +1304,11 @@ int main(int argc, char** ansi_argv) {
         HWND host = CreateWindowExW(0, wc.lpszClassName, L"settings test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40,
                                     1000, 760, nullptr, nullptr, wc.hInstance, nullptr);
         HWND viewer = load(host, FullPath(argv[3]).c_str(), 0);
-        if (!viewer) {
+        // Another Lister: not blocked by the dialog, its menus and zoom work.
+        HWND host2 = CreateWindowExW(0, wc.lpszClassName, L"settings test 2", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 1060, 40,
+                                     600, 500, nullptr, nullptr, wc.hInstance, nullptr);
+        HWND viewer2 = load(host2, FullPath(argv[3]).c_str(), 0);
+        if (!viewer || !viewer2) {
             std::fprintf(stderr, "ListLoadW failed\n");
             return 1;
         }
@@ -1391,6 +1395,27 @@ int main(int argc, char** ansi_argv) {
                 expect(!IsDarkPixel(CaptureWindow(host, prefix + "-viewer2.png", true)), "Cancel restores the theme");
                 expect(GetFileAttributesW(ini.c_str()) == INVALID_FILE_ATTRIBUTES, "Cancel saves nothing");
             }
+            // The other viewer zooms (Ctrl+wheel) while the dialog previews a
+            // font size: its change alone is saved, and Cancel keeps it and
+            // still takes the font size back (#153: the size was saved too).
+            PostMessageW(viewer, open_settings, 0, 0);
+            dlg = find_dialog();
+            expect(dlg != nullptr, "dialog opens with another viewer open");
+            if (dlg) {
+                type(dlg, 1004, L"20");
+                Sleep(900);
+                RECT r2{};
+                GetWindowRect(viewer2, &r2);
+                SendMessageW(viewer2, WM_MOUSEWHEEL, MAKEWPARAM(MK_CONTROL, WHEEL_DELTA),
+                             MAKELPARAM((r2.left + r2.right) / 2, (r2.top + r2.bottom) / 2));
+                Sleep(300);
+                expect(ini_value(L"Zoom") == 110 && ini_value(L"FontSize") == 16,
+                       "another viewer's change is saved, the dialog's preview is not");
+                PostMessageW(dlg, WM_COMMAND, IDCANCEL, 0);
+                expect(closed(dlg), "Cancel closes");
+                Sleep(300);
+                expect(ini_value(L"Zoom") == 110 && ini_value(L"FontSize") == 16, "Cancel keeps the other change only");
+            }
             PostMessageW(viewer, open_settings, 0, 0);
             dlg = find_dialog();
             expect(dlg != nullptr, "dialog opens again");
@@ -1428,7 +1453,9 @@ int main(int argc, char** ansi_argv) {
         }
         driver.join();
         close(viewer);
+        close(viewer2);
         DestroyWindow(host);
+        DestroyWindow(host2);
         FreeLibrary(dll);
         std::printf(failures ? "settings FAILED\n" : "settings OK\n");
         return failures ? 1 : 0;
