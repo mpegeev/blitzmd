@@ -1721,6 +1721,31 @@ int main(int argc, char** ansi_argv) {
             seed ^= seed << 5;
             return seed;
         };
+        {
+            // A space as the argument of an accent or \overset keeps its width
+            // (it was dropped: the accent sat on nothing).
+            const struct {
+                const wchar_t* tex;
+                float em;
+            } spaced[] = {{L"\\widetilde{\\hspace{5em}}", 5}, {L"\\overrightarrow{\\qquad}", 2}, {L"\\overset{!}{\\quad}", 1}};
+            for (const auto& c : spaced) {
+                auto box = ts.Layout(c.tex, false, 16.f);
+                if (!sane(*box) || box->width < 16.f * c.em * 0.9f) {
+                    std::printf("FAIL: %s is %.1f wide, not about %.0f\n", WideToUtf8(c.tex).c_str(), box->width, 16.f * c.em);
+                    ++failures;
+                }
+            }
+            // Past the length limit a formula shows the start of its source,
+            // not all of it at a glyph per character.
+            std::wstring huge;
+            while (huge.size() < 60000) huge += L"x+";
+            auto box = ts.Layout(huge, false, 16.f);
+            std::printf("a formula of %zu characters: %zu glyphs\n", huge.size(), box->glyphs.size());
+            if (box->glyphs.size() > 20001) {
+                std::printf("FAIL: an over-long formula is typeset whole\n");
+                ++failures;
+            }
+        }
         const int iterations = argc >= 4 ? std::atoi(argv[3]) : 3000;
         const double f0 = NowMs();
         for (int it = 0; it < iterations; ++it) {

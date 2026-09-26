@@ -1063,9 +1063,13 @@ private:
     }
 
     // Puts `node` on the list as an atom; an argument list with one item
-    // becomes that item.
+    // becomes that item. (Not a space or a style switch: only a list lays
+    // those out, alone they would have no width.)
     static MathNode Single(MathNode list) {
-        if (list.kind == MathKind::List && list.kids.size() == 1 && !list.color) return std::move(list.kids[0]);
+        if (list.kind == MathKind::List && list.kids.size() == 1 && !list.color &&
+            list.kids[0].kind != MathKind::Space && list.kids[0].kind != MathKind::Style) {
+            return std::move(list.kids[0]);
+        }
         return list;
     }
 
@@ -1617,8 +1621,12 @@ void Dump(const MathNode& n, std::wstring& out) {
 
 MathNode ParseTex(std::wstring_view tex) {
     if (tex.size() > kMaxSource) {
+        // Its start, in red: all of it would be a glyph per character of a
+        // formula that may be megabytes long.
+        size_t n = kMaxSource;
+        if (tex[n - 1] >= 0xD800 && tex[n - 1] <= 0xDBFF) --n;  // (not half a pair)
         MathNode list = MakeList();
-        MathNode t = MakeText(std::wstring(tex));
+        MathNode t = MakeText(std::wstring(tex.substr(0, n)) + L"…");
         t.error = true;
         list.kids.push_back(std::move(t));
         return list;
