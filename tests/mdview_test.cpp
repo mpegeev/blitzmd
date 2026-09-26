@@ -48,6 +48,7 @@
 #include <functional>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "core/texmath.h"
@@ -4122,6 +4123,29 @@ int main(int argc, char** ansi_argv) {
                         warned ? ", warning at the end" : "");
             if (doc->storage.size() > 1005 || !warned) {
                 std::printf("FAIL: the block limit\n");
+                ++failures;
+            }
+        }
+        {
+            // The limit reached right after a footnote body that defines a
+            // footnote of its own: that one is kept, so it must hang from a
+            // block that is kept too (it pointed into the freed body, #134).
+            const std::string md = "Ref[^a] and ref[^c].\n\n[^a]: first\n\n    Body[^b]\n\n" +
+                                   repeat("    -\n\n", 30) + "    [^b]: nested\n\n[^c]: third\n";
+            int dangling = 0;
+            for (size_t max = 4; max < 80; ++max) {
+                ParseOptions opt;
+                opt.max_blocks = max;
+                auto doc = ParseMarkdown(md, L"C:\\heavy.md", opt);
+                std::unordered_set<const Block*> live;
+                for (const auto& b : doc->storage) live.insert(b.get());
+                for (const auto& b : doc->storage) {
+                    if (b.get() != doc->root && !live.count(b->parent)) ++dangling;  // (compared, never read)
+                }
+            }
+            std::printf("  footnote bodies cut off by the block limit: %d dangling parents\n", dangling);
+            if (dangling) {
+                std::printf("FAIL: blocks point to freed parents\n");
                 ++failures;
             }
         }
