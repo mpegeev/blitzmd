@@ -42,11 +42,13 @@ std::wstring Document::PlainText(uint32_t a, uint32_t b) const {
         }
         const uint32_t s0 = std::max(a, leaf->text_start) - leaf->text_start;
         const uint32_t s1 = std::min<uint32_t>(b, leaf->text_end()) - leaf->text_start;
+        size_t k = 0;  // objects are in text order
         for (uint32_t i = s0; i < s1 && i < leaf->text.size(); ++i) {
             const wchar_t c = leaf->text[i];
             if (c == 0xFFFC) {
-                for (const InlineObject& o : leaf->objects) {
-                    if (o.pos == i && o.image >= 0) out += images[static_cast<size_t>(o.image)].alt;
+                while (k < leaf->objects.size() && leaf->objects[k].pos < i) ++k;
+                for (size_t q = k; q < leaf->objects.size() && leaf->objects[q].pos == i; ++q) {
+                    if (leaf->objects[q].image >= 0) out += images[static_cast<size_t>(leaf->objects[q].image)].alt;
                 }
             } else if (c == 0x2028 || c == L'\n') {
                 out += L"\r\n";

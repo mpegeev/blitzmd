@@ -364,7 +364,11 @@ void Renderer::DrawLeaf(Block* b) {
     const uint32_t e = b->text_end();
     // A formula or flag is drawn in one piece: a range touching it covers all of it.
     auto whole = [b](uint32_t& s0, uint32_t& s1) {
-        for (const InlineObject& o : b->objects) {
+        // From the first object ending after s0 (objects are in text order).
+        auto it = std::lower_bound(b->objects.begin(), b->objects.end(), s0,
+                                   [](const InlineObject& o, uint32_t p) { return o.pos + o.length <= p; });
+        for (; it != b->objects.end() && it->pos < s1; ++it) {
+            const InlineObject& o = *it;
             if (o.length > 1 && o.diagram < 0 && s0 < o.pos + o.length && s1 > o.pos) {
                 s0 = std::min(s0, o.pos);
                 s1 = std::max(s1, o.pos + o.length);

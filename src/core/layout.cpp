@@ -29,8 +29,10 @@ bool IsStrongLtr(wchar_t c) {
 // the letters of a formula's TeX source don't count.
 bool DetectRtl(const Block* b) {
     const std::wstring& t = b->text;
+    size_t k = 0;  // objects are in text order
     for (size_t i = 0; i < t.size(); ++i) {
-        for (const InlineObject& o : b->objects) {
+        for (; k < b->objects.size() && b->objects[k].pos <= i; ++k) {
+            const InlineObject& o = b->objects[k];
             if ((o.math >= 0 || o.diagram >= 0) && o.pos == i) i += o.length;
         }
         if (i >= t.size()) break;
@@ -773,12 +775,9 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
     for (InlineObject& o : b->objects) {
         if (o.pos >= len || o.length > len - o.pos) continue;
         uint32_t run_flags = 0;
-        for (const StyleRun& r : b->runs) {
-            if (r.start <= o.pos && o.pos < r.start + r.length) {
-                run_flags = r.flags;
-                break;
-            }
-        }
+        auto run = std::upper_bound(b->runs.begin(), b->runs.end(), o.pos,  // runs are sorted by start
+                                    [](uint32_t p, const StyleRun& r) { return p < r.start; });
+        if (run != b->runs.begin() && o.pos < (run - 1)->start + (run - 1)->length) run_flags = (run - 1)->flags;
         auto run_size = [&] { return RunFontSize(st.size, run_flags); };
         if (o.diagram >= 0) {
             const std::shared_ptr<const DiagramScene> scene = Diagram(o.diagram);
