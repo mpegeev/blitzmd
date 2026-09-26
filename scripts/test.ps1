@@ -65,8 +65,9 @@ foreach ($f in Get-ChildItem samples/gfm/*.md) {
 }
 
 # The plugin DLL driven like Total Commander does, and auto-reload.
-foreach ($name in '02-github-readme.md', '04-code-highlighting.md', '16-front-matter.md') {
-    Step "plugin $name" { & $t plugin $dll "samples/gfm/$name" (Join-Path $tmp 'plugin.png') | Select-Object -Last 1 }
+# (Not $name: inside Step that is its $Name parameter, PowerShell names ignoring case.)
+foreach ($sample in '02-github-readme.md', '04-code-highlighting.md', '16-front-matter.md') {
+    Step "plugin $sample" { & $t plugin $dll "samples/gfm/$sample" (Join-Path $tmp 'plugin.png') | Select-Object -Last 1 }
 }
 Step 'auto-reload' { & $t reload $dll (Join-Path $tmp 'reload') | Select-Object -Last 1 }
 Step 'settings dialog' {
