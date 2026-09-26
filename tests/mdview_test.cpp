@@ -4035,6 +4035,8 @@ int main(int argc, char** ansi_argv) {
             {"50k links", "x" + repeat(" [a](#b)", 50000) + "\n"},
             {"40k formulas", "x" + repeat(" $x$", 40000) + "\n"},
             {"8000 lines of code", "```js\n" + repeat("const value = compute(alpha, \"text\", 42) + other.field; // note\n", 8000) + "```\n"},
+            // (Each unbalanced ')' cut off used to recount the whole link: #135.)
+            {"www. link and 200k ')'", "www.example.com/" + repeat(")", 200000) + "\n"},
         };
         int failures = 0;
         {
@@ -4098,11 +4100,11 @@ int main(int argc, char** ansi_argv) {
             }
         }
         for (const auto& c : cases) {
+            const double t0 = NowMs();  // (the parse is part of it)
             auto doc = ParseMarkdown(c.md, L"C:\\heavy.md");
             OffscreenOptions o;
             o.width = 900.f;
             o.max_height = 1200.f;
-            const double t0 = NowMs();
             ComPtr<IWICBitmap> bmp = RenderToBitmap(*doc, o);
             const double ms = NowMs() - t0;
             std::printf("  %s: %.0f ms\n", c.name, ms);
