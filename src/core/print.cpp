@@ -181,6 +181,10 @@ bool PrintDocument(HWND owner, Document& doc, const LayoutConfig& config, const 
     const float band_dip = static_cast<float>(pr.band_px()) / pr.scale();
     bool ok = true;
     for (size_t p = 0; p < pages.size() && ok; ++p) {
+        if (!IsWindow(owner)) {  // (in case a printer driver shows UI per page)
+            ok = false;
+            break;
+        }
         const int page_no = static_cast<int>(p) + 1;
         if ((pd.Flags & PD_PAGENUMS) && (page_no < pd.nFromPage || page_no > pd.nToPage)) continue;
         if (StartPage(dc) <= 0) {

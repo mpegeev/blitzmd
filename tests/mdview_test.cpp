@@ -518,8 +518,9 @@ int main(int argc, char** ansi_argv) {
         // modal <mdview.wlx64> <out-dir>: Total Commander closes the viewer
         // while one of its modal loops runs: the context menu, and the "Run
         // it?" prompt of a link to a script. The plugin must not touch the
-        // deleted viewer afterwards (an ASan build reports that; a release
-        // build may crash or silently corrupt memory).
+        // deleted viewer afterwards. A release build notices when the script
+        // runs anyway; touching the freed viewer after the menu shows up in an
+        // ASan build only.
         HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
         using SetParamsFn = void(__stdcall*)(void*);
         using LoadFn = HWND(__stdcall*)(HWND, const wchar_t*, int);
@@ -552,7 +553,10 @@ int main(int argc, char** ansi_argv) {
         for (int i = 0; i < 400; ++i) md += "run this ";
         md += "](script.bat)\n";
         write(L"modal.md", md);
-        write(L"script.bat", "@exit /b 0\r\n");  // never run: the prompt is answered No
+        // The prompt is answered Yes after the viewer is gone: the script must
+        // not run then (it would leave ran.txt behind).
+        write(L"script.bat", "@echo ran>\"%~dp0ran.txt\"\r\n");
+        DeleteFileW((dir + L"ran.txt").c_str());
 
         WNDCLASSW wc{};
         wc.lpfnWndProc = DefWindowProcW;
@@ -600,8 +604,9 @@ int main(int argc, char** ansi_argv) {
                     if (in_loop()) seen = true;
                     else Sleep(25);
                 }
-                // Processed inside the modal loop (it retrieves messages).
-                if (seen) SendMessageW(helper, ModalTest::kClose, 0, 0);
+                // Processed inside the modal loop (it retrieves messages), before
+                // what `end` posts to the same thread's queue.
+                if (seen) PostMessageW(helper, ModalTest::kClose, 0, 0);
                 while (!done) {
                     end();
                     Sleep(50);
@@ -643,8 +648,13 @@ int main(int argc, char** ansi_argv) {
             },
             [&] { return ModalTest::FindDialog(ui) != nullptr; },
             [&] {
-                if (HWND box = ModalTest::FindDialog(ui)) PostMessageW(box, WM_COMMAND, IDNO, 0);
+                if (HWND box = ModalTest::FindDialog(ui)) PostMessageW(box, WM_COMMAND, IDYES, 0);
             });
+        pump(1500);  // a script started anyway has written its file by now
+        if (GetFileAttributesW((dir + L"ran.txt").c_str()) != INVALID_FILE_ATTRIBUTES) {
+            std::printf("FAIL: link to a script: it ran after the viewer was closed\n");
+            ++failures;
+        }
         DestroyWindow(helper);
         FreeLibrary(dll);
         std::printf(failures ? "modal: %d FAILED\n" : "modal OK\n", failures);
