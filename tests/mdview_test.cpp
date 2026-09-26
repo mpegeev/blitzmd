@@ -2327,6 +2327,8 @@ int main(int argc, char** ansi_argv) {
                 return s;
             }(),
             L"block-beta\ncolumns 2000\n" + repeat(L"a b c space:3 d:5\n", 300),
+            // A chain of edge labels (each one used to cost a level of recursion).
+            L"block-beta\na " + repeat(L"--\"\"", 12000) + L"--> b",
             [&] {  // nested blocks
                 std::wstring s = L"block-beta\n";
                 for (int i = 0; i < 30; ++i) s += L"block:b" + std::to_wstring(i) + L"\ncolumns 2\nx" + std::to_wstring(i) + L"\n";
