@@ -119,10 +119,13 @@ std::wstring JsNumber(double v);
 
 // Langium grammars hide a YAML block (--- lines ---) anywhere: its length
 // at `pos`, or 0.
-size_t YamlBlockLength(std::wstring_view s, size_t pos);
+// `none_from` (a lexer's, starting at npos): where a search for the block's
+// end found none, so none can be found from there on. A lexer trying every
+// line was quadratic without it.
+size_t YamlBlockLength(std::wstring_view s, size_t pos, size_t* none_from = nullptr);
 // ... and a directive (%%{...}%% then a line end): its length, or 0 (then
 // the line is a comment).
-size_t DirectiveLength(std::wstring_view s, size_t pos);
+size_t DirectiveLength(std::wstring_view s, size_t pos, size_t* none_from = nullptr);
 
 // Mermaid's #name; and #123; entities decoded (it decodes them in all text).
 std::wstring DecodeEntities(std::wstring_view s);

@@ -67,12 +67,12 @@ private:
         for (;;) {
             while (p_ < s_.size() && std::iswspace(s_[p_])) ++p_;
             if (p_ >= s_.size()) return Token{T::Eof, {}, Text{L"", static_cast<uint32_t>(p_), 0}};
-            if (const size_t n = YamlBlockLength(s_, p_)) {
+            if (const size_t n = YamlBlockLength(s_, p_, &yaml_none_)) {
                 p_ += n;
                 continue;
             }
             if (Starts(L"%%")) {
-                if (const size_t n = DirectiveLength(s_, p_)) {
+                if (const size_t n = DirectiveLength(s_, p_, &directive_none_)) {
                     p_ += n;
                     continue;
                 }
@@ -133,6 +133,7 @@ private:
     }
 
     std::wstring_view s_;
+    size_t yaml_none_ = std::wstring_view::npos, directive_none_ = std::wstring_view::npos;  // (YamlBlockLength)
     size_t p_;
 };
 

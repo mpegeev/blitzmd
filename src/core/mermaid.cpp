@@ -97,12 +97,13 @@ Source Preprocess(std::wstring_view text) {
 }
 
 // ---[\t ]*\r?\n(?:[\S\s]*?\r?\n)?---(?:\r?\n|(?!\S))
-size_t YamlBlockLength(std::wstring_view s, size_t pos) {
+size_t YamlBlockLength(std::wstring_view s, size_t pos, size_t* none_from) {
     if (s.substr(pos, 3) != L"---") return 0;
     size_t k = pos + 3;
     while (k < s.size() && (s[k] == L' ' || s[k] == L'\t')) ++k;
     if (k < s.size() && s[k] == L'\r') ++k;
     if (k >= s.size() || s[k] != L'\n') return 0;
+    if (none_from && k + 1 >= *none_from) return 0;  // (no closing line from there on)
     // The closing line: at the start of any later line.
     for (size_t q = k + 1; q <= s.size();) {
         if (s.substr(q, 3) == L"---") {
@@ -116,13 +117,15 @@ size_t YamlBlockLength(std::wstring_view s, size_t pos) {
         if (nl == std::wstring_view::npos) break;
         q = nl + 1;
     }
+    if (none_from) *none_from = std::min(*none_from, k + 1);
     return 0;
 }
 
 // %%{[\S\s]*?}%%(?:\r?\n|(?!\S)): the first }%% then a line end, a blank
 // or the end.
-size_t DirectiveLength(std::wstring_view s, size_t pos) {
+size_t DirectiveLength(std::wstring_view s, size_t pos, size_t* none_from) {
     if (s.substr(pos, 3) != L"%%{") return 0;
+    if (none_from && pos + 3 >= *none_from) return 0;  // (no closing from there on)
     for (size_t e = s.find(L"}%%", pos + 3); e != std::wstring_view::npos; e = s.find(L"}%%", e + 1)) {
         const size_t k = e + 3;
         if (k >= s.size()) return k - pos;
@@ -130,6 +133,7 @@ size_t DirectiveLength(std::wstring_view s, size_t pos) {
         if (s[k] == L'\r' && k + 1 < s.size() && s[k + 1] == L'\n') return k + 2 - pos;
         if (std::iswspace(s[k])) return k - pos;
     }
+    if (none_from) *none_from = std::min(*none_from, pos + 3);
     return 0;
 }
 
