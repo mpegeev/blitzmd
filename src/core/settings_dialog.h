@@ -5,6 +5,10 @@
 
 #include <windows.h>
 
+#include <functional>
+
+#include "core/settings.h"
+
 namespace mdv {
 
 // Shows the modal dialog for the viewer window `viewer`, owned by its
@@ -13,7 +17,11 @@ namespace mdv {
 // runs: callers must not touch it afterwards.
 void ShowSettingsDialog(HWND viewer);
 
-// An open dialog re-reads GlobalSettings() (changed from a context menu).
-void RefreshSettingsDialog();
+// A setting changed outside the dialog (a viewer's menu, Ctrl+wheel):
+// `edit` has changed GlobalSettings() already; this saves the change. With
+// the dialog open, GlobalSettings() holds its unconfirmed changes too: then
+// `edit` is applied to the settings the dialog started from (what its Cancel
+// returns to) and those are saved, and the dialog shows the new value.
+void SaveSettingChange(const std::function<void(Settings&)>& edit);
 
 }  // namespace mdv
