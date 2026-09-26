@@ -1093,6 +1093,7 @@ void Builder::AppendFootnoteBody(Block* def) {
             // earlier bodies'): to the end of the document's section.
             for (Block* d : c->children) {
                 if (d->type != BlockType::FootnoteDef) continue;
+                d->parent = def->parent;  // (the body's section goes away with `sub`)
                 nested_defs_.push_back(d);
                 walk.push_back(d);
                 next_footnote_ = std::max(next_footnote_, d->number);
@@ -1308,6 +1309,10 @@ void Builder::Finish() {
                   L"Документ слишком большой: остальное не показано."));
         while (stack_.size() > 1) Pop();
     }
+    // Stopped inside the footnote section (at max_blocks): the bodies'
+    // footnotes collected so far still end it.
+    for (Block* d : nested_defs_) d->parent->children.push_back(d);
+    nested_defs_.clear();
     // Assign global text offsets.
     uint32_t cursor = 0;
     std::vector<Block*> todo{doc_.root};
