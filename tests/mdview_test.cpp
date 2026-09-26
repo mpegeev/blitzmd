@@ -1541,7 +1541,8 @@ int main(int argc, char** ansi_argv) {
         for (const MathRef& m : doc->maths) {
             for (bool display : {false, true}) {
                 auto box = ts.Layout(m.tex, display, 16.f);
-                if (!sane(*box) || box->width <= 0 || box->glyphs.empty()) {
+                // (Layout drops what isn't finite, so sane() alone can't see it.)
+                if (!sane(*box) || box->width <= 0 || box->glyphs.empty() || box->dropped) {
                     std::printf("FAIL: layout of %s\n", WideToUtf8(m.tex).c_str());
                     ++failures;
                 }
