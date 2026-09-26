@@ -871,7 +871,15 @@ private:
             double size, weight;
         };
         std::vector<std::vector<Overlap>> overlaps(n);
-        const std::vector<Area> pairs = Pairs();
+        // One pair per two sets, as last declared: a union declared again adds
+        // its earlier sizes (fitted by Solve's optimizer all the same), and
+        // here each copy multiplied the candidate points and every point's
+        // loss, cubic in the repeats.
+        std::vector<Area> pairs;
+        std::set<std::pair<int, int>> seen;
+        for (const Area& p : Pairs()) {
+            if (seen.insert(std::minmax(p.sets[0], p.sets[1])).second) pairs.push_back(p);
+        }
         for (const Area& p : pairs) {
             const int l = p.sets[0], r = p.sets[1];
             // (Subsets are left for later.)
