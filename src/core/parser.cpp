@@ -9,6 +9,7 @@
 #include "core/parser.h"
 
 #include <algorithm>
+#include <exception>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -293,21 +294,35 @@ public:
         stack_.push_back(doc.root);
     }
 
+    // md4c is C: nothing may unwind through it (undefined with /EHsc, and
+    // its buffers would leak). A callback that throws (out of memory) stops
+    // the parse instead; ParseMarkdown rethrows once md_parse has returned.
+    template <class F>
+    static int Guarded(void* u, F&& f) {
+        Builder* b = static_cast<Builder*>(u);
+        try {
+            return f(*b);
+        } catch (...) {
+            b->error_ = std::current_exception();
+            return -1;
+        }
+    }
     static int OnEnterBlock(MD_BLOCKTYPE t, void* d, void* u) {
-        return static_cast<Builder*>(u)->EnterBlock(t, d);
+        return Guarded(u, [&](Builder& b) { return b.EnterBlock(t, d); });
     }
     static int OnLeaveBlock(MD_BLOCKTYPE t, void* d, void* u) {
-        return static_cast<Builder*>(u)->LeaveBlock(t, d);
+        return Guarded(u, [&](Builder& b) { return b.LeaveBlock(t, d); });
     }
     static int OnEnterSpan(MD_SPANTYPE t, void* d, void* u) {
-        return static_cast<Builder*>(u)->EnterSpan(t, d);
+        return Guarded(u, [&](Builder& b) { return b.EnterSpan(t, d); });
     }
     static int OnLeaveSpan(MD_SPANTYPE t, void* d, void* u) {
-        return static_cast<Builder*>(u)->LeaveSpan(t, d);
+        return Guarded(u, [&](Builder& b) { return b.LeaveSpan(t, d); });
     }
     static int OnText(MD_TEXTTYPE t, const MD_CHAR* s, MD_SIZE n, void* u) {
-        return static_cast<Builder*>(u)->Text(t, std::string_view(s, n));
+        return Guarded(u, [&](Builder& b) { return b.Text(t, std::string_view(s, n)); });
     }
+    const std::exception_ptr& error() const { return error_; }
 
     void Finish();
 
@@ -360,6 +375,7 @@ private:
     Document& doc_;
     const ParseOptions& opt_;
     const FootnoteBodies* footnote_bodies_ = nullptr;
+    std::exception_ptr error_;  // thrown by a callback (see Guarded)
     std::vector<Block*> stack_;
     std::vector<Block*> md_open_;
 
@@ -1717,6 +1733,7 @@ std::unique_ptr<Document> ParseMarkdown(std::string_view utf8, std::wstring_view
     parser.text = &Builder::OnText;
     const MD_SIZE size = static_cast<MD_SIZE>(std::min<size_t>(utf8.size(), 0x7FFFFFFF));
     md_parse(utf8.data(), size, &parser, &builder);
+    if (builder.error()) std::rethrow_exception(builder.error());
     builder.Finish();
     if (options.footnote_nesting == 0) AddFlagImages(*doc);  // footnote bodies are part of *doc by now
     return doc;

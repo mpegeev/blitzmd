@@ -632,6 +632,15 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
     rt->SetTransform(world);
     rt->PushAxisAlignedClip(D2D1::RectF(dest.left - 2, dest.top - 2, dest.left + s.width * k + 2, dest.top + s.height * k + 2),
                             D2D1_ANTIALIAS_MODE_ALIASED);
+    // Undone however drawing ends (a vector growing may throw).
+    struct Restore {
+        ID2D1RenderTarget* rt;
+        D2D1_MATRIX_3X2_F world;
+        ~Restore() {
+            rt->PopAxisAlignedClip();
+            rt->SetTransform(world);
+        }
+    } restore{rt, world};
     rt->SetTransform(place * world);
     struct Stroke {
         uint8_t dash;
@@ -781,8 +790,6 @@ void DrawDiagram(ID2D1RenderTarget* rt, const DiagramScene& s, const D2D1_RECT_F
         }
         }
     }
-    rt->PopAxisAlignedClip();
-    rt->SetTransform(world);
 }
 
 }  // namespace mdv

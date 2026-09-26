@@ -475,6 +475,15 @@ void SvgImage::Draw(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFacto
     rt->GetTransform(&old);
     // Like a browser, nothing is drawn outside the image's viewport.
     rt->PushAxisAlignedClip(rect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+    // Undone however drawing ends (strings for the texts may throw).
+    struct Restore {
+        ID2D1RenderTarget* rt;
+        D2D1_MATRIX_3X2_F old;
+        ~Restore() {
+            rt->SetTransform(old);
+            rt->PopAxisAlignedClip();
+        }
+    } restore{rt, old};
     const float sx = (rect.right - rect.left) / width_;
     const float sy = (rect.bottom - rect.top) / height_;
     const D2D1_MATRIX_3X2_F place = D2D1::Matrix3x2F::Scale(sx, sy) * D2D1::Matrix3x2F::Translation(rect.left, rect.top);
@@ -549,8 +558,6 @@ void SvgImage::Draw(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFacto
             }
         }
     }
-    rt->SetTransform(old);
-    rt->PopAxisAlignedClip();
 }
 
 }  // namespace mdv
