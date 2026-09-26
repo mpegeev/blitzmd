@@ -198,3 +198,24 @@ Markdown list's, so the numbers of its items can't overflow.
 <li>b</li>
 </ol>
 ````````````````````````````````
+
+## Raw HTML across lines
+
+A tag may go on over the next lines of a paragraph, as READMEs often do
+with long `<a>` and `<img>` tags (md4c reports it in pieces).
+
+```````````````````````````````` example
+See <a
+href="https://e.com">here</a> now.
+
+Logo <img src="x.png"
+     width="50" alt="logo"> end
+
+q <a href="#x"
+   title="t">link
+text</a> r
+.
+<p>See <a href="https://e.com">here</a> now.</p>
+<p>Logo <img src="x.png" alt="logo" /> end</p>
+<p>q <a href="#x" title="t">link text</a> r</p>
+````````````````````````````````
