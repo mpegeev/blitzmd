@@ -534,9 +534,13 @@ private:
         }
         t.spans.push_back({0, static_cast<uint32_t>(t.text.size()), true, false});
         const float w = b_.Measure(t, 0, true, kFont / b_.size()).w;
-        if (widths_.size() < 100000) widths_[s] = w;
+        if (s.size() <= kMaxBrokenLine && widths_.size() < 100000) widths_[s] = w;
         return w;
     }
+
+    // Longest piece of a word broken over lines (430 px of bold 16 px text
+    // is fewer characters, of any visible width).
+    static constexpr size_t kMaxBrokenLine = 128;
 
     // Mermaid's wrapLabel (bold 16px, at most 430): words (split at
     // spaces, empty ones dropped) into lines; a word too long broken with
@@ -565,7 +569,9 @@ private:
                     std::wstring line;
                     for (size_t k = 0; k < word.size(); ++k) {
                         const std::wstring longer = line + word[k];
-                        if (Width(longer) >= kTextMax) {
+                        // (Characters of no width never fill a line: past this
+                        // many it breaks anyway, and measuring stays bounded.)
+                        if (longer.size() >= kMaxBrokenLine || Width(longer) >= kTextMax) {
                             lines.push_back(k + 1 == word.size() ? longer : longer + L"-");
                             line.clear();
                         } else {
