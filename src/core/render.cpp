@@ -187,7 +187,7 @@ void Renderer::DrawBlock(Block* b) {
     case BlockType::Summary: {
         const LeafState* s = layout_->State(b);
         const bool open = b->parent && b->parent->open;
-        if (s) {
+        if (s && b->parent && b->parent->type == BlockType::Details) {  // (a stray <summary>: no disclosure)
             const float em = s->style.size;
             const float baseline = s->exact ? s->ty + s->first_baseline : s->ty + em * 1.165f;
             const float sz = em * 0.55f;
@@ -600,6 +600,9 @@ void Renderer::DrawTable(Block* b) {
     const float hair = Hairline();
     const float tx = rows.front()->x;
     const float tw = ti->width;
+    // A scrolled table shows a strip of its columns: only those cells.
+    const float seen_l = scroll ? b->x + b->scroll_x - 1.f : -1e30f, seen_r = scroll ? seen_l + b->w + 2.f : 1e30f;
+    auto seen = [&](const Block* cell) { return cell->visible && cell->x + cell->w >= seen_l && cell->x <= seen_r; };
     int body_index = 0;
     for (Block* row : rows) {
         if (!row->header) {
@@ -615,7 +618,7 @@ void Renderer::DrawTable(Block* b) {
         if (row->y - 1.f > view_bottom_) break;
         if (row->y + row->h + 1.f < view_top_) continue;
         for (Block* cell : row->children) {
-            if (!cell->visible) continue;
+            if (!seen(cell)) continue;
             const float l = Snap(cell->x - hair), t = Snap(cell->y - hair);
             const float r = Snap(cell->x + cell->w), btm = Snap(cell->y + cell->h);
             rt_->FillRectangle(D2D1::RectF(l, t, r + hair, t + hair), border);
@@ -629,7 +632,7 @@ void Renderer::DrawTable(Block* b) {
         if (row->y > view_bottom_) break;
         if (row->y + row->h < view_top_) continue;
         for (Block* cell : row->children) {
-            if (cell->visible) DrawChildren(cell);
+            if (seen(cell)) DrawChildren(cell);
         }
     }
     if (scroll) {

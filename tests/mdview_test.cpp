@@ -542,6 +542,23 @@ int main(int argc, char** ansi_argv) {
         expect(SvgImage::Parse("<!-- " + std::string(5000, 'l') +
                                " -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"/>") != nullptr,
                "SVG after a 5 KB comment");
+        {  // Heading ids: "Dup", "Dup", "Dup-1" -> dup, dup-1, dup-1-1 (as GitHub)
+            auto doc = ParseMarkdown("# Dup\n\n# Dup\n\n# Dup-1\n", L"C:\\x.md");
+            const Anchor* a = doc->FindAnchor(L"dup-1");
+            const Anchor* b = doc->FindAnchor(L"dup-1-1");
+            expect(a && b && a->block != b->block, "ids of repeated headings");
+        }
+        {  // <details>: a <summary> after other content is still its summary
+            auto doc = ParseMarkdown("<details>\n\nText first.\n\n<summary>Late</summary>\n\n</details>\n", L"C:\\x.md");
+            const Block* details = doc->root->children.empty() ? nullptr : doc->root->children.front();
+            const Block* first = details && !details->children.empty() ? details->children.front() : nullptr;
+            expect(first && first->type == BlockType::Summary && first->text == L"Late", "a late <summary>");
+        }
+        {  // An anchor bound to a code block stays there
+            auto doc = ParseMarkdown("<a name=\"t\"></a>\n\n```\ncode\n```\n\n<p> </p>\n\nPara\n", L"C:\\x.md");
+            const Anchor* a = doc->FindAnchor(L"t");
+            expect(a && a->block && a->block->type == BlockType::CodeBlock, "an anchor before a code block");
+        }
         std::printf(failures ? "inputs: %d FAILED\n" : "inputs OK\n", failures);
         return failures ? 1 : 0;
     }
