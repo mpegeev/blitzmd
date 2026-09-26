@@ -3298,6 +3298,21 @@ int main(int argc, char** ansi_argv) {
                 ++failures;
             }
         }
+        {
+            // More blocks than allowed: the parse stops there, and a warning
+            // ends the document.
+            ParseOptions opt;
+            opt.max_blocks = 1000;
+            auto doc = ParseMarkdown(repeat("a\n\n", 5000), L"C:\\heavy.md", opt);
+            const Block* last = doc->leaves.empty() ? nullptr : doc->leaves.back();
+            const bool warned = last && last->parent && last->parent->type == BlockType::Alert;
+            std::printf("  5000 paragraphs, at most 1000 blocks: %zu blocks%s\n", doc->storage.size(),
+                        warned ? ", warning at the end" : "");
+            if (doc->storage.size() > 1005 || !warned) {
+                std::printf("FAIL: the block limit\n");
+                ++failures;
+            }
+        }
         std::printf(failures ? "heavy: %d FAILED\n" : "heavy OK\n", failures);
         return failures ? 1 : 0;
     }

@@ -165,6 +165,9 @@ bool IsShortcodeChar(wchar_t c) {
 
 using FootnoteBodies = std::unordered_map<std::wstring, std::string>;
 
+// Thrown by Builder::Push at ParseOptions::max_blocks: stops md_parse.
+struct TooManyBlocks {};
+
 bool IsBlankLine(std::string_view l) {
     for (char c : l) {
         if (c != ' ' && c != '\t' && c != '\r') return false;
@@ -331,6 +334,9 @@ public:
         Builder* b = static_cast<Builder*>(u);
         try {
             return f(*b);
+        } catch (const TooManyBlocks&) {
+            b->truncated_ = true;  // Finish() says so
+            return -1;
         } catch (...) {
             b->error_ = std::current_exception();
             return -1;
@@ -407,6 +413,8 @@ private:
     const ParseOptions& opt_;
     const FootnoteBodies* footnote_bodies_ = nullptr;
     std::exception_ptr error_;  // thrown by a callback (see Guarded)
+    bool truncated_ = false;    // stopped at opt_.max_blocks
+    bool finishing_ = false;    // (Finish: no more limit)
     std::vector<Block*> stack_;
     std::vector<Block*> md_open_;
     std::vector<Block*> implicit_lists_;  // open lists implied by a stray <li>, innermost last
@@ -446,6 +454,7 @@ private:
 // ============================================================================
 
 Block* Builder::Push(BlockType type) {
+    if (doc_.storage.size() >= opt_.max_blocks && !finishing_) throw TooManyBlocks{};
     CloseLeaf();
     // A list implied by a stray <li> (a browser draws such an item alone)
     // ends at the first content after its items.
@@ -1256,8 +1265,17 @@ int Builder::Text(MD_TEXTTYPE type, std::string_view s) {
 }
 
 void Builder::Finish() {
+    finishing_ = true;
     FlushText();
     while (stack_.size() > 1) Pop();
+    if (truncated_) {
+        ResetInline();
+        Push(BlockType::Alert)->alert = AlertKind::Warning;
+        Push(BlockType::Paragraph);
+        Append(Tr(L"The document is too large: the rest of it is not shown.",
+                  L"Документ слишком большой: остальное не показано."));
+        while (stack_.size() > 1) Pop();
+    }
     // Assign global text offsets.
     uint32_t cursor = 0;
     std::vector<Block*> todo{doc_.root};
