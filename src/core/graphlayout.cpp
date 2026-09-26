@@ -9,8 +9,10 @@
 namespace mdv {
 namespace {
 
-// Budgets: beyond these the layout gets plainer, never slow.
-constexpr long long kSimplexWork = 60'000'000;  // edge visits in network simplex
+// Budgets: beyond these the layout gets plainer, never slow. A diagram is
+// ranked twice (checked when parsed, then laid out); normal ones are done
+// long before either budget.
+constexpr long long kSimplexWork = 15'000'000;  // edge visits in network simplex (~0.1 s)
 constexpr int kMaxSweeps = 24;                  // crossing reduction passes
 constexpr int kCoordinatePasses = 8;
 
@@ -413,9 +415,25 @@ void PlaceLayer(const std::vector<float>& desired, const std::vector<float>& wei
     }
 }
 
+// What one LayoutLayered call may spend in all, its separate parts
+// included (each used to get the whole of it).
+struct Budget {
+    long long simplex = kSimplexWork;
+    long long dummies = kMaxLayoutNodes;  // nodes added along long edges and cluster sides
+};
+
+LayeredLayout Layout(const LayeredGraph& g, bool ranks_only, Budget& budget);
+
 }  // namespace
 
 LayeredLayout LayoutLayered(const LayeredGraph& g, bool ranks_only) {
+    Budget budget;
+    return Layout(g, ranks_only, budget);
+}
+
+namespace {
+
+LayeredLayout Layout(const LayeredGraph& g, bool ranks_only, Budget& budget) {
     LayeredLayout out;
     const int n = static_cast<int>(g.nodes.size());
     const int nc = static_cast<int>(g.clusters.size());
@@ -528,7 +546,7 @@ LayeredLayout LayoutLayered(const LayeredGraph& g, bool ranks_only) {
                     sub.edges.push_back(se);
                     edge_map[p].push_back(static_cast<int>(i));
                 }
-                parts[p] = LayoutLayered(sub, ranks_only);
+                parts[p] = Layout(sub, ranks_only, budget);
                 if (parts[p].too_large) {
                     out.too_large = true;
                     return out;
@@ -793,10 +811,9 @@ LayeredLayout LayoutLayered(const LayeredGraph& g, bool ranks_only) {
                 re.weight += e.weight;
             }
         }
-        long long work = kSimplexWork;
         for (int c = 0; c < comps; ++c) {
             const auto& mem = members[static_cast<size_t>(c)];
-            NetworkSimplex ns(static_cast<int>(mem.size()), std::move(edges[static_cast<size_t>(c)]), &work);
+            NetworkSimplex ns(static_cast<int>(mem.size()), std::move(edges[static_cast<size_t>(c)]), &budget.simplex);
             const std::vector<int> r = ns.Run();
             for (size_t k = 0; k < mem.size(); ++k) nodes[static_cast<size_t>(mem[k])].rank = r[k];
         }
@@ -813,10 +830,11 @@ LayeredLayout LayoutLayered(const LayeredGraph& g, bool ranks_only) {
                                 nodes[static_cast<size_t>(top[static_cast<size_t>(c)])].rank + 1);
             }
         }
-        if (extra > kMaxLayoutNodes) {
+        if (extra > budget.dummies) {
             out.too_large = true;
             return out;
         }
+        budget.dummies -= extra;
         if (ranks_only) return out;
     }
 
@@ -1486,4 +1504,5 @@ LayeredLayout LayoutLayered(const LayeredGraph& g, bool ranks_only) {
     return out;
 }
 
+}  // namespace
 }  // namespace mdv
