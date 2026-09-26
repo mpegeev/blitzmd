@@ -257,15 +257,49 @@ void Renderer::FillRanges(IDWriteTextLayout* tl, D2D1_POINT_2F o, uint32_t start
     }
 }
 
-void Renderer::DrawInlineBackgrounds(Block* b, IDWriteTextLayout* tl, D2D1_POINT_2F o) {
+void Renderer::VisibleText(Block* b, IDWriteTextLayout* tl, D2D1_POINT_2F o, uint32_t& from, uint32_t& to) {
+    from = 0;
+    to = static_cast<uint32_t>(b->text.size());
+    if (b->y >= view_top_ && b->y + b->h <= view_bottom_) return;  // all of it
+    UINT32 count = 0;
+    tl->GetLineMetrics(nullptr, 0, &count);
+    if (count == 0) return;
+    line_buf_.resize(count);
+    if (FAILED(tl->GetLineMetrics(line_buf_.data(), count, &count))) return;
+    float y = o.y;
+    uint32_t pos = 0, first = to, last = 0;
+    for (UINT32 i = 0; i < count && y <= view_bottom_; ++i) {
+        const DWRITE_LINE_METRICS& lm = line_buf_[i];
+        if (y + lm.height >= view_top_) {
+            first = std::min(first, pos);
+            last = pos + lm.length;
+        }
+        y += lm.height;
+        pos += lm.length;
+    }
+    if (first < last) {
+        from = first;
+        to = std::min(last, to);
+    } else {
+        from = to = 0;  // (none in view)
+    }
+}
+
+void Renderer::DrawInlineBackgrounds(Block* b, IDWriteTextLayout* tl, D2D1_POINT_2F o, uint32_t from, uint32_t to) {
     const Metrics& m = layout_->metrics();
     const LeafState* s = layout_->State(b);
     const float size = s ? s->style.size : m.em;
     const size_t nr = b->runs.size();
+    if (from >= to) return;
+    // The first run reaching into [from, to) (runs are in text order).
+    const size_t first = static_cast<size_t>(
+        std::partition_point(b->runs.begin(), b->runs.end(), [from](const StyleRun& r) { return r.start + r.length <= from; }) -
+        b->runs.begin());
 
     if (b->type == BlockType::CodeBlock) {
         // Full-width backgrounds for diff lines.
-        for (const StyleRun& r : b->runs) {
+        for (size_t ri = first; ri < nr && b->runs[ri].start < to; ++ri) {
+            const StyleRun& r = b->runs[ri];
             const auto kind = static_cast<TokenKind>(r.token);
             if (kind != TokenKind::Inserted && kind != TokenKind::Deleted) continue;
             UINT32 count = 0;
@@ -283,18 +317,25 @@ void Renderer::DrawInlineBackgrounds(Block* b, IDWriteTextLayout* tl, D2D1_POINT
         return;
     }
 
-    size_t i = 0;
-    while (i < nr) {
-        const uint32_t kind = b->runs[i].flags & (kCode | kKbd | kMark);
+    constexpr uint32_t kPill = kCode | kKbd | kMark;
+    size_t i = first;
+    while (i < nr && b->runs[i].start < to) {
+        const uint32_t kind = b->runs[i].flags & kPill;
         if (!kind) {
             ++i;
             continue;
         }
         size_t j = i;
-        while (j + 1 < nr && (b->runs[j + 1].flags & (kCode | kKbd | kMark)) == kind) ++j;
-        const uint32_t s0 = b->runs[i].start;
-        const uint32_t s1 = b->runs[j].start + b->runs[j].length;
+        while (j + 1 < nr && b->runs[j + 1].start < to && (b->runs[j + 1].flags & kPill) == kind) ++j;
+        // Cut off by the view (at a line out of it): no rounded end there.
+        const bool open_left = i == first && i > 0 && (b->runs[i - 1].flags & kPill) == kind;
+        const bool open_right = j + 1 < nr && (b->runs[j + 1].flags & kPill) == kind;
+        const uint32_t s0 = std::max(b->runs[i].start, from);
+        const uint32_t s1 = std::min(b->runs[j].start + b->runs[j].length, to);
+        const bool end_left = !open_left && s0 == b->runs[i].start;
+        const bool end_right = !open_right && s1 == b->runs[j].start + b->runs[j].length;
         i = j + 1;
+        if (s0 >= s1) continue;
         UINT32 count = 0;
         tl->HitTestTextRange(s0, s1 - s0, o.x, o.y, nullptr, 0, &count);
         if (!count) continue;
@@ -325,8 +366,8 @@ void Renderer::DrawInlineBackgrounds(Block* b, IDWriteTextLayout* tl, D2D1_POINT
             const auto& h = hit_buf_[k];
             float left = h.left, right = h.left + h.width;
             if (kind & (kCode | kKbd)) {
-                if (k == 0) left += 1.f;
-                if (k + 1 == count) right -= 1.f;
+                if (k == 0 && end_left) left += 1.f;
+                if (k + 1 == count && end_right) right -= 1.f;
                 const float cs = size * ((kind & kKbd) ? 0.8f : 0.85f);
                 const float ph = std::min(h.height, cs * ((kind & kKbd) ? 1.6f : 1.45f));
                 const float cy = h.top + h.height * 0.5f + size * 0.09f;
@@ -358,10 +399,14 @@ void Renderer::DrawLeaf(Block* b) {
     IDWriteTextLayout* tl = layout_->TextLayout(b);
     if (!tl) return;
     const D2D1_POINT_2F o = D2D1::Point2F(s->tx, s->ty);
-    DrawInlineBackgrounds(b, tl, o);
+    uint32_t vis0 = 0, vis1 = 0;
+    VisibleText(b, tl, o, vis0, vis1);
+    DrawInlineBackgrounds(b, tl, o, vis0, vis1);
 
-    const uint32_t a = b->text_start;
-    const uint32_t e = b->text_end();
+    // Hits and the selection: only as far as they are in view.
+    const uint32_t base = b->text_start;
+    const uint32_t a = base + vis0;
+    const uint32_t e = base + vis1;
     // A formula or flag is drawn in one piece: a range touching it covers all of it.
     auto whole = [b](uint32_t& s0, uint32_t& s1) {
         // From the first object ending after s0 (objects are in text order).
@@ -401,13 +446,13 @@ void Renderer::DrawLeaf(Block* b) {
                                    [](const TextRange& r, uint32_t pos) { return r.end <= pos; });
         for (; it != hits.end() && it->start < e; ++it) {
             const bool current = st_->current_hit >= 0 && &*it == &hits[static_cast<size_t>(st_->current_hit)];
-            fill(std::max(it->start, a) - a, std::min(it->end, e) - a,
+            fill(std::max(it->start, a) - base, std::min(it->end, e) - base,
                  Brush(current ? kColorSearchCurrent : kColorSearch), static_cast<uint8_t>(current ? 1 : 0));
         }
     }
     const TextRange& sel = st_->selection;
     if (sel.end > sel.start && sel.start < e && sel.end > a) {
-        fill(std::max(sel.start, a) - a, std::min(sel.end, e) - a, Brush(kColorSelection), 2);
+        fill(std::max(sel.start, a) - base, std::min(sel.end, e) - base, Brush(kColorSelection), 2);
     }
 
     dc.default_brush = Brush(s->style.color);
@@ -421,10 +466,13 @@ void Renderer::DrawLeaf(Block* b) {
     rt_->DrawTextLayout(o, tl, dc.default_brush, D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT);
 
     // Selected images get a tinted overlay (the selection is behind them).
-    if (sel.end > sel.start && !b->objects.empty()) {
-        for (const InlineObject& obj : b->objects) {
+    if (sel.end > sel.start && sel.start < e && sel.end > a && !b->objects.empty()) {
+        auto it = std::lower_bound(b->objects.begin(), b->objects.end(), vis0,  // (in text order)
+                                   [](const InlineObject& x, uint32_t p) { return x.pos < p; });
+        for (; it != b->objects.end() && it->pos < vis1; ++it) {
+            const InlineObject& obj = *it;
             if (obj.image < 0) continue;  // formulas are text: the selection is behind them
-            const uint32_t pos = a + obj.pos;
+            const uint32_t pos = base + obj.pos;
             if (pos >= sel.start && pos < sel.end) FillRanges(tl, o, obj.pos, obj.length, Brush(kColorSelection));
         }
     }
