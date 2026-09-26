@@ -127,7 +127,7 @@ bool PrintDocument(HWND owner, Document& doc, const LayoutConfig& config, const 
     pd.nFromPage = 1;
     pd.nToPage = 9999;
     pd.nCopies = 1;
-    if (!PrintDlgW(&pd)) return true;  // cancelled
+    if (!PrintDlgW(&pd)) return CommDlgExtendedError() == 0;  // cancelled, or failed (no printer...)
     HDC dc = pd.hDC;
     auto cleanup = [&] {
         if (dc) DeleteDC(dc);

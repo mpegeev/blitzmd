@@ -325,6 +325,9 @@ private:
     // Zoomable objects (images): inside their box, and in the full-window view.
     const DrawnObject* ObjectAt(float x, float y) const;  // view coordinates
     const DrawnObject* Drawn(const InlineObject* o) const;
+    // The label of diagram `diagram` shown for source range [a, b) of it
+    // (offsets inside its source), or nullptr.
+    const DiagramScene::Text* LabelOver(int32_t diagram, uint32_t a, uint32_t b);
     ZoomToolbar ObjectToolbar(const DrawnObject& d) const;
     void UpdateObjectHover(float x, float y);
     void ZoomObjectBy(const DrawnObject& d, float factor, float x, float y);
@@ -413,6 +416,16 @@ private:
 
     uint32_t doc_gen_ = 0;             // incremented by every Load()
     bool printing_ = false;            // PrintDocument() is using the blocks
+    bool reload_after_print_ = false;  // the file or the settings changed while printing
+    bool created_ = false;             // CreateWindowEx succeeded: the window owns this object
+    // A diagram's labels by the source they come from, sorted by start with
+    // the farthest end so far (and its text), built once per scene.
+    struct LabelIndex {
+        std::shared_ptr<const DiagramScene> scene;
+        std::vector<uint32_t> starts;
+        std::vector<std::pair<uint32_t, uint32_t>> reach;
+    };
+    std::unordered_map<int32_t, LabelIndex> label_index_;
 
     HANDLE watch_change_ = INVALID_HANDLE_VALUE;  // FindFirstChangeNotification
     HANDLE watch_wait_ = nullptr;                 // thread-pool wait on it
@@ -479,6 +492,7 @@ bool Viewer::Create(HWND parent, int flags) {
     hwnd_ = CreateWindowExW(0, kClassName, L"", WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS, 0, 0, rc.right, rc.bottom,
                             parent, nullptr, reinterpret_cast<HINSTANCE>(&__ImageBase), this);
     if (!hwnd_) return false;
+    created_ = true;
     dpi_ = WindowDpi(hwnd_);
     layout_.Init(g.dw.Get(), &palette_, &images_);
     layout_.draw_context().interactive = true;
@@ -546,8 +560,8 @@ void Viewer::SettingsChanged(const Settings& old) {
     if (s.auto_reload != old.auto_reload) StartWatch();
     const bool reparse = s.remote_images != old.remote_images || s.emoji_shortcodes != old.emoji_shortcodes ||
                          s.math != old.math || s.mermaid != old.mermaid || s.syntax_highlight != old.syntax_highlight;
-    if (reparse && !path_.empty() && !printing_) {
-        Reload();
+    if (reparse && !path_.empty()) {
+        Reload();  // (after printing, if it is on)
     } else {
         ApplySettings(true);
     }
@@ -630,6 +644,7 @@ bool Viewer::Load(const std::wstring& path, int flags, bool keep_history) {
     anchor_ = 0;
     hits_.clear();
     current_hit_ = -1;
+    label_index_.clear();
     folded_valid_ = false;
     global_text_.clear();
     global_text_.shrink_to_fit();
@@ -731,7 +746,11 @@ void Viewer::OnFileChanged() {
 
 // Re-reads the file, keeping the reading position on the same paragraph.
 void Viewer::Reload() {
-    if (path_.empty() || printing_) return;
+    if (path_.empty()) return;
+    if (printing_) {  // the document is in use: once it's printed
+        reload_after_print_ = true;
+        return;
+    }
     const Block* leaf = doc_ ? LeafAtY(scroll_y_) : nullptr;
     const int32_t leaf_index = leaf ? leaf->leaf_index : -1;
     const float offset = leaf ? scroll_y_ - leaf->y : 0.f;
@@ -979,6 +998,33 @@ D2D1_RECT_F Viewer::ScrollbarThumb() const {
     return D2D1::RectF(track.left, top, track.right, top + size);
 }
 
+const DiagramScene::Text* Viewer::LabelOver(int32_t diagram, uint32_t a, uint32_t b) {
+    const std::shared_ptr<const DiagramScene> scene = layout_.Diagram(diagram);
+    if (!scene) return nullptr;
+    LabelIndex& ix = label_index_[diagram];
+    if (ix.scene != scene) {  // (built once: a search or a repaint asks for every match)
+        ix.scene = scene;
+        std::vector<uint32_t> order;
+        for (uint32_t i = 0; i < scene->texts.size(); ++i) {
+            if (scene->texts[i].src_length > 0) order.push_back(i);
+        }
+        std::sort(order.begin(), order.end(),
+                  [&](uint32_t x, uint32_t y) { return scene->texts[x].src_start < scene->texts[y].src_start; });
+        ix.starts.clear();
+        ix.reach.clear();
+        for (const uint32_t i : order) {
+            const DiagramScene::Text& t = scene->texts[i];
+            const uint32_t end = t.src_start + t.src_length;
+            ix.starts.push_back(t.src_start);
+            ix.reach.push_back(ix.reach.empty() || end > ix.reach.back().first ? std::make_pair(end, i) : ix.reach.back());
+        }
+    }
+    // Of the labels starting before b, the one reaching farthest past a.
+    const size_t j = static_cast<size_t>(std::lower_bound(ix.starts.begin(), ix.starts.end(), b) - ix.starts.begin());
+    if (j == 0 || ix.reach[j - 1].first <= a) return nullptr;
+    return &scene->texts[ix.reach[j - 1].second];
+}
+
 void Viewer::DrawOverlays() {
     // Zoom buttons over the image under the mouse.
     if (!full_.active() && hover_object_) {
@@ -1009,11 +1055,8 @@ void Viewer::DrawOverlays() {
                     if (o.diagram < 0 || h1 <= o.pos || h0 >= o.pos + o.length) continue;
                     const auto scene = layout_.Diagram(o.diagram);
                     if (!scene || scene->height <= 0) break;
-                    for (const DiagramScene::Text& t : scene->texts) {
-                        if (t.src_length > 0 && h0 < o.pos + t.src_start + t.src_length && h1 > o.pos + t.src_start) {
-                            at += leaf->h * std::clamp(t.origin.y / scene->height, 0.f, 1.f);
-                            break;
-                        }
+                    if (const DiagramScene::Text* t = LabelOver(o.diagram, h0 > o.pos ? h0 - o.pos : 0, h1 - o.pos)) {
+                        at += leaf->h * std::clamp(t->origin.y / scene->height, 0.f, 1.f);
                     }
                     break;
                 }
@@ -2078,12 +2121,8 @@ bool Viewer::Search(const std::wstring& text, int flags) {
         const uint32_t h0 = static_cast<uint32_t>(pos) - leaf->text_start, h1 = h0 + static_cast<uint32_t>(needle.size());
         for (const InlineObject& o : leaf->objects) {
             if (o.diagram < 0 || h1 <= o.pos || h0 >= o.pos + o.length) continue;
-            const auto scene = layout_.Diagram(o.diagram);
-            if (!scene) return true;  // its source shows
-            for (const DiagramScene::Text& t : scene->texts) {
-                if (t.src_length > 0 && h0 < o.pos + t.src_start + t.src_length && h1 > o.pos + t.src_start) return true;
-            }
-            return false;
+            if (!layout_.Diagram(o.diagram)) return true;  // its source shows
+            return LabelOver(o.diagram, h0 > o.pos ? h0 - o.pos : 0, h1 - o.pos) != nullptr;
         }
         return true;
     };
@@ -2561,7 +2600,9 @@ LRESULT CALLBACK Viewer::StaticProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == WM_NCDESTROY) {
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         const LRESULT r = DefWindowProcW(hwnd, msg, wp, lp);
-        delete self;
+        // (A window that failed to be created leaves its viewer to CreateViewer.)
+        if (self->created_) delete self;
+        else self->hwnd_ = nullptr;
         return r;
     }
     try {
@@ -2818,6 +2859,11 @@ bool Viewer::Print(const wchar_t* /*printer*/, const RECT* margins) {
     }
     if (!Survived(self, this)) return ok;
     printing_ = false;
+    if (reload_after_print_) {
+        reload_after_print_ = false;
+        Reload();
+        return ok;
+    }
     Relayout(false);
     RestoreAnchor(anchor);
     Relayout(true);

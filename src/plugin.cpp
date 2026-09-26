@@ -82,8 +82,9 @@ HBITMAP PreviewBitmap(const std::wstring& path, int width, int height, const cha
 
 }  // namespace
 
-BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
-    if (reason == DLL_PROCESS_ATTACH) DisableThreadLibraryCalls(module);
+BOOL APIENTRY DllMain(HMODULE /*module*/, DWORD reason, LPVOID reserved) {
+    // (No DisableThreadLibraryCalls: not with the static CRT, and it would
+    // fail anyway, the DLL has thread_local data.)
     // Window classes of a DLL outlive FreeLibrary unless unregistered.
     if (reason == DLL_PROCESS_DETACH && !reserved) mdv::UnregisterViewerClass();
     return TRUE;
