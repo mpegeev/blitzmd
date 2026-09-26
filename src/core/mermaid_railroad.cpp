@@ -140,6 +140,20 @@ private:
             while (p_ < s_.size() && s_[p_] != L'\n' && s_[p_] != L'\r') ++p_;
             return true;
         }
+        // Comments are skipped here, in Next()'s loop: no token or keyword
+        // starts like one ("(*" is never a group, "; x" never ends an ABNF rule).
+        size_t n = 0;
+        if (d_ == Dialect::Ebnf) n = BlockComment(L"(*", L"*)");
+        if (!n && d_ != Dialect::Abnf && d_ != Dialect::Peg) n = BlockComment(L"/*", L"*/");
+        if (n) {
+            p_ += n;
+            return true;
+        }
+        if ((d_ == Dialect::Peg && c == L'#') ||
+            (d_ == Dialect::Abnf && c == L';' && At(1) != L'\n' && At(1) != L'\r' && At(1) != L'\0')) {
+            while (p_ < s_.size() && s_[p_] != L'\n' && s_[p_] != L'\r') ++p_;
+            return true;
+        }
         return false;
     }
     size_t BlockComment(std::wstring_view open, std::wstring_view close) const {
@@ -170,16 +184,6 @@ private:
             if (Letter(w[0]) && IdLength(p_) > w.size()) break;
             if (w == L"?" && d_ == Dialect::Ebnf) {
                 if (const size_t n = SpecialLength(p_)) return SpecialToken(n);
-            }
-            if (w == L"(" && d_ == Dialect::Ebnf) {
-                if (const size_t n = BlockComment(L"(*", L"*)")) {
-                    p_ += n;
-                    return Next();
-                }
-            }
-            if (w == L";" && d_ == Dialect::Abnf && At(1) != L'\n' && At(1) != L'\r' && At(1) != L'\0') {
-                while (p_ < s_.size() && s_[p_] != L'\n' && s_[p_] != L'\r') ++p_;
-                return Next();
             }
             return Key(w);
         }
@@ -233,16 +237,6 @@ private:
                 return Make(T::Repeat, e - p_, p_, e);
             }
             if (e > p_) return Make(T::Exact, e - p_, p_, e);
-        }
-        if (d_ != Dialect::Abnf && d_ != Dialect::Peg) {
-            if (const size_t n = BlockComment(L"/*", L"*/")) {
-                p_ += n;
-                return Next();
-            }
-        }
-        if (d_ == Dialect::Peg && s_[p_] == L'#') {
-            while (p_ < s_.size() && s_[p_] != L'\n' && s_[p_] != L'\r') ++p_;
-            return Next();
         }
         mermaid::Fail(p_, Tr(L"Unexpected character", L"Непонятный символ"));
     }
