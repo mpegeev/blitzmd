@@ -252,7 +252,8 @@ private:
     }
 
     // -->, ---, -.->, ==>, <-->, -- "label" -->, -->|label|
-    bool EdgeOp(Edge* e) {
+    // (`labelled`: the rest after a label, which takes no second one.)
+    bool EdgeOp(Edge* e, bool labelled = false) {
         const size_t at = c_.pos();
         if (c_.Eat(L'<')) e->start = Marker::Arrow;
         std::wstring_view r = c_.Rest();
@@ -275,6 +276,7 @@ private:
             // "-- label -->" or "---".
             c_.SkipBlanks();
             if (c_.Peek() == L'"') {
+                if (labelled) c_.Fail(Tr(L"Expected the rest of the edge", L"Ожидалось продолжение связи"));
                 c_.Advance();
                 const size_t s = c_.pos();
                 while (!c_.AtEnd() && c_.Peek() != L'"' && c_.Peek() != L'\n') c_.Advance();
@@ -284,7 +286,7 @@ private:
                 e->len = static_cast<uint32_t>(e->label.size());
                 c_.SkipBlanks();
                 Edge rest;
-                if (!EdgeOp(&rest)) c_.Fail(Tr(L"Expected the rest of the edge", L"Ожидалось продолжение связи"));
+                if (!EdgeOp(&rest, true)) c_.Fail(Tr(L"Expected the rest of the edge", L"Ожидалось продолжение связи"));
                 e->end = rest.end;
                 e->dotted = e->dotted || rest.dotted;
                 e->thick = e->thick || rest.thick;
