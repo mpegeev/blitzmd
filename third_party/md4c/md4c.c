@@ -4592,26 +4592,27 @@ md_analyze_permissive_autolink(MD_CTX* ctx, int mark_index)
          * then trailing punctuation, unbalanced ')' and a trailing entity-like
          * "&name;" are excluded. */
         const OFF domain_end = end;
+        OFF i;
+        int balance = 0;    /* '(' minus ')' in [beg, end), counted once */
         while(end < line_end  &&  !ISUNICODEWHITESPACE(end)  &&  CH(end) != _T('<')) {
             if(!ISALNUM(end)  &&  md_scan_right_for_resolved_mark(ctx, right_cursor, end, &right_cursor) != NULL)
                 break;
             end++;
+        }
+        for(i = beg; i < end; i++) {
+            if(CH(i) == _T('('))
+                balance++;
+            else if(CH(i) == _T(')'))
+                balance--;
         }
         while(end > domain_end) {
             const CHAR last = CH(end-1);
             if(ISANYOF_(last, _T("?!.,:*_~"))) {
                 end--;
             } else if(last == _T(')')) {
-                OFF i;
-                int balance = 0;
-                for(i = beg; i < end; i++) {
-                    if(CH(i) == _T('('))
-                        balance++;
-                    else if(CH(i) == _T(')'))
-                        balance--;
-                }
                 if(balance >= 0)
                     break;
+                balance++;  /* the ')' cut off */
                 end--;
             } else if(last == _T(';')) {
                 OFF i = end - 1;
