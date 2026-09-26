@@ -670,6 +670,10 @@ final class UserController extends Controller {
         return $user;
     }
 }
+$sql = <<<SQL
+    It's here, {$user}
+    SQL;
+$after = strlen($sql);
 ?>
 )~~"},
 {"ruby", L"ruby", LR"~~(# Ruby sample
@@ -690,9 +694,19 @@ module Greeter
     end
   end
 end
+msg = <<~EOS
+  Don't panic
+EOS
+list << item
 =begin
 block comment
 =end
+)~~"},
+{"perl", L"perl", LR"~~(my $name = "x";
+print <<"END";
+It's $name
+END
+my $done = 1;
 )~~"},
 {"kotlin", L"kotlin", LR"~~(package demo
 import kotlinx.coroutines.*
@@ -1052,6 +1066,10 @@ const Expectation kExpect[] = {
     E3("ruby", L"@@count", Variable), E4("ruby", L"def greet!", L"greet!", Function), E3("ruby", L"puts", Function),
     E4("ruby", L"#{@name", L"@name", Variable), E3("ruby", L"\"Hello, ", String), E3("ruby", L"nil", Constant),
     E3("ruby", L"/ab+c/i", Regex), E3("ruby", L"=begin\nblock comment\n=end", Comment),
+    // Heredocs: an apostrophe in them opens no string.
+    E3("ruby", L"<<~EOS", String), E3("ruby", L"  Don't panic\n", String), E4("ruby", L"list << item", L"list", Plain),
+    E3("php", L"<<<SQL", String), E3("php", L"It's here", String), E4("php", L"$after = strlen", L"$after", Variable),
+    E3("perl", L"<<\"END\"", String), E3("perl", L"It's $name", String), E4("perl", L"my $done", L"$done", Variable),
     // Kotlin
     E3("kotlin", L"package", Keyword), E4("kotlin", L"data class", L"data", Keyword), E4("kotlin", L"class User", L"User", Type),
     E4("kotlin", L"val name", L"val", Keyword), E3("kotlin", L"String", Type), E3("kotlin", L"Int", Type),

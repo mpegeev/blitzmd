@@ -966,6 +966,7 @@ constexpr uint64_t F_ERLANG = 1ull << 42;        // Variables, -module, ?MACRO
 constexpr uint64_t F_DOT_IDENT = 1ull << 43;     // '.' inside identifiers (R)
 constexpr uint64_t F_ASSIGN_PROP = 1ull << 44;   // ident followed by '=' is a property (HCL, Nix)
 constexpr uint64_t F_DELPHI_T = 1ull << 45;      // TFoo / EFoo / IFoo are types
+constexpr uint64_t F_HEREDOC = 1ull << 47;       // <<~EOS (Ruby, Crystal), <<"END" (Perl), <<<EOT (PHP)
 constexpr uint64_t F_SQ_INTERP = 1ull << 46;     // single-quoted strings interpolate too (Dart)
 
 struct LangDef {
@@ -1057,6 +1058,8 @@ private:
     size_t Special(size_t i, bool bol);
     size_t Regex(size_t i);
     size_t Attribute(size_t i);
+    size_t HeredocStart(size_t i);
+    size_t Heredoc(size_t i);
     size_t Emit(size_t a, size_t b, K k, Prev p) {
         em_.Add(a, b, k);
         prev_ = p;
@@ -1076,6 +1079,10 @@ private:
     int nf_ = 0;
     bool lispHead_ = false;
     bool nsCtx_ = false;  // after using/import/namespace: module path, leave plain
+    // A heredoc opened on this line: its body starts on the next one.
+    wchar_t hd_[64] = {};
+    size_t hdLen_ = 0;
+    bool hdPending_ = false, hdIndent_ = false;
 };
 
 void CScanner::Run() {
@@ -1093,6 +1100,10 @@ void CScanner::Run() {
             pending_ = K::Plain;
             nsCtx_ = false;
             while (nf_ > 0 && !frames_[nf_ - 1].spec.multiline) --nf_;
+            if (hdPending_) {
+                i = Heredoc(i);
+                bol = false;
+            }
             continue;
         }
         if (IsBlank(c)) {
@@ -1115,6 +1126,9 @@ size_t CScanner::Token(size_t i, bool bol) {
     if (const size_t e = TryComment(i)) return e;
     if (c == L'#' && bol && Has(F_HASH_PREPROC)) return Preproc(i);
     if (const size_t e = TryString(i)) return e;
+    if (c == L'<' && Has(F_HEREDOC) && i + 1 < n_ && s_[i + 1] == L'<') {
+        if (const size_t e = HeredocStart(i)) return e;
+    }
     const bool signedLispNum = Has(F_LISP) && (c == L'-' || c == L'+') && i + 1 < n_ && IsDigit(s_[i + 1]);
     if (IsDigit(c) || signedLispNum ||
         (c == L'.' && i + 1 < n_ && IsDigit(s_[i + 1]) && !(i > 0 && (IsIdChar(s_[i - 1]) || s_[i - 1] == L'.')))) {
@@ -1664,6 +1678,65 @@ size_t CScanner::Regex(size_t i) {
     return 0;
 }
 
+// <<~EOS, <<-EOS, <<EOS, <<'EOS', <<"EOS" (Ruby, Crystal, Perl); PHP:
+// <<<EOT, <<<"EOT", <<<'EOT'. A bare marker only in capitals and right
+// after the <<: `list << item` and `x <<y` append or shift.
+size_t CScanner::HeredocStart(size_t i) {
+    size_t j = i + 2;
+    bool indent = false;
+    if (Has(F_PHP)) {
+        if (j >= n_ || s_[j] != L'<') return 0;
+        j = SkipBlanks(s_, n_, j + 1);
+        indent = true;  // PHP 7.3: the closing marker may be indented
+    } else if (j < n_ && (s_[j] == L'~' || s_[j] == L'-')) {
+        indent = true;
+        ++j;
+    }
+    size_t a = j, b = j;
+    if (j < n_ && (s_[j] == L'"' || s_[j] == L'\'')) {
+        const size_t q = lf_.Find(s_, n_, j + 1, s_[j]);
+        if (q == kNpos) return 0;
+        a = j + 1;
+        b = q;
+        j = q + 1;
+    } else {
+        if (j >= n_ || !IsIdStart(s_[j])) return 0;
+        b = ScanIdent(s_, n_, j);
+        if (!Has(F_PHP)) {
+            for (size_t k = a; k < b; ++k) {
+                if (s_[k] >= L'a' && s_[k] <= L'z') return 0;
+            }
+        }
+        j = b;
+    }
+    if (b <= a || b - a > std::size(hd_)) return 0;
+    std::copy(s_ + a, s_ + b, hd_);
+    hdLen_ = b - a;
+    hdIndent_ = indent;
+    hdPending_ = true;
+    return Emit(i, j, K::String, Prev::Value);
+}
+
+// The body of a heredoc, from the start of the line after its opener, up
+// to its marker alone on a line (PHP: then ; , or ) may follow).
+size_t CScanner::Heredoc(size_t i) {
+    hdPending_ = false;
+    const wsv marker(hd_, hdLen_);
+    for (size_t line = i; line < n_;) {
+        const size_t le = LineEnd(s_, n_, line);
+        const size_t k = hdIndent_ ? SkipBlanks(s_, n_, line) : line;
+        const size_t ce = ContentEnd(s_, k, le);
+        if (ce - k >= hdLen_ && wsv(s_ + k, hdLen_) == marker &&
+            (k + hdLen_ == ce || (Has(F_PHP) && !IsIdChar(s_[k + hdLen_])))) {
+            if (line > i) em_.Add(i, line, K::String);
+            return Emit(k, k + hdLen_, K::String, Prev::Value);
+        }
+        line = le < n_ ? le + 1 : n_;
+    }
+    em_.Add(i, n_, K::String);  // no marker: to the end
+    return n_;
+}
+
 // #[attr] / #![attr]
 size_t CScanner::Attribute(size_t i) {
     size_t j = i + 1;
@@ -1950,20 +2023,20 @@ constexpr LangDef kLangPython{.kw = kPyKw, .types = kPyTypes, .consts = kPyConst
 constexpr LangDef kLangRuby{.kw = kRubyKw, .consts = kRubyConsts, .builtins = kRubyBuiltins, .line1 = L"#",
                             .blockOpen = L"=begin", .blockClose = L"=end",
                             .f = kCFam | F_MULTILINE | F_INTERP_HASH | F_RUBYISH | F_REGEX | F_BT_RAW |
-                                 F_PASCAL_TYPE | F_CAPS_CONST};
+                                 F_PASCAL_TYPE | F_CAPS_CONST | F_HEREDOC};
 constexpr LangDef kLangCrystal{.kw = kCrystalKw, .consts = kNilConsts, .line1 = L"#",
                                .f = F_CALL | F_DQ_STRING | F_SQ_CHAR | F_MULTILINE | F_INTERP_HASH | F_RUBYISH |
-                                    F_REGEX | F_PASCAL_TYPE | F_CAPS_CONST};
+                                    F_REGEX | F_PASCAL_TYPE | F_CAPS_CONST | F_HEREDOC};
 constexpr LangDef kLangElixir{.kw = kElixirKw, .consts = kNilConsts, .line1 = L"#",
                               .f = kCFam | F_MULTILINE | F_TRIPLE_DQ | F_INTERP_HASH | F_RUBYISH | F_PASCAL_TYPE};
 constexpr LangDef kLangErlang{.kw = kErlangKw, .consts = kErlangConsts, .line1 = L"%", .f = kCFam | F_ERLANG};
 constexpr LangDef kLangPhp{.kw = kPhpKw, .types = kPhpTypes, .consts = kPhpConsts, .line1 = L"//", .line2 = L"#",
                            .blockOpen = L"/*", .blockClose = L"*/",
                            .f = kCFam | F_MULTILINE | F_INTERP_DOLLAR | F_DOLLAR_VAR | F_PHP | F_PASCAL_TYPE |
-                                F_CAPS_CONST};
+                                F_CAPS_CONST | F_HEREDOC};
 constexpr LangDef kLangPerl{.kw = kPerlKw, .builtins = kPerlBuiltins, .line1 = L"#", .blockOpen = L"=pod",
                             .blockClose = L"=cut",
-                            .f = kCFam | F_MULTILINE | F_INTERP_DOLLAR | F_PERL | F_REGEX | F_BT_RAW};
+                            .f = kCFam | F_MULTILINE | F_INTERP_DOLLAR | F_PERL | F_REGEX | F_BT_RAW | F_HEREDOC};
 constexpr LangDef kLangLua{.kw = kLuaKw, .consts = kLuaConsts, .line1 = L"--", .f = kCFam | F_LUA_LONG};
 constexpr LangDef kLangR{.kw = kRKw, .consts = kRConsts, .line1 = L"#", .f = kCFam | F_MULTILINE | F_DOT_IDENT};
 constexpr LangDef kLangJulia{.kw = kJuliaKw, .consts = kJuliaConsts, .line1 = L"#", .blockOpen = L"#=",
