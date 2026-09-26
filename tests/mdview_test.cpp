@@ -14,6 +14,7 @@
 #include <dwmapi.h>
 #include <psapi.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 
 #include <atomic>
 #include <cmath>
@@ -513,6 +514,85 @@ int main(int argc, char** ansi_argv) {
         FreeLibrary(dll);
         std::printf("plugin OK\n");
         return 0;
+    }
+    if (cmd == "remote" && argc >= 4) {
+        // remote <mdview.wlx64> <out-dir>: a document with 60 pictures on a
+        // server that doesn't answer (10.255.255.1): the downloads queue up in
+        // a few threads instead of one thread each. (Where that address fails
+        // at once instead, nothing piles up either way.)
+        HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
+        using SetParamsFn = void(__stdcall*)(void*);
+        using LoadFn = HWND(__stdcall*)(HWND, const wchar_t*, int);
+        using CloseFn = void(__stdcall*)(HWND);
+        auto set_params = dll ? reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams")) : nullptr;
+        auto load = dll ? reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW")) : nullptr;
+        auto close = dll ? reinterpret_cast<CloseFn>(GetProcAddress(dll, "ListCloseWindow")) : nullptr;
+        if (!set_params || !load || !close) {
+            std::fprintf(stderr, "cannot load plugin\n");
+            return 1;
+        }
+        const std::wstring dir = FullPath(argv[3]) + L"\\";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        DeleteFileW((dir + L"mdview.ini").c_str());  // remote images on (the default)
+        struct {
+            int size;
+            DWORD lo, hi;
+            char ini[MAX_PATH];
+        } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
+        strncpy_s(dp.ini, WideToUtf8(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        set_params(&dp);
+        auto write_doc = [&](const wchar_t* name, int pictures) {
+            std::string md = "# Remote pictures\n\n";
+            for (int i = 0; i < pictures; ++i) md += "![p](http://10.255.255.1/p" + std::to_string(i) + ".png) ";
+            HANDLE f = CreateFileW((dir + name).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD n = 0;
+            if (f != INVALID_HANDLE_VALUE) {
+                WriteFile(f, md.data(), static_cast<DWORD>(md.size()), &n, nullptr);
+                CloseHandle(f);
+            }
+        };
+        write_doc(L"remote1.md", 1);
+        write_doc(L"remote60.md", 60);
+        auto threads = [] {
+            int count = 0;
+            HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            THREADENTRY32 te{sizeof te};
+            for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+                if (te.th32OwnerProcessID == GetCurrentProcessId()) ++count;
+            }
+            CloseHandle(snap);
+            return count;
+        };
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"MdViewRemoteHost";
+        RegisterClassW(&wc);
+        HWND host = CreateWindowExW(0, wc.lpszClassName, L"remote test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40, 900,
+                                    700, nullptr, nullptr, wc.hInstance, nullptr);
+        // Threads while a document's pictures are loading (the viewer and its
+        // first download start some of their own: one picture is the base).
+        auto threads_with = [&](const wchar_t* name) {
+            HWND viewer = load(host, (dir + name).c_str(), 0);
+            const double end = NowMs() + 2000;
+            MSG msg;
+            while (NowMs() < end) {
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
+                Sleep(5);
+            }
+            const int n = viewer ? threads() : -1;
+            if (viewer) close(viewer);
+            return n;
+        };
+        const int one = threads_with(L"remote1.md");
+        const int sixty = threads_with(L"remote60.md");
+        DestroyWindow(host);
+        std::printf("threads: %d with 1 picture loading, %d with 60\n", one, sixty);
+        const bool ok = one > 0 && sixty > 0 && sixty - one <= 20;
+        if (!ok) std::printf("FAIL: %s\n", one > 0 && sixty > 0 ? "a thread per picture" : "ListLoadW failed");
+        std::printf(ok ? "remote OK\n" : "remote FAILED\n");
+        // (The DLL stays loaded: the pending jobs hold it until they give up.)
+        return ok ? 0 : 1;
     }
     if (cmd == "search" && argc >= 4) {
         // search <mdview.wlx64> <out-dir>: ListSearchTextW forward, backward
