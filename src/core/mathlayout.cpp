@@ -243,6 +243,14 @@ struct MathTypesetter::Impl {
     float x_height = 0.466f;
     std::unordered_map<uint32_t, std::pair<uint8_t, uint16_t>> cmap;
     std::unordered_map<uint32_t, GlyphMetrics> metrics;
+    // Characters not in the math font: the system's fallback found a font
+    // for each (a few ms each while fonts are cold: seconds for a formula of
+    // thousands of distinct characters). Now the face found for a 128-code-
+    // point page is tried first for the rest of it, and the search is done
+    // at most kMaxFallbackSearches times (then: no glyph).
+    std::unordered_map<uint32_t, uint8_t> page_face;  // cp >> 7 -> face (0: none)
+    int fallback_searches = 0;
+    static constexpr int kMaxFallbackSearches = 256;
 
     bool Load(IDWriteFactory* factory);
     std::pair<uint8_t, uint16_t> Lookup(uint32_t cp);
@@ -329,6 +337,20 @@ std::pair<uint8_t, uint16_t> MathTypesetter::Impl::Lookup(uint32_t cp) {
         r = {uint8_t{0}, glyph};
     } else if (fallback) {
         // Not in the math font (CJK in \text, emoji...): the system fallback.
+        const uint32_t page = cp >> 7;
+        if (const auto pf = page_face.find(page); pf != page_face.end() && pf->second) {
+            faces[pf->second]->GetGlyphIndices(&cp, 1, &glyph);
+            if (glyph) {
+                r = {pf->second, glyph};
+                cmap.emplace(cp, r);
+                return r;
+            }
+        }
+        if (fallback_searches >= kMaxFallbackSearches) {
+            cmap.emplace(cp, r);
+            return r;
+        }
+        ++fallback_searches;
         std::wstring s;
         AppendCodepoint(s, cp);
         OneString source(s);
@@ -351,7 +373,10 @@ std::pair<uint8_t, uint16_t> MathTypesetter::Impl::Lookup(uint32_t cp) {
                         faces.push_back(face);
                         upem.push_back(fm.designUnitsPerEm ? fm.designUnitsPerEm : 2048.f);
                     }
-                    if (k < faces.size()) r = {static_cast<uint8_t>(k), glyph};
+                    if (k < faces.size()) {
+                        r = {static_cast<uint8_t>(k), glyph};
+                        page_face.try_emplace(page, static_cast<uint8_t>(k));
+                    }
                 }
             }
         }
