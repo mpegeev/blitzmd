@@ -201,7 +201,8 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
     const float face_bottom = face_top + 4 * kScoreStep;      // score 1
     const float arrow_y = face_bottom + kFaceR + 30;
     const float width = std::max(right, x0 + title.w) + kMargin;
-    const float height = arrow_y + 12 + kMargin;
+    const float legend_bottom = top + 10 + static_cast<float>(names.size()) * 28;  // (below its last row)
+    const float height = std::max(arrow_y + 12, legend_bottom) + kMargin;
     if (title.layout) {
         b.Text(title, D2D1::Point2F(x0, kMargin), Role(kDgText), own.raw.empty() ? src.title_pos : own.pos,
                own.raw.empty() ? src.title_len : own.len);

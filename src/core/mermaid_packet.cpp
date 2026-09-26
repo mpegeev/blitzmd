@@ -137,13 +137,13 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
     };
     float bottom = 0;
     for (const Field& f : p.fields) {
+        const M label = b.Measure(ParseLabel(f.label, false), 0, false, 12 / unit);
         // A piece of the field in each row it takes.
         for (long long s = f.start; s <= f.end;) {
             const long long row = s / kBitsPerRow, e = std::min(f.end, (row + 1) * kBitsPerRow - 1);
             const float y = 15 + static_cast<float>(row) * kRowStep;
             const float x0 = static_cast<float>(s % kBitsPerRow) * kBitW, x1 = static_cast<float>(e % kBitsPerRow + 1) * kBitW - kGapX;
             b.Rect(D2D1::RectF(x0, y, x1, y + kRowH), 0, Role(kDgActivationFill), Role(kDgText), 1.f);
-            const M label = b.Measure(ParseLabel(f.label, false), 0, false, 12 / unit);
             b.Text(label, D2D1::Point2F((x0 + x1) / 2 - label.w / 2, y + kRowH / 2 - label.h / 2), Role(kDgText), f.pos, f.len);
             // Bit numbers: the first at the left, the last at the right (one
             // bit's in the middle).

@@ -2340,6 +2340,7 @@ int main(int argc, char** ansi_argv) {
             {L"block-beta\ncolumns 3\na([\"Stadium\"]) e:::hot f:2\nclassDef hot fill:#f96\nx<[\" \"]>(y)", true, nullptr},
             {L"sankey-beta\n\" padded \",B,10.5kg\npadded,C,0x10", true, nullptr},
             {L"sankey-beta\nA,B,abc", false, L"Line 2"},
+            {L"sankey-beta\na,b,1.7e308", false, L"too large"},  // finite, but not once laid out
             {L"architecture-beta\nservice a(server)[A] in g", false, L"No such group: g"},  // (not "declared before")
             {L"erDiagram\nA {\n\"c\"\n}", false, L"Line 3"},  // an attribute without a type or name
             {L"erDiagram\naccDescr {\nA ||--o{ B : r", false, L"Line 2"},  // accDescr { never closed
@@ -2915,6 +2916,43 @@ int main(int argc, char** ansi_argv) {
             std::printf("  architecture star of 600: %s in %.0f ms\n", scene ? "drawn" : WideToUtf8(error).c_str(), ms);
             if (!scene || ms > 3000) {
                 std::printf("FAIL: architecture: a star of 600 services not drawn\n");
+                ++failures;
+            }
+        }
+        {  // treemap: items after ";" on one line nest, each in the one before
+            // (hundreds of levels: 64 MB for 8 KB of input)
+            std::wstring src = L"treemap-beta\n";
+            for (int i = 0; i < 100; ++i) src += L"\"s\"; ";
+            src += L"\"leaf\": 1\n";
+            std::wstring error;
+            const bool ok = CheckMermaid(src, &error);
+            std::printf("  treemap 100 items on a line: %s\n", ok ? "accepted" : WideToUtf8(error).c_str());
+            if (ok) {
+                std::printf("FAIL: treemap: a hundred levels of nesting accepted\n");
+                ++failures;
+            }
+        }
+        {  // xychart: an axis near 1e15 (past 2^53 ++i leaves i as it is: the
+           // same tick a hundred times)
+            std::wstring error;
+            const auto scene = layout(L"xychart-beta\ny-axis 999999999999999 --> 1000000000000000\nbar [1000000000000000]\n", &error);
+            std::printf("  xychart near 1e15: %zu texts\n", scene ? scene->texts.size() : size_t{0});
+            if (!scene || scene->texts.size() > 20) {
+                std::printf("FAIL: xychart: ticks repeated at one place %s\n", WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
+        {  // journey: a legend of many actors is inside the diagram
+            std::wstring src = L"journey\nsection S\nTask: 3: ";
+            for (int i = 0; i < 15; ++i) src += (i ? L", A" : L"A") + std::to_wstring(i);
+            std::wstring error;
+            const auto scene = layout(src + L"\n", &error);
+            bool inside = scene != nullptr;
+            for (size_t i = 0; scene && i < scene->texts.size(); ++i) {
+                if (scene->texts[i].origin.y + scene->texts[i].h > scene->height + 0.5f) inside = false;
+            }
+            if (!inside) {
+                std::printf("FAIL: journey: a legend of 15 actors runs past the diagram %s\n", WideToUtf8(error).c_str());
                 ++failures;
             }
         }

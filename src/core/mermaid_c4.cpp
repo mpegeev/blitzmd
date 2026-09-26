@@ -160,7 +160,7 @@ private:
             return i < a.size() ? a[i] : Text{};
         };
         // Relations.
-        static const wchar_t* kRels[] = {L"Rel", L"BiRel", L"Rel_U", L"Rel_Up", L"Rel_D", L"Rel_Down", L"Rel_L", L"Rel_Left", L"Rel_R", L"Rel_Right", L"Rel_Back", L"RelIndex"};
+        static constexpr const wchar_t* kRels[] = {L"Rel", L"BiRel", L"Rel_U", L"Rel_Up", L"Rel_D", L"Rel_Down", L"Rel_L", L"Rel_Left", L"Rel_R", L"Rel_Right", L"Rel_Back", L"RelIndex"};
         if (std::find_if(std::begin(kRels), std::end(kRels), [&](const wchar_t* r) { return name == r; }) != std::end(kRels)) {
             const size_t o = name == L"RelIndex" ? 1 : 0;
             Rel r;

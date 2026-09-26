@@ -129,6 +129,12 @@ private:
             c_.set_pos(at);
             c_.Fail(Tr(L"Too many items", L"Слишком много элементов"));
         }
+        int depth = 1;  // (items after ";" on a line are each indented further: nested)
+        for (int q = p; q > 0 && depth <= kMaxNesting; q = nodes[static_cast<size_t>(q)].parent) ++depth;
+        if (depth > kMaxNesting) {
+            c_.set_pos(at);
+            c_.Fail(Tr(L"Nested too deeply", L"Слишком глубокая вложенность"));
+        }
         n.parent = p;
         nodes[static_cast<size_t>(p)].children.push_back(static_cast<int>(nodes.size()));
         nodes.push_back(std::move(n));
@@ -267,12 +273,8 @@ private:
         if (in.right < in.left) in.left = in.right = (in.left + in.right) / 2;
         if (in.bottom < in.top) in.top = in.bottom = (in.top + in.bottom) / 2;
         const std::vector<int> kids = Sorted(p_.nodes[i].children);
-        std::vector<D2D1_RECT_F> out(p_.nodes.size());
-        Squarify(p_.nodes, kids, in, &out);
-        for (int k : kids) {
-            rect_[static_cast<size_t>(k)] = out[static_cast<size_t>(k)];
-            Position(static_cast<size_t>(k), p);
-        }
+        Squarify(p_.nodes, kids, in, &rect_);  // (sets the kids' only)
+        for (int k : kids) Position(static_cast<size_t>(k), p);
     }
 
     // Mermaid's ordinal scales by name: fills (and borders) handed out to

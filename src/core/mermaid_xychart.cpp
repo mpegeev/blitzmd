@@ -212,13 +212,13 @@ std::vector<double> NiceTicks(double start, double stop) {
         double i1 = std::round(start * inc), i2 = std::round(stop * inc);
         if (i1 / inc < start) ++i1;
         if (i2 / inc > stop) --i2;
-        for (double i = i1; i <= i2 && out.size() < 100; ++i) out.push_back(i / inc);
+        for (double i = i1; i <= i2 && out.size() < 100 && (out.empty() || i / inc > out.back()); ++i) out.push_back(i / inc);
     } else {
         const double inc = std::pow(10.0, power) * factor;
         double i1 = std::round(start / inc), i2 = std::round(stop / inc);
         if (i1 * inc < start) ++i1;
         if (i2 * inc > stop) --i2;
-        for (double i = i1; i <= i2 && out.size() < 100; ++i) out.push_back(i * inc);
+        for (double i = i1; i <= i2 && out.size() < 100 && (out.empty() || i * inc > out.back()); ++i) out.push_back(i * inc);
     }
     return out;
 }
