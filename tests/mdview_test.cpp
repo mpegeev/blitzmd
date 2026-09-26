@@ -2616,6 +2616,20 @@ int main(int argc, char** ansi_argv) {
                 }().c_str());
             }
         }
+        {  // flowchart: an edge between a subgraph and one of its own nodes is
+           // drawn whichever node it is (it vanished for the first one)
+            std::wstring error;
+            auto shapes = [&](const wchar_t* edge) {
+                const auto scene = layout(std::wstring(L"flowchart TD\nsubgraph X\nA\nB\nend\nC --> B\n") + edge + L"\n", &error);
+                return scene ? scene->shapes.size() : size_t{0};
+            };
+            const size_t to_a = shapes(L"X --> A"), to_b = shapes(L"X --> B"), from_a = shapes(L"A --> X");
+            std::printf("  subgraph to its node: %zu, %zu and %zu shapes\n", to_a, to_b, from_a);
+            if (to_a == 0 || to_a != to_b || from_a != to_b) {
+                std::printf("FAIL: flowchart: an edge between a subgraph and its node is lost\n");
+                ++failures;
+            }
+        }
         {  // gantt: a vert label wider than the chart stays inside the diagram
             std::wstring error;
             const auto scene = layout(L"gantt\ndateFormat YYYY-MM-DD\nsection S\nTask : a, 2024-01-01, 2d\n" +
