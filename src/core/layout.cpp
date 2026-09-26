@@ -727,31 +727,43 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
             while (j + 1 < nr && (b->runs[j + 1].flags & (kSup | kSub)) == kind && !(b->runs[j + 1].flags & kMath)) ++j;
             const uint32_t s0 = b->runs[i].start;
             const uint32_t s1 = std::min<uint32_t>(b->runs[j].start + b->runs[j].length, len);
-            if (s1 > s0) {
+            // A box over [a0, a1) of the raised text.
+            auto make_box = [&](uint32_t a0, uint32_t a1) {
                 const float sub_size = st.size * 0.75f;
                 IDWriteTextFormat* sf = Format(family, sub_size, st.weight, st.italic);
                 ComPtr<IDWriteTextLayout> sl;
-                if (sf && SUCCEEDED(dw_->CreateTextLayout(text.c_str() + s0, s1 - s0, sf, kHugeWidth,
-                                                          kHugeWidth, &sl))) {
-                    sl->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-                    for (size_t k = i; k <= j; ++k) {
-                        const StyleRun& r = b->runs[k];
-                        const uint32_t a = std::max(r.start, s0) - s0;
-                        const uint32_t e = std::min(r.start + r.length, s1) - s0;
-                        if (e <= a) continue;
-                        const DWRITE_TEXT_RANGE rg{a, e - a};
-                        if (r.flags & kBold) sl->SetFontWeight(DWRITE_FONT_WEIGHT_SEMI_BOLD, rg);
-                        if (r.flags & kItalic) sl->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, rg);
-                        if (r.flags & (kCode | kKbd)) sl->SetFontFamilyName(mono_family_.c_str(), rg);
-                        if (r.link >= 0 && palette_) sl->SetDrawingEffect(palette_->Brush(kColorLink), rg);
-                    }
-                    const float shift = kind == kSup ? sub_size * 0.5f : -sub_size * 0.25f;
-                    const FamilyMetrics& fm = MetricsOf(family);
-                    auto* obj = new TextBoxObject(this, std::move(sl), shift, st.size * fm.ascent, st.size * fm.descent);
-                    layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{s0, s1 - s0});
-                    obj->Release();
+                if (!sf || FAILED(dw_->CreateTextLayout(text.c_str() + a0, a1 - a0, sf, kHugeWidth, kHugeWidth, &sl))) {
+                    return;
                 }
+                sl->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+                for (size_t k = i; k <= j; ++k) {
+                    const StyleRun& r = b->runs[k];
+                    const uint32_t a = std::max(r.start, a0) - a0;
+                    const uint32_t e = std::min(r.start + r.length, a1) - a0;
+                    if (r.start + r.length <= a0 || r.start >= a1 || e <= a) continue;
+                    const DWRITE_TEXT_RANGE rg{a, e - a};
+                    if (r.flags & kBold) sl->SetFontWeight(DWRITE_FONT_WEIGHT_SEMI_BOLD, rg);
+                    if (r.flags & kItalic) sl->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, rg);
+                    if (r.flags & (kCode | kKbd)) sl->SetFontFamilyName(mono_family_.c_str(), rg);
+                    if (r.link >= 0 && palette_) sl->SetDrawingEffect(palette_->Brush(kColorLink), rg);
+                }
+                const float shift = kind == kSup ? sub_size * 0.5f : -sub_size * 0.25f;
+                const FamilyMetrics& fm = MetricsOf(family);
+                auto* obj = new TextBoxObject(this, std::move(sl), shift, st.size * fm.ascent, st.size * fm.descent);
+                layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{a0, a1 - a0});
+                obj->Release();
+            };
+            // One box per stretch between the inline objects inside (images,
+            // flags): an object would split a box over it, and each piece of
+            // the box would draw all of its text.
+            uint32_t a = s0;
+            auto it = std::lower_bound(b->objects.begin(), b->objects.end(), s0,  // (in text order)
+                                       [](const InlineObject& o, uint32_t p) { return o.pos + o.length <= p; });
+            for (; it != b->objects.end() && it->pos < s1; ++it) {
+                if (it->pos > a) make_box(a, it->pos);
+                a = std::max(a, it->pos + it->length);
             }
+            if (a < s1) make_box(a, s1);
             i = j + 1;
         }
     }

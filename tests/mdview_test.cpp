@@ -1211,6 +1211,42 @@ int main(int argc, char** ansi_argv) {
                 std::printf("FAIL: %s -> \"%s\" (expected \"%s\")\n", c.md, got.c_str(), c.keys);
             }
         }
+        {
+            // An object inside <sup> (a picture): the raised text around it is
+            // laid out once. A box split by the object used to take its whole
+            // text on each side of it, making the line nearly twice as wide.
+            ComPtr<IDWriteFactory> dw;
+            DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                reinterpret_cast<IUnknown**>(dw.GetAddressOf()));
+            auto line_width = [&](const std::string& md) {
+                auto d = ParseMarkdown(md, L"C:\\sup.md");
+                Palette palette;
+                ImageStore images;
+                images.Attach(d.get(), nullptr, false, false);
+                images.LoadAll();
+                LayoutEngine le;
+                le.Init(dw.Get(), &palette, &images);
+                LayoutConfig cfg;
+                cfg.max_content_width = 0;
+                le.SetConfig(cfg);
+                le.SetDocument(d.get());
+                le.Layout(3000.f, 0, 1e6f);
+                LeafState* st = d->leaves.empty() ? nullptr : le.State(d->leaves[0]);
+                DWRITE_TEXT_METRICS tm{};
+                if (st && st->layout) st->layout->GetMetrics(&tm);
+                return tm.widthIncludingTrailingWhitespace;
+            };
+            const std::string a(40, 'A'), b(40, 'B');
+            const float plain = line_width("x<sup>" + a + " " + b + "</sup> y");
+            const float with_image = line_width(
+                "x<sup>" + a + " ![i](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+                "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==) " + b + "</sup> y");
+            std::printf("<sup> with a picture: line %.0f wide, %.0f without it\n", with_image, plain);
+            if (!(plain > 0 && with_image > plain && with_image < plain * 1.3f)) {
+                std::printf("FAIL: the text of a <sup> around a picture is laid out twice\n");
+                ++failures;
+            }
+        }
         // The whole set: every region code that exists unpacks and parses.
         std::vector<std::string> keys;
         for (char a = 'a'; a <= 'z'; ++a) {
