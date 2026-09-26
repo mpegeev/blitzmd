@@ -25,6 +25,10 @@ constexpr double kMaxTime = 4e14;  // about ±12,700 years (Mermaid takes years 
 // Rows of the chart: more than a readable chart has, and each task steps
 // through its days when days are excluded.
 constexpr size_t kMaxTasks = 500;
+// dateFormat and axisFormat: real ones are a few tokens. A date is matched
+// against the whole format (each date of an excludes list too), and every
+// axis label is the whole format expanded (%c tenfold), for each tick.
+constexpr size_t kMaxFormat = 100;
 
 // Days since 1970-01-01 of a civil date (proleptic Gregorian).
 long long DaysFromCivil(long long y, unsigned m, unsigned d) {
@@ -435,10 +439,14 @@ private:
         }
         std::wstring value;
         if (setting(L"dateFormat", &value)) {
+            if (value.size() > kMaxFormat) c_.Fail(Tr(L"Format too long", L"Слишком длинный формат"));
             date_format = value;
             return;
         }
-        if (setting(L"axisFormat", &axis_format)) return;
+        if (setting(L"axisFormat", &axis_format)) {
+            if (axis_format.size() > kMaxFormat) c_.Fail(Tr(L"Format too long", L"Слишком длинный формат"));
+            return;
+        }
         if (setting(L"tickInterval", &tick_interval)) return;
         if (setting(L"excludes", &value)) {
             days_.push_back({value, true});
