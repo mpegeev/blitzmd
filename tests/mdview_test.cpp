@@ -1551,6 +1551,10 @@ int main(int argc, char** ansi_argv) {
             {"\\big( \\Bigr]", "list(delim:(,delim:])"},
             {"\\alpha\\Gamma\\partial", "list(g:𝛼,g:Γ,g:𝜕)"},
             {"\\lim_{x\\to 0}", "list(scripts(text:lim,list(g:𝑥,g:→,g:0),list))"},
+            {"\\color[rgb]{red}x", "list(g:𝑥)"},  // not black
+            {"a^\\color{red} b c", "list(scripts(g:𝑎,list,list),g:𝑏,g:𝑐)"},  // the switch ends with the token
+            {"\\hspace{10bp}\\kern2PC x", "list(space:18,space:43,g:𝑥)"},
+            {"\\kern xy", "list(space:0,g:𝑥,g:𝑦)"},  // no number: no unit either
         };
         for (const Case& c : cases) {
             const std::string got = WideToUtf8(DumpMath(ParseTex(Utf8ToWide(c.tex))));
@@ -1691,6 +1695,15 @@ int main(int argc, char** ansi_argv) {
             }
             if (checked < 6) {
                 std::printf("FAIL: only %zu formulas placed\n", checked);
+                ++failures;
+            }
+        }
+        {
+            // {\sum} is an ordinary atom: its scripts go to the side, not above and below.
+            const float op = ts.Layout(L"\\sum_i^n", true, 16.f)->width;
+            const float ord = ts.Layout(L"{\\sum}_i^n", true, 16.f)->width;
+            if (!(ord > op + 2)) {
+                std::printf("FAIL: {\\sum}_i^n takes limits (%.1f vs %.1f wide)\n", ord, op);
                 ++failures;
             }
         }
