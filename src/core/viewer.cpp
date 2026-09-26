@@ -275,6 +275,11 @@ private:
     D2D1_RECT_F ScrollbarTrack() const;
     D2D1_RECT_F ScrollbarThumb() const;
     void SetHoverLink(Block* leaf, int link);
+    // Whether viewer `v` still exists after a modal loop (a menu, a message
+    // box, a dialog): Total Commander may close it meanwhile, deleting the
+    // object. `hwnd` is its window read before the loop. Static, and only the
+    // pointer value is compared: `v` may be gone.
+    static bool Survived(HWND hwnd, const Viewer* v) { return ViewerFromHwnd(hwnd) == v; }
     void OpenLink(int link_index);
     void NavigateTo(const std::wstring& path, const std::wstring& fragment);
     bool JumpToAnchor(const std::wstring& fragment);
@@ -1561,28 +1566,34 @@ void Viewer::OnLButtonUp(int px, int py) {
         Invalidate();
         return;
     }
-    if (!was_click) return;
-    const Hit hit = HitTest(px / Scale(), py / Scale() + scroll_y_);
-    if (down_link_ >= 0 && hit.link == down_link_ && click_count_ == 1) {
-        selection_ = {};
-        OpenLink(down_link_);
-    } else if (down_summary_ && hit.summary == down_summary_ && click_count_ == 1) {
-        selection_ = {};
-        ToggleDetails(down_summary_);
-    } else if (down_image_ >= 0 && hit.image == down_image_ && hit.link < 0 && click_count_ == 1) {
-        // Like GitHub: clicking a picture that isn't a link opens the image.
-        // Local files only with an image extension: a file that also decodes
-        // as a picture may still be something else to the shell.
-        const ImageEntry* e = images_.Entry(down_image_);
-        if (e && !e->url.empty() && !StartsWithNoCase(e->url, L"data:") && e->state == ImageState::Ready &&
-            (e->remote || IsImagePath(e->url))) {
-            selection_ = {};
-            ShellExecuteW(hwnd_, L"open", e->url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-        }
-    }
+    // The press state is cleared first: opening a link may run a modal loop
+    // (a message box, ShellExecute's own prompts) in which Total Commander
+    // can close the viewer, so nothing may touch `this` after it.
+    const int link = down_link_, image = down_image_;
+    Block* const summary = down_summary_;
     down_link_ = -1;
     down_summary_ = nullptr;
     down_image_ = -1;
+    if (!was_click) return;
+    const Hit hit = HitTest(px / Scale(), py / Scale() + scroll_y_);
+    if (link >= 0 && hit.link == link && click_count_ == 1) {
+        selection_ = {};
+        OpenLink(link);
+    } else if (summary && hit.summary == summary && click_count_ == 1) {
+        selection_ = {};
+        ToggleDetails(summary);
+    } else if (image >= 0 && hit.image == image && hit.link < 0 && click_count_ == 1) {
+        // Like GitHub: clicking a picture that isn't a link opens the image.
+        // Local files only with an image extension: a file that also decodes
+        // as a picture may still be something else to the shell.
+        const ImageEntry* e = images_.Entry(image);
+        if (e && !e->url.empty() && !StartsWithNoCase(e->url, L"data:") && e->state == ImageState::Ready &&
+            (e->remote || IsImagePath(e->url))) {
+            selection_ = {};
+            const std::wstring url = e->url;  // not ours to keep if the viewer goes meanwhile
+            ShellExecuteW(hwnd_, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
+    }
 }
 
 void Viewer::SelectWordAt(const Hit& hit) {
@@ -1690,7 +1701,9 @@ void Viewer::NavigateTo(const std::wstring& path, const std::wstring& fragment) 
         const std::wstring msg = std::wstring(Tr(L"The link points to a program or script:\n\n",
                                                  L"Ссылка указывает на программу или скрипт:\n\n")) +
                                  path + Tr(L"\n\nRun it?", L"\n\nЗапустить?");
-        if (MessageBoxW(hwnd_, msg.c_str(), L"mdview", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+        const HWND self = hwnd_;
+        if (MessageBoxW(self, msg.c_str(), L"mdview", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+        if (!Survived(self, this)) return;
     }
     ShellExecuteW(hwnd_, L"open", path.c_str(), nullptr, DirectoryOf(path).c_str(), SW_SHOWNORMAL);
 }
@@ -1978,9 +1991,10 @@ void Viewer::FullViewMenu(POINT pt) {
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kMenuCloseView, Tr(L"&Close\tEsc", L"&Закрыть\tEsc"));
     const uint32_t gen = doc_gen_;
-    const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
+    const HWND self = hwnd_;
+    const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, self, nullptr);
     DestroyMenu(menu);
-    if (gen != doc_gen_ || !full_.active()) return;
+    if (!Survived(self, this) || gen != doc_gen_ || !full_.active()) return;
     switch (cmd) {
     case kMenuResetView: FullViewButton(ZoomButton::Reset); break;
     case kMenuCopyImage: CopyTextToClipboard(hwnd_, images_.ResolvedUrl(full_.object->image)); break;
@@ -2323,8 +2337,10 @@ void Viewer::OnContextMenu(int sx, int sy) {
     AppendMenuW(menu, MF_STRING, kMenuAbout, L"mdview " MDVIEW_VERSION L"…");
 
     const uint32_t gen = doc_gen_;
-    const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd_, nullptr);
+    const HWND self = hwnd_;
+    const UINT cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, self, nullptr);
     DestroyMenu(menu);
+    if (!Survived(self, this)) return;  // closed meanwhile
     if (gen != doc_gen_) return;  // reloaded meanwhile: `hit` and `toc` are stale
     // Menu switches apply to every open viewer, like the settings dialog.
     auto change = [](auto&& edit) {
@@ -2390,7 +2406,10 @@ void Viewer::OnContextMenu(int sx, int sy) {
     case kMenuReload: Reload(); break;
     case kMenuAutoReload: change([](Settings& ws) { ws.auto_reload = !ws.auto_reload; }); break;
     case kMenuOpenExternal:
-        if (!path_.empty()) ShellExecuteW(hwnd_, L"edit", path_.c_str(), nullptr, nullptr, SW_SHOWNORMAL) ;
+        if (!path_.empty()) {
+            const std::wstring path = path_;  // ShellExecute may outlive the viewer (see OnLButtonUp)
+            ShellExecuteW(hwnd_, L"edit", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        }
         break;
     case kMenuSettings: ShowSettingsDialog(hwnd_); break;  // the viewer may be gone afterwards
     case kMenuAbout: {
@@ -2731,14 +2750,17 @@ bool Viewer::Print(const wchar_t* /*printer*/, const RECT* margins) {
     const std::wstring title = slash == std::wstring::npos ? path_ : path_.substr(slash + 1);
     const ScrollAnchor anchor = CaptureAnchor();
     // The print layout borrows the document's block boxes; the dialogs' modal
-    // loops must not paint or re-lay-out the viewer meanwhile.
+    // loops must not paint or re-lay-out the viewer meanwhile. They may also
+    // close it (PrintDocument gives up then).
     bool ok = false;
+    const HWND self = hwnd_;
     printing_ = true;
     try {
-        ok = PrintDocument(hwnd_, *doc_, cfg, title, margins);
+        ok = PrintDocument(self, *doc_, cfg, title, margins);
     } catch (...) {
         ok = false;
     }
+    if (!Survived(self, this)) return ok;
     printing_ = false;
     Relayout(false);
     RestoreAnchor(anchor);

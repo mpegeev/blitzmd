@@ -134,7 +134,10 @@ bool PrintDocument(HWND owner, Document& doc, const LayoutConfig& config, const 
         if (pd.hDevMode) GlobalFree(pd.hDevMode);
         if (pd.hDevNames) GlobalFree(pd.hDevNames);
     };
-    if (!dc) {
+    // The owner (the viewer, which owns `doc`) may have been closed while a
+    // dialog was up: here, and in StartDoc (a printer to a file asks for its
+    // name). Nothing touches `doc` before both.
+    if (!dc || !IsWindow(owner)) {
         cleanup();
         return false;
     }
@@ -159,12 +162,6 @@ bool PrintDocument(HWND owner, Document& doc, const LayoutConfig& config, const 
     const float width_dip = content_w * 96.f / dpi_x;
     const float page_h_dip = content_h * 96.f / dpi_y;
 
-    PageRenderer pr;
-    if (!pr.Init(doc, config, width_dip, render_dpi, 512)) {
-        cleanup();
-        return false;
-    }
-    const auto pages = pr.Paginate(page_h_dip);
     DOCINFOW di{};
     di.cbSize = sizeof di;
     di.lpszDocName = title.c_str();
@@ -172,6 +169,13 @@ bool PrintDocument(HWND owner, Document& doc, const LayoutConfig& config, const 
         cleanup();
         return false;
     }
+    PageRenderer pr;
+    if (!IsWindow(owner) || !pr.Init(doc, config, width_dip, render_dpi, 512)) {
+        AbortDoc(dc);
+        cleanup();
+        return false;
+    }
+    const auto pages = pr.Paginate(page_h_dip);
     HFONT font = CreateFontW(-MulDiv(8, dpi_y, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                              OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
     const float band_dip = static_cast<float>(pr.band_px()) / pr.scale();
