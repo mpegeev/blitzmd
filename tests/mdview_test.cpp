@@ -1183,6 +1183,8 @@ int main(int argc, char** ansi_argv) {
             {"x<sup>\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8</sup>", ""},
             {"`\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8`", "us"},
             {":ru: and :jp:", "ru jp"},
+            // In a diagram's source (its object covers it): drawn by the diagram.
+            {"```mermaid\nflowchart LR\nA[\"\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8 USA\"] --> B\n```", ""},
             {"\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8", "us us"},
         };
         for (const Case& c : cases) {
