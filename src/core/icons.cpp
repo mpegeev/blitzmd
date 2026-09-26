@@ -219,6 +219,7 @@ public:
                 open = false;
                 cx = sx;
                 cy = sy;
+                cmd = 0;  // takes no numbers: one after it is an error (it looped forever)
                 break;
             default:
                 return false;
