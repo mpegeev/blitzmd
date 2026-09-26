@@ -2871,6 +2871,13 @@ int main(int argc, char** ansi_argv) {
             L"eventmodeling\n" + repeat(L"tf 01 evt S.E ->> 01\n", 44),  // 44 frames from all 44: 1936 arrows
             // Frames naming one that comes later (no arrow): a box was looked up per frame (3 s).
             L"eventmodeling\n" + repeat(L"tf 998 evt a ->> 999\n", 1333) + repeat(L"tf 999 evt a\n", 667),
+            // One class line naming 12 450 elements and 12 450 classes: each
+            // element got all of them (24 s and 7.6 GB for ER: #141).
+            L"erDiagram\ne\nclass " + repeat(L"e,", 12449) + L"e " + repeat(L"c,", 12449) + L"c",
+            L"block-beta\ne\nclass " + repeat(L"e,", 12449) + L"e " + repeat(L"c,", 12449) + L"c",
+            L"requirementDiagram\nelement e {\n}\nclass " + repeat(L"e,", 12449) + L"e " + repeat(L"c,", 12449) + L"c",
+            L"flowchart TD\ne\nclass " + repeat(L"e,", 12449) + L"e " + std::wstring(24900, L'c'),
+            L"classDiagram\nclass e\ncssClass " + repeat(L"e,", 12449) + L"e " + std::wstring(24900, L'c'),
         };
         for (const std::wstring& h : hostile) {
             const double t0 = NowMs();

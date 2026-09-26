@@ -5,6 +5,7 @@
 #include <d2d1.h>
 #include <dwrite.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -50,6 +51,25 @@ constexpr size_t kMermaidMaxEdges = 500;
 constexpr size_t kMaxLines = 2000;
 constexpr size_t kMaxLabel = 4000;   // characters of one label
 constexpr int kMaxNesting = 24;
+// Class names given to elements (class a,b c,d; a,b:::c): each element keeps
+// its own copy, so one line naming thousands of elements and thousands of
+// classes costs their product (8 GB at 50 000 characters). Characters given
+// out per diagram, at most:
+constexpr size_t kMaxClassChars = size_t{1} << 20;
+
+// Counts `elements` getting class names of `chars` characters in `used`
+// (the diagram's), before they are given: too many is "too large".
+inline void ChargeClasses(size_t& used, size_t elements, size_t chars) {
+    const size_t cost = elements * std::max<size_t>(chars, 1);  // (both under the source's 50 000)
+    if (cost > kMaxClassChars - std::min(used, kMaxClassChars)) TooLarge();
+    used += cost;
+}
+// Characters of a list of class names.
+inline size_t ClassChars(const std::vector<std::wstring>& names) {
+    size_t n = 0;
+    for (const std::wstring& s : names) n += s.size() + 1;
+    return n;
+}
 
 // The source with its front matter (--- title: ... ---) and %%{...}%%
 // directives set aside; positions refer to the whole source.

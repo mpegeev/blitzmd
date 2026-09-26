@@ -125,6 +125,7 @@ private:
             const std::vector<std::wstring> ids = Names();
             c_.SkipBlanks();
             const std::vector<std::wstring> names = Names();
+            ChargeClasses(class_chars_, ids.size(), ClassChars(names));
             for (const std::wstring& id : ids) {
                 std::vector<std::wstring>* classes = ClassesOf(id);
                 if (classes) classes->insert(classes->end(), names.begin(), names.end());
@@ -513,6 +514,7 @@ private:
     const Source& src_;
     Cursor c_;
     std::unordered_map<std::wstring, int> ids_;
+    size_t class_chars_ = 0;  // ChargeClasses
     std::vector<std::pair<int, size_t>> open_;  // subgraphs being read, where each opened
     std::vector<std::vector<int>> named_;       // per subgraph being read: the entities named in it
 };

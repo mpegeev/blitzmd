@@ -82,6 +82,7 @@ public:
                 const std::vector<std::wstring> ids = Names();
                 c_.SkipBlanks();
                 const std::vector<std::wstring> names = Names();
+                ChargeClasses(class_chars_, ids.size(), ClassChars(names));
                 for (const std::wstring& id : ids) {
                     if (auto it = ids_.find(id); it != ids_.end()) {
                         auto& c = blocks[static_cast<size_t>(it->second)].classes;
@@ -335,6 +336,7 @@ private:
     const Source& src_;
     Cursor c_;
     std::unordered_map<std::wstring, int> ids_;
+    size_t class_chars_ = 0;  // ChargeClasses
 };
 
 // ---------------------------------------------------------------------------

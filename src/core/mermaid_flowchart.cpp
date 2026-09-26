@@ -327,6 +327,7 @@ private:
         std::vector<std::wstring> ids = Names();
         c_.SkipBlanks();
         const std::wstring name(c_.LineRest());
+        ChargeClasses(class_chars_, ids.size(), name.size());
         // Only for what exists by now, as in Mermaid.
         for (const std::wstring& id : ids) {
             if (auto it = cluster_ids_.find(id); it != cluster_ids_.end()) {
@@ -818,6 +819,7 @@ private:
     Cursor c_;
     std::vector<int> open_;  // subgraphs being read
     std::unordered_map<std::wstring, int> node_ids_, cluster_ids_;
+    size_t class_chars_ = 0;  // ChargeClasses
     std::unordered_map<std::wstring, int> edge_ids_;  // v11: A e1@--> B
 };
 
