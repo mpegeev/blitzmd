@@ -184,3 +184,17 @@ title: x
 <hr />
 <h2>title: x</h2>
 ````````````````````````````````
+
+## HTML lists
+
+The start number of an HTML list is kept within nine digits, like a
+Markdown list's, so the numbers of its items can't overflow.
+
+```````````````````````````````` example
+<ol start="2147483647"><li>a</li><li>b</li></ol>
+.
+<ol start="999999999">
+<li>a</li>
+<li>b</li>
+</ol>
+````````````````````````````````
