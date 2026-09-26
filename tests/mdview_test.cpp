@@ -3263,6 +3263,44 @@ int main(int argc, char** ansi_argv) {
         std::printf("%s\n", WideToUtf8(DumpMath(ParseTex(Utf8ToWide(argv[2])))).c_str());
         return 0;
     }
+    if (cmd == "heavy") {
+        // heavy <limit-ms>: documents whose single paragraph or code block
+        // holds tens of thousands of formatted pieces show their first screen
+        // in bounded time (DirectWrite pays per formatted range).
+        const double limit = std::atof(argv[2]);
+        auto repeat = [](const std::string& s, int n) {
+            std::string out;
+            out.reserve(s.size() * static_cast<size_t>(n));
+            for (int i = 0; i < n; ++i) out += s;
+            return out;
+        };
+        const struct {
+            const char* name;
+            std::string md;
+        } cases[] = {
+            {"50k footnote references", "x" + repeat(" [^1]", 50000) + "\n\n[^1]: note\n"},
+            {"50k links", "x" + repeat(" [a](#b)", 50000) + "\n"},
+            {"40k formulas", "x" + repeat(" $x$", 40000) + "\n"},
+            {"8000 lines of code", "```js\n" + repeat("const value = compute(alpha, \"text\", 42) + other.field; // note\n", 8000) + "```\n"},
+        };
+        int failures = 0;
+        for (const auto& c : cases) {
+            auto doc = ParseMarkdown(c.md, L"C:\\heavy.md");
+            OffscreenOptions o;
+            o.width = 900.f;
+            o.max_height = 1200.f;
+            const double t0 = NowMs();
+            ComPtr<IWICBitmap> bmp = RenderToBitmap(*doc, o);
+            const double ms = NowMs() - t0;
+            std::printf("  %s: %.0f ms\n", c.name, ms);
+            if (!bmp || ms > limit) {
+                std::printf("FAIL: %s: %s in %.0f ms\n", c.name, bmp ? "too slow" : "not rendered", ms);
+                ++failures;
+            }
+        }
+        std::printf(failures ? "heavy: %d FAILED\n" : "heavy OK\n", failures);
+        return failures ? 1 : 0;
+    }
     if (cmd == "fuzz") {
         // fuzz <iterations> [seed]: random markdown built from hostile
         // snippets through parse + layout + render at random widths.

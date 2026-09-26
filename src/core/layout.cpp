@@ -660,24 +660,40 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
     layout.As(&l1);
     const std::wstring& text = b->text;
 
+    // DirectWrite pays for each formatted range with a pass over the ranges
+    // before it: tens of thousands in one paragraph or code block take
+    // seconds to lay out (85k: 14 s). Past this many, the rest of a leaf
+    // stays plain: no colors or fonts, <sup> not raised, formulas and flags
+    // as their characters (links still work). Images and diagrams always.
+    size_t ranges_left = 20000;
+    auto spend = [&ranges_left] {
+        if (ranges_left == 0) return false;
+        --ranges_left;
+        return true;
+    };
+
     // Character formatting.
     for (const StyleRun& r : b->runs) {
         if (r.length == 0 || r.start >= len) continue;
         const DWRITE_TEXT_RANGE rg{r.start, std::min(r.length, len - r.start)};
         const uint32_t f = r.flags;
-        if (f & kBold) layout->SetFontWeight(static_cast<DWRITE_FONT_WEIGHT>(WeightFor(f, st.weight)), rg);
-        if (f & kItalic) layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, rg);
-        if (f & kStrike) layout->SetStrikethrough(TRUE, rg);
-        if (f & kUnderline) layout->SetUnderline(TRUE, rg);
         const float size = RunFontSize(st.size, f);
-        if (f & (kCode | kKbd)) layout->SetFontFamilyName(mono_family_.c_str(), rg);
-        if (f & kMath) layout->SetFontFamilyName(L"Cambria Math", rg);
-        if (size != st.size) layout->SetFontSize(size, rg);
         uint8_t color = 0xFF;
         if (r.token) color = static_cast<uint8_t>(kColorSyntaxBase + r.token);
         if (f & kMuted) color = kColorMuted;
         if (f & kMark) color = kColorMarkText;
         if (r.link >= 0) color = kColorLink;
+        if (!(f & (kBold | kItalic | kStrike | kUnderline | kCode | kKbd | kMath)) && size == st.size && color == 0xFF) {
+            continue;
+        }
+        if (!spend()) break;
+        if (f & kBold) layout->SetFontWeight(static_cast<DWRITE_FONT_WEIGHT>(WeightFor(f, st.weight)), rg);
+        if (f & kItalic) layout->SetFontStyle(DWRITE_FONT_STYLE_ITALIC, rg);
+        if (f & kStrike) layout->SetStrikethrough(TRUE, rg);
+        if (f & kUnderline) layout->SetUnderline(TRUE, rg);
+        if (f & (kCode | kKbd)) layout->SetFontFamilyName(mono_family_.c_str(), rg);
+        if (f & kMath) layout->SetFontFamilyName(L"Cambria Math", rg);
+        if (size != st.size) layout->SetFontSize(size, rg);
         if (color != 0xFF && palette_ && palette_->Brush(color)) {
             layout->SetDrawingEffect(palette_->Brush(color), rg);
         }
@@ -702,6 +718,7 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
             const uint32_t s0 = b->runs[i].start;
             const uint32_t s1 = b->runs[j].start + b->runs[j].length;
             if (s1 > s0 && s1 <= len) {
+                if (!spend()) break;
                 const float pad = (kind & kKbd) ? m_.kbd_pad : m_.inline_code_pad;
                 const float gap = pad + 1.f;  // pad inside the pill + 1 DIP outside
                 if (s1 - s0 == 1) {
@@ -731,6 +748,7 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
             const uint32_t s1 = std::min<uint32_t>(b->runs[j].start + b->runs[j].length, len);
             // A box over [a0, a1) of the raised text.
             auto make_box = [&](uint32_t a0, uint32_t a1) {
+                if (!spend()) return;
                 const float sub_size = st.size * 0.75f;
                 IDWriteTextFormat* sf = Format(family, sub_size, st.weight, st.italic);
                 ComPtr<IDWriteTextLayout> sl;
@@ -790,6 +808,7 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
             continue;
         }
         if (o.math >= 0) {
+            if (!spend()) continue;
             const std::shared_ptr<const MathBox> box = MathFormula(o.math);
             if (!box) continue;  // no math font: the source stays visible
             // In <sup>/<sub>: smaller, and raised or lowered like the text there.
@@ -811,6 +830,7 @@ ComPtr<IDWriteTextLayout> LayoutEngine::BuildTextLayout(Block* b, const LeafStyl
         }
         if (o.image < 0) continue;
         if (o.length > 1) {
+            if (!spend()) continue;  // (a flag: its letters)
             const FamilyMetrics& fm = MetricsOf(family);
             auto* obj = new EmojiObject(this, o.image, run_size(), st.size * fm.ascent, st.size * fm.descent);
             layout->SetInlineObject(obj, DWRITE_TEXT_RANGE{o.pos, o.length});

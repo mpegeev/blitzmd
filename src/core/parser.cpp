@@ -675,7 +675,11 @@ void Builder::AddFootnoteBackrefs(Block* def) {
         target->parent = def;
         def->children.push_back(target);
     }
-    const int refs = std::max(1, def->ref_count);
+    // One back link per reference, as on GitHub, up to a bound: each is a
+    // link and a raised number, and thousands in one paragraph make its
+    // layout crawl.
+    constexpr int kMaxBackrefs = 100;
+    const int refs = std::clamp(def->ref_count, 1, kMaxBackrefs);
     for (int r = 1; r <= refs; ++r) {
         Link link;
         link.url = L"#fnref-" + std::to_wstring(def->number) + L"-" + std::to_wstring(r);
