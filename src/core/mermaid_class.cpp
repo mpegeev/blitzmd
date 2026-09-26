@@ -178,6 +178,7 @@ private:
             }
             c_.SkipBlanks();
             const std::wstring name(c_.LineRest());
+            ChargeClasses(class_chars_, ids.size(), name.size());
             for (const std::wstring& id : ids) {
                 if (auto it = ids_.find(id); it != ids_.end()) classes[static_cast<size_t>(it->second)].classes.push_back(name);
             }
@@ -525,6 +526,7 @@ private:
     const Source& src_;
     Cursor c_;
     std::unordered_map<std::wstring, int> ids_;
+    size_t class_chars_ = 0;  // ChargeClasses
     std::vector<int> open_;         // namespaces being read
     std::vector<size_t> open_at_;   // where their '{' is
     bool opened_ = false;           // the statement just read opened one
