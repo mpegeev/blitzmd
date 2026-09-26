@@ -346,7 +346,9 @@ private:
     void AppendToLeaf(Block* leaf, std::wstring_view s, uint32_t flags, int32_t link);
     void Append(std::wstring_view s, uint32_t extra_flags = 0);
     void AppendNormal(std::wstring_view s);
-    void FlushText();
+    void FlushText();  // both of these:
+    void FlushInlineHtml();
+    void FlushPendingText();
     void AppendMath(const std::wstring& tex, bool display);
     void AddMath(Block* leaf, const std::wstring& tex, std::wstring source, bool display);
     void AppendImage(ImageRef img);
@@ -384,6 +386,9 @@ private:
     std::vector<int32_t> links_;
     std::vector<bool> a_has_href_;
     std::wstring pending_text_;  // buffered MD_TEXT_NORMAL (for emoji shortcodes)
+    // Buffered inline MD_TEXT_HTML: md4c hands a tag spanning lines over in
+    // pieces ("<a", "\n", "href=...>"), parsed together once complete.
+    std::string inline_html_;
 
     int image_depth_ = 0;
     ImageRef pending_image_;
@@ -775,10 +780,22 @@ void Builder::AddMath(Block* leaf, const std::wstring& tex, std::wstring source,
 }
 
 void Builder::FlushText() {
+    FlushInlineHtml();
+    FlushPendingText();
+}
+
+void Builder::FlushPendingText() {
     if (pending_text_.empty()) return;
     std::wstring t;
     t.swap(pending_text_);
     AppendNormal(t);
+}
+
+void Builder::FlushInlineHtml() {
+    if (inline_html_.empty()) return;
+    std::string html;
+    html.swap(inline_html_);  // (ProcessHtml may flush text again)
+    ProcessHtml(html, false);
 }
 
 void Builder::AppendImage(ImageRef img) {
@@ -1107,6 +1124,7 @@ int Builder::Text(MD_TEXTTYPE type, std::string_view s) {
         html_buf_.append(s);
         return 0;
     }
+    if (type != MD_TEXT_HTML) FlushInlineHtml();  // what came before goes first
     if (math_depth_ > 0 && image_depth_ == 0) {
         if (type == MD_TEXT_SOFTBR || type == MD_TEXT_BR) math_buf_.push_back(L' ');
         else if (type == MD_TEXT_ENTITY) {
@@ -1122,7 +1140,7 @@ int Builder::Text(MD_TEXTTYPE type, std::string_view s) {
             return 0;
         }
     }
-    FlushText();
+    FlushPendingText();  // (inline HTML: flushed above, or growing)
 
     if (image_depth_ > 0) {
         switch (type) {
@@ -1162,7 +1180,7 @@ int Builder::Text(MD_TEXTTYPE type, std::string_view s) {
         break;
     }
     case MD_TEXT_HTML:
-        ProcessHtml(s, false);
+        inline_html_.append(s);  // parsed by the next other event (FlushInlineHtml)
         break;
     case MD_TEXT_LATEXMATH:
         AppendUtf8(math_buf_, s);
