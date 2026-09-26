@@ -56,7 +56,12 @@ private:
     void PopClip();
     void FillRanges(IDWriteTextLayout* tl, D2D1_POINT_2F origin, uint32_t start, uint32_t len,
                     ID2D1Brush* brush, float inset_y = 0);
-    void DrawInlineBackgrounds(Block* b, IDWriteTextLayout* tl, D2D1_POINT_2F origin);
+    // Only runs within [from, to) (the text in view: VisibleText).
+    void DrawInlineBackgrounds(Block* b, IDWriteTextLayout* tl, D2D1_POINT_2F origin, uint32_t from, uint32_t to);
+    // Text positions [from, to) of the lines of `tl` (at `origin`) in view: a
+    // leaf may be far taller than the view, and the work per paint must not
+    // grow with it.
+    void VisibleText(Block* b, IDWriteTextLayout* tl, D2D1_POINT_2F origin, uint32_t& from, uint32_t& to);
     float Snap(float v) const;
     float Hairline() const;
     ID2D1SolidColorBrush* Brush(uint8_t role) const;

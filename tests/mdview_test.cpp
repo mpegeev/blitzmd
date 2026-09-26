@@ -4064,6 +4064,8 @@ int main(int argc, char** ansi_argv) {
             // (The first layout typeset every display formula, and x'^{…} copied
             // its superscript at every level: #137.)
             {"100 display formulas x'^{x'^{…}} of 20k", repeat("$$" + repeat("x'^{", 38) + repeat("x'", 9800) + repeat("}", 38) + "$$\n\n", 100)},
+            // (Every paint hit-tested every line's background, in view or not: #142.)
+            {"diff of 66k lines", "~~~diff\n" + repeat("+x\n", 66666) + "~~~\n"},
         };
         int failures = 0;
         {
