@@ -32,6 +32,7 @@
 #include "core/layout.h"
 #include "core/mathlayout.h"
 #include "core/mermaid.h"
+#include "core/mermaid_internal.h"
 #include "core/theme.h"
 #include "core/offscreen.h"
 #include "core/parser.h"
@@ -2755,6 +2756,50 @@ int main(int argc, char** ansi_argv) {
                 ++failures;
             }
         }
+        {  // flowchart: a label longer than kMaxLabel is refused in every form
+           // (edge text, an unquoted @{ label }, a subgraph title: a scene
+           // hundreds of thousands of DIPs wide)
+            const std::wstring big(4100, L'w');
+            const std::wstring sources[] = {L"flowchart LR\nA -- " + big + L" --> B", L"flowchart LR\nA@{ label: " + big + L" }",
+                                            L"flowchart LR\nsubgraph " + big + L"\nA\nend", L"flowchart LR\nsubgraph a b " + big + L"\nA\nend"};
+            for (const std::wstring& src : sources) {
+                std::wstring error;
+                const auto scene = layout(src, &error);
+                if (scene) {
+                    std::printf("FAIL: flowchart: a %zu-character label drawn %.0f wide (%s...)\n", big.size(), scene->width,
+                                WideToUtf8(src.substr(13, 12)).c_str());
+                    ++failures;
+                }
+            }
+        }
+        {  // ClipRect: a box of no width, the other end straight above or below
+            const D2D1_POINT_2F p = mermaid::ClipRect(D2D1::Point2F(10, 10), 0, 20, D2D1::Point2F(10, 50));
+            if (!(p.x == 10 && p.y == 20)) {
+                std::printf("FAIL: ClipRect of a box of no width: %g, %g\n", p.x, p.y);
+                ++failures;
+            }
+        }
+        {  // swimlanes: nodes of one rank share a layer, however tall the nodes
+           // of another lane's first rank are
+            std::wstring error;
+            const std::wstring src =
+                L"swimlane-beta TD\nsubgraph L\na[\"1<br>2<br>3<br>4<br>5<br>6\"] --> b[B]\nend\nsubgraph R\nc[C] --> d[D]\nend\n";
+            const auto scene = layout(src, &error);
+            auto middle = [&](const wchar_t* label) {
+                const uint32_t at = static_cast<uint32_t>(src.find(label) + 1);
+                for (size_t i = 0; scene && i < scene->texts.size(); ++i) {
+                    const auto& t = scene->texts[i];
+                    if (t.src_start == at) return t.origin.y + t.h / 2;
+                }
+                return -1.f;
+            };
+            const float b = middle(L"[B]"), d = middle(L"[D]");
+            std::printf("  swimlanes: second rank at %.0f and %.0f\n", b, d);
+            if (b < 0 || d < 0 || std::fabs(b - d) > 1) {
+                std::printf("FAIL: swimlanes: nodes of one rank in different layers %s\n", WideToUtf8(error).c_str());
+                ++failures;
+            }
+        }
         {  // gantt: a vert label wider than the chart stays inside the diagram
             std::wstring error;
             const auto scene = layout(L"gantt\ndateFormat YYYY-MM-DD\nsection S\nTask : a, 2024-01-01, 2d\n" +
@@ -3562,13 +3607,17 @@ int main(int argc, char** ansi_argv) {
         return failures ? 1 : 0;
     }
     if (cmd == "mmd" && argc >= 4) {
-        // mmd <diagram.mmd> <out.png> [--dark] [--scale S]: lays out a Mermaid
-        // diagram and renders it alone.
+        // mmd <diagram.mmd> <out.png> [--dark] [--scale S] [--search TEXT]: lays
+        // out a Mermaid diagram and renders it alone (with TEXT's occurrences
+        // as search hits, the first the current one, over a selection of the
+        // source's middle third).
         bool dark = false;
         float scale = 1.5f;
+        std::wstring search;
         for (int i = 4; i < argc; ++i) {
             if (!std::strcmp(argv[i], "--dark")) dark = true;
             else if (!std::strcmp(argv[i], "--scale") && i + 1 < argc) scale = static_cast<float>(std::atof(argv[++i]));
+            else if (!std::strcmp(argv[i], "--search") && i + 1 < argc) search = Utf8ToWide(argv[++i]);
         }
         std::string bytes;
         if (!ReadFileBytes(Utf8ToWide(argv[2]).c_str(), bytes, 1 << 20)) {
@@ -3607,12 +3656,32 @@ int main(int argc, char** ansi_argv) {
             std::fprintf(stderr, "cannot create the bitmap\n");
             return 1;
         }
+        std::vector<DiagramHighlight> highlights;
+        ComPtr<ID2D1SolidColorBrush> hit, current, selected;
+        ID2D1Brush* brushes[3] = {};
+        if (!search.empty()) {
+            const uint32_t n = static_cast<uint32_t>(source.size());
+            highlights.push_back(DiagramHighlight{n / 3, n * 2 / 3, 2});
+            for (size_t at = source.find(search); at != std::wstring::npos; at = source.find(search, at + search.size())) {
+                const uint32_t a = static_cast<uint32_t>(at), b = static_cast<uint32_t>(at + search.size());
+                highlights.push_back(DiagramHighlight{a, b, 0});
+                if (highlights.size() == 2) highlights.push_back(DiagramHighlight{a, b, 1});
+            }
+            rt->CreateSolidColorBrush(D2D1::ColorF(0xFFE000), &hit);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0xFF8000), &current);
+            rt->CreateSolidColorBrush(D2D1::ColorF(0x80C0FF), &selected);
+            brushes[0] = hit.Get();
+            brushes[1] = current.Get();
+            brushes[2] = selected.Get();
+        }
         const uint32_t page = DiagramRoleArgb(kDgPage, dark);
+        const double t3 = NowMs();
         rt->BeginDraw();
         rt->Clear(D2D1::ColorF(page & 0xFFFFFF));
-        DrawDiagram(rt.Get(), *scene, D2D1::RectF(0, 0, scene->width, scene->height), dark, nullptr, nullptr);
+        DrawDiagram(rt.Get(), *scene, D2D1::RectF(0, 0, scene->width, scene->height), dark,
+                    search.empty() ? nullptr : &highlights, search.empty() ? nullptr : brushes);
         rt->EndDraw();
-        std::printf("draw %.1f ms\n", NowMs() - t2);
+        std::printf("draw %.1f ms (%zu highlights)\n", NowMs() - t3, highlights.size());
         return SaveBitmapPng(bmp.Get(), Utf8ToWide(argv[3])) ? 0 : 1;
     }
     if (cmd == "tex") {

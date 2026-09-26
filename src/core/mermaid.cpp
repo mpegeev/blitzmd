@@ -506,7 +506,7 @@ D2D1_POINT_2F ClipRect(D2D1_POINT_2F c, float w, float h, D2D1_POINT_2F p) {
     float hw = w / 2, hh = h / 2;
     if (dx == 0 && dy == 0) return c;
     float sx, sy;
-    if (std::fabs(dy) * hw > std::fabs(dx) * hh) {
+    if (dx == 0 || std::fabs(dy) * hw > std::fabs(dx) * hh) {  // (dx == 0: w may be 0 too)
         if (dy < 0) hh = -hh;
         sx = hh * dx / dy;
         sy = hh;
@@ -693,6 +693,8 @@ auto Guarded(std::wstring_view source, std::wstring* error, Fn&& fn) -> decltype
         if (error) *error = FormatError(source, e);
     } catch (const std::bad_alloc&) {
         if (error) *error = Tr(L"Out of memory", L"Не хватает памяти");
+    } catch (const std::exception&) {  // (a bug: this diagram fails, not the whole paint)
+        if (error) *error = Tr(L"The diagram could not be drawn", L"Не удалось построить диаграмму");
     }
     return {};
 }

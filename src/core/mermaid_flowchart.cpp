@@ -259,6 +259,7 @@ private:
                 cl.title.len = static_cast<uint32_t>(cl.id.size());
                 cl.title.set = true;
             }
+            if (cl.title.raw.size() > kMaxLabel) c_.Fail(Tr(L"Label too long", L"Слишком длинная подпись"));
         }
         if (cl.id.empty()) cl.id = L"subGraph" + std::to_wstring(clusters.size());
         if (clusters.size() >= kMaxNodes) c_.Fail(Tr(L"Too many subgraphs", L"Слишком много подграфов"));
@@ -564,6 +565,7 @@ private:
                     value.len = static_cast<uint32_t>(c_.pos() - vs);
                     value.set = true;
                 }
+                if (value.raw.size() > kMaxLabel) c_.Fail(Tr(L"Label too long", L"Слишком длинная подпись"));
                 if (EqualsNoCase(key, L"shape")) n.shape = ShapeByName(value.raw);
                 else if (EqualsNoCase(key, L"label")) n.label = value;
                 c_.SkipBlanks();
@@ -763,6 +765,7 @@ private:
                 l.pos = static_cast<uint32_t>(start);
                 l.len = static_cast<uint32_t>(raw.size());
             }
+            if (l.raw.size() > kMaxLabel) c_.Fail(Tr(L"Label too long", L"Слишком длинная подпись"));
             l.set = true;
             e->label = std::move(l);
             c_.Advance(q);
@@ -947,7 +950,7 @@ private:
         for (size_t i = 0; i < n; ++i) {
             LayeredGraph::Node gn;
             gn.w = across_size(i);
-            gn.h = along_size(i);
+            gn.h = 0;  // ranks alone: one rank at one depth whatever the heights (the layers are sized below)
             g.nodes.push_back(gn);
         }
         for (const Edge& e : p_.edges) {
