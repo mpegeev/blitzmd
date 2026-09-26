@@ -951,7 +951,8 @@ uint64_t ImageStore::EntryBytes(size_t i) const {
 }
 
 void ImageStore::TrimMemory() {
-    if (impl_->sync) return;
+    // (Offscreen too: printing draws every picture of the document, band by
+    // band; those let go of are decoded again if drawn again.)
     std::vector<size_t> victims;
     uint64_t total = 0;
     // An SVG may be shared by entries (a file named many times): it counts
@@ -1202,9 +1203,9 @@ void ImageStore::Draw(ID2D1RenderTarget* rt, int index, const D2D1_RECT_F& r, Pa
             if (!px.data.empty()) {
                 if (SUCCEEDED(rt->CreateBitmap(D2D1::SizeU(px.w, px.h), px.data.data(), px.w * 4, props, &e.bitmap))) {
                     impl_->bitmap_rt[i] = rt;
-                    // Keep pixels only while other render targets may need them
-                    // (offscreen rendering); a device loss triggers a reload.
-                    if (!impl_->sync) px = Pixels{};
+                    // The bitmap has them now: a device loss (or offscreen, a
+                    // bitmap for another target) decodes them again.
+                    px = Pixels{};
                 }
             } else if (!impl_->sync && !e.animation) {
                 // Device resources were lost: decode again.
