@@ -213,6 +213,34 @@ std::string ExtractFootnoteBodies(std::string_view src, FootnoteBodies& bodies) 
     bool changed = false;
     char fence = 0;
     size_t fence_len = 0;
+    size_t next_def = std::string_view::npos;  // a definition right after another one's lines
+    // md4c reads "[^x]: ..." right after a line of a paragraph (or of an HTML
+    // block) as more of that text, not as a definition: one starts at the
+    // top, after a blank line, after a line nothing continues (an ATX
+    // heading, a fence, a thematic break) or right after another definition.
+    auto may_start_def = [&](size_t i) {
+        if (i == 0 || i == next_def || IsBlankLine(lines[i - 1])) return true;
+        const std::string_view prev = lines[i - 1];
+        size_t n = 0;
+        while (n < prev.size() && n < 4 && prev[n] == ' ') ++n;
+        if (n >= 4) return false;
+        const std::string_view p = prev.substr(n);
+        if (p.rfind("```", 0) == 0 || p.rfind("~~~", 0) == 0) return true;
+        if (p[0] == '#') {
+            size_t h = 0;
+            while (h < p.size() && p[h] == '#') ++h;
+            return h <= 6 && (h == p.size() || p[h] == ' ' || p[h] == '\t' || p[h] == '\r');
+        }
+        if (p[0] == '*' || p[0] == '-' || p[0] == '_') {
+            size_t marks = 0;
+            for (char c : p) {
+                if (c == p[0]) ++marks;
+                else if (c != ' ' && c != '\t' && c != '\r') return false;
+            }
+            return marks >= 3;
+        }
+        return false;
+    };
     for (size_t i = 0; i < lines.size(); ++i) {
         const std::string_view line = lines[i];
         size_t ind = 0;
@@ -240,7 +268,7 @@ std::string ExtractFootnoteBodies(std::string_view src, FootnoteBodies& bodies) 
         }
         const size_t close = body.find("]:");
         if (close == std::string_view::npos || close <= 2 ||
-            body.substr(2, close - 2).find_first_of(" \t[]") != std::string_view::npos) {
+            body.substr(2, close - 2).find_first_of(" \t[]") != std::string_view::npos || !may_start_def(i)) {
             emit(line);
             continue;
         }
@@ -256,6 +284,7 @@ std::string ExtractFootnoteBodies(std::string_view src, FootnoteBodies& bodies) 
         size_t j = i + 1;
         while (j < lines.size() && !IsBlankLine(lines[j]) && !starts_def(lines[j])) emit(lines[j++]);
         if (j < lines.size() && starts_def(lines[j])) {
+            next_def = j;
             i = j - 1;
             continue;
         }

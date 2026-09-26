@@ -219,3 +219,37 @@ text</a> r
 <p>Logo <img src="x.png" alt="logo" /> end</p>
 <p>q <a href="#x" title="t">link text</a> r</p>
 ````````````````````````````````
+
+## Footnotes with more blocks
+
+Like GitHub, blocks indented by four spaces after a footnote definition
+belong to the footnote.
+
+```````````````````````````````` example
+See[^1].
+
+[^1]: first
+
+    more of it
+.
+<p>See<a href="#fn-1" title="Footnote 1"><sup>1</sup></a>.</p>
+<p>first</p>
+<p>more of it <a href="#fnref-1-1" title="Back to reference 1">↩︎</a></p>
+````````````````````````````````
+
+A line that only looks like a definition — the lazy continuation of a
+paragraph — is text, and what follows it stays where it is.
+
+```````````````````````````````` example
+See[^1].
+
+Paragraph line
+[^1]: def?
+
+    code block line
+.
+<p>See[^1].</p>
+<p>Paragraph line [^1]: def?</p>
+<pre><code>code block line
+</code></pre>
+````````````````````````````````
