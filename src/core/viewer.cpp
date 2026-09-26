@@ -2560,6 +2560,8 @@ void Viewer::OnTimer(UINT_PTR id) {
             const float old_max = MaxScroll();
             Relayout(true);
             if (std::fabs(old_max - MaxScroll()) > 0.5f) Invalidate();
+        } else {
+            KillTimer(hwnd_, kTimerRefine);  // what is left is measured once in view
         }
         if (!layout_.HasEstimates()) KillTimer(hwnd_, kTimerRefine);
         break;
