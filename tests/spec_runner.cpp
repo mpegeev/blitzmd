@@ -128,6 +128,20 @@ int RunSpec(const std::string& path, bool verbose, int only_example, bool strict
             continue;
         }
         auto doc = ParseMarkdown(e.markdown, L"", opt);
+        // Footnote links and back links lead somewhere (numbers of footnotes
+        // in multi-block bodies are the document's).
+        std::string dangling;
+        for (const Link& l : doc->links) {
+            if ((l.url.rfind(L"#fn-", 0) == 0 || l.url.rfind(L"#fnref-", 0) == 0) && !doc->anchors.count(l.url.substr(1))) {
+                dangling += " " + WideToUtf8(l.url);
+            }
+        }
+        if (!dangling.empty()) {
+            ++fail;
+            std::printf("--- example %d (line %d, %s): footnote links to nowhere:%s\n", e.number, e.line, e.section.c_str(),
+                        dangling.c_str());
+            continue;
+        }
         const std::string ours = NormalizeHtml(DumpHtml(*doc));
         const std::string expected = NormalizeHtml(e.html);
         const std::string reference = NormalizeHtml(Md4cHtml(e.markdown));

@@ -358,6 +358,8 @@ public:
         return Guarded(u, [&](Builder& b) { return b.Text(t, std::string_view(s, n)); });
     }
     const std::exception_ptr& error() const { return error_; }
+    // Footnotes defined inside multi-block bodies are numbered from n + 1.
+    void SetFootnotesBefore(int n) { next_footnote_ = n; }
 
     void Finish();
 
@@ -412,6 +414,8 @@ private:
     Document& doc_;
     const ParseOptions& opt_;
     const FootnoteBodies* footnote_bodies_ = nullptr;
+    int next_footnote_ = 0;            // the last number given to a body's footnote
+    std::vector<Block*> nested_defs_;  // those footnotes, for the document's section
     std::exception_ptr error_;  // thrown by a callback (see Guarded)
     bool truncated_ = false;    // stopped at opt_.max_blocks
     bool finishing_ = false;    // (Finish: no more limit)
@@ -999,10 +1003,10 @@ int Builder::EnterBlock(MD_BLOCKTYPE type, void* detail) {
     case MD_BLOCK_FOOTNOTE_DEF: {
         const auto* d = static_cast<const MD_BLOCK_FOOTNOTE_DEF_DETAIL*>(detail);
         b = Push(BlockType::FootnoteDef);
-        b->number = static_cast<int32_t>(d->id);
+        b->number = static_cast<int32_t>(d->id) + opt_.footnote_base;
         b->ref_count = static_cast<int32_t>(d->ref_count);
         b->lang = DecodeAttr(d->label);  // label, to find a multi-block body
-        doc_.anchors.try_emplace(L"fn-" + std::to_wstring(d->id), Anchor{b, 0});
+        doc_.anchors.try_emplace(L"fn-" + std::to_wstring(b->number), Anchor{b, 0});
         break;
     }
     case MD_BLOCK_ADMONITION: {
@@ -1033,6 +1037,14 @@ int Builder::LeaveBlock(MD_BLOCKTYPE type, void* /*detail*/) {
         return 0;
     }
     if (b && type == MD_BLOCK_FOOTNOTE_DEF) AppendFootnoteBody(b);
+    if (b && type == MD_BLOCK_FOOTNOTE_DEF_SECTION) {
+        // Footnotes defined in bodies follow the document's own (their numbers do).
+        for (Block* d : nested_defs_) {
+            d->parent = b;
+            b->children.push_back(d);
+        }
+        nested_defs_.clear();
+    }
     if (b) PopTo(b);
     return 0;
 }
@@ -1049,6 +1061,7 @@ void Builder::AppendFootnoteBody(Block* def) {
     }
     ParseOptions sub_opt = opt_;
     ++sub_opt.footnote_nesting;
+    sub_opt.footnote_base = next_footnote_;
     std::unique_ptr<Document> sub = ParseMarkdown(it->second, doc_.path, sub_opt);
     const int32_t link_off = static_cast<int32_t>(doc_.links.size());
     const int32_t image_off = static_cast<int32_t>(doc_.images.size());
@@ -1070,12 +1083,22 @@ void Builder::AppendFootnoteBody(Block* def) {
         }
         b->leaf_index = -1;
     }
-    // Only the adopted subtrees survive; the rest (root, nested footnote
+    // Only the adopted subtrees survive; the rest (root, the body's footnote
     // section) is freed with `sub`, so nothing may keep pointing into it.
     std::unordered_set<const Block*> kept;
     std::vector<Block*> walk;
     for (Block* c : sub->root->children) {
-        if (c->type == BlockType::FootnoteSection) continue;  // nested refs don't resolve
+        if (c->type == BlockType::FootnoteSection) {
+            // The body's own footnotes, numbered after the document's (and
+            // earlier bodies'): to the end of the document's section.
+            for (Block* d : c->children) {
+                if (d->type != BlockType::FootnoteDef) continue;
+                nested_defs_.push_back(d);
+                walk.push_back(d);
+                next_footnote_ = std::max(next_footnote_, d->number);
+            }
+            continue;
+        }
         c->parent = def;
         def->children.push_back(c);
         walk.push_back(c);
@@ -1087,8 +1110,6 @@ void Builder::AppendFootnoteBody(Block* def) {
         walk.insert(walk.end(), b->children.begin(), b->children.end());
     }
     for (const auto& [id, anchor] : sub->anchors) {
-        // Footnote anchors of the body are numbered on their own: never import.
-        if (id.rfind(L"fn-", 0) == 0 || id.rfind(L"fnref-", 0) == 0) continue;
         if (kept.count(anchor.block)) doc_.anchors.try_emplace(id, anchor);
     }
     for (auto& up : sub->storage) {
@@ -1137,14 +1158,15 @@ int Builder::EnterSpan(MD_SPANTYPE type, void* detail) {
     }
     case MD_SPAN_FOOTNOTE_REF: {
         const auto* d = static_cast<const MD_SPAN_FOOTNOTE_REF_DETAIL*>(detail);
+        const std::wstring id = std::to_wstring(static_cast<int64_t>(d->id) + opt_.footnote_base);
         Link link;
-        link.url = L"#fn-" + std::to_wstring(d->id);
-        link.title = L"Footnote " + std::to_wstring(d->id);
+        link.url = L"#fn-" + id;
+        link.title = L"Footnote " + id;
         doc_.links.push_back(std::move(link));
         links_.push_back(static_cast<int32_t>(doc_.links.size() - 1));
         EnsureLeaf();
-        RegisterAnchor(L"fnref-" + std::to_wstring(d->id) + L"-" + std::to_wstring(d->ref_id));
-        Append(std::to_wstring(d->id), kSup);
+        RegisterAnchor(L"fnref-" + id + L"-" + std::to_wstring(d->ref_id));
+        Append(id, kSup);
         links_.pop_back();
         break;
     }
@@ -1819,6 +1841,22 @@ std::unique_ptr<Document> ParseMarkdown(std::string_view utf8, std::wstring_view
     parser.leave_span = &Builder::OnLeaveSpan;
     parser.text = &Builder::OnText;
     const MD_SIZE size = static_cast<MD_SIZE>(std::min<size_t>(utf8.size(), 0x7FFFFFFF));
+    if (!bodies.empty()) {
+        // Footnotes defined in the bodies are numbered after this document's
+        // own, which md4c numbers as it emits them: count those first.
+        MD_PARSER counter = parser;
+        counter.enter_block = [](MD_BLOCKTYPE type, void*, void* user) {
+            if (type == MD_BLOCK_FOOTNOTE_DEF) ++*static_cast<int*>(user);
+            return 0;
+        };
+        counter.leave_block = [](MD_BLOCKTYPE, void*, void*) { return 0; };
+        counter.enter_span = [](MD_SPANTYPE, void*, void*) { return 0; };
+        counter.leave_span = [](MD_SPANTYPE, void*, void*) { return 0; };
+        counter.text = [](MD_TEXTTYPE, const MD_CHAR*, MD_SIZE, void*) { return 0; };
+        int own = 0;
+        md_parse(utf8.data(), size, &counter, &own);
+        builder.SetFootnotesBefore(options.footnote_base + own);
+    }
     md_parse(utf8.data(), size, &parser, &builder);
     if (builder.error()) std::rethrow_exception(builder.error());
     builder.Finish();

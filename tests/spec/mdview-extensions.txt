@@ -237,6 +237,27 @@ See[^1].
 <p>more of it <a href="#fnref-1-1" title="Back to reference 1">↩︎</a></p>
 ````````````````````````````````
 
+A footnote defined in those blocks is one of the document's: numbered
+after its own footnotes, it follows them.
+
+```````````````````````````````` example
+A[^a] B[^b].
+
+[^a]: first
+
+    more [^x]
+
+    [^x]: nested
+
+[^b]: second
+.
+<p>A<a href="#fn-1" title="Footnote 1"><sup>1</sup></a> B<a href="#fn-2" title="Footnote 2"><sup>2</sup></a>.</p>
+<p>first</p>
+<p>more <a href="#fn-3" title="Footnote 3"><sup>3</sup></a> <a href="#fnref-1-1" title="Back to reference 1">↩︎</a></p>
+<p>second <a href="#fnref-2-1" title="Back to reference 1">↩︎</a></p>
+<p>nested <a href="#fnref-3-1" title="Back to reference 1">↩︎</a></p>
+````````````````````````````````
+
 A line that only looks like a definition — the lazy continuation of a
 paragraph — is text, and what follows it stays where it is.
 

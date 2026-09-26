@@ -14,6 +14,7 @@ struct ParseOptions {
     bool mermaid = true;            // ```mermaid blocks as diagrams
     bool highlight_code = true;     // syntax highlighting in code blocks
     int footnote_nesting = 0;       // internal: footnote bodies parse recursively
+    int footnote_base = 0;          // internal: a body's own footnotes are numbered after this
     // At most this many blocks (a few hundred bytes each: tiny paragraphs
     // make a model ~100 times the file). Past it the parse stops and the
     // document ends with a warning.
