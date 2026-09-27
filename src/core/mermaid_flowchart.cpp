@@ -867,6 +867,38 @@ float LoopReach(int k) { return kLoopReach * (1 + 0.6f * static_cast<float>(k));
 // of its `n` loops, and past the label before it (`end`).
 float LoopLabelStart(int n, float end) { return std::max(LoopReach(n - 1) * 0.75f + 6, end > 0 ? end + 6 : 0.f); }
 
+// Subgraphs around an edge end, innermost first (a subgraph end itself is
+// not inside itself).
+std::vector<int> ClustersAround(const Parser& p, const Ref& r) {
+    std::vector<int> out;
+    int c = r.cluster ? p.clusters[static_cast<size_t>(r.index)].parent : p.nodes[static_cast<size_t>(r.index)].cluster;
+    for (int guard = 0; c >= 0 && guard <= kMaxNesting + 1; ++guard, c = p.clusters[static_cast<size_t>(c)].parent) {
+        out.push_back(c);
+    }
+    return out;
+}
+
+// The subgraphs no edge crosses. An edge between a subgraph and something
+// inside it crosses it too: laid out on its own, the subgraph would stand
+// for both ends and the edge be lost.
+std::vector<char> IsolatedClusters(const Parser& p) {
+    std::vector<char> crossed(p.clusters.size(), 0);
+    for (const Edge& e : p.edges) {
+        const std::vector<int> a = ClustersAround(p, e.from), b = ClustersAround(p, e.to);
+        for (const auto* side : {&a, &b}) {
+            const auto* other = side == &a ? &b : &a;
+            for (int c : *side) {
+                const bool is_end = (e.from.cluster && e.from.index == c) || (e.to.cluster && e.to.index == c);
+                if (!is_end && std::find(other->begin(), other->end(), c) == other->end()) crossed[static_cast<size_t>(c)] = 1;
+            }
+        }
+        if (e.from.cluster && std::find(b.begin(), b.end(), e.from.index) != b.end()) crossed[static_cast<size_t>(e.from.index)] = 1;
+        if (e.to.cluster && std::find(a.begin(), a.end(), e.to.index) != a.end()) crossed[static_cast<size_t>(e.to.index)] = 1;
+    }
+    for (char& c : crossed) c = !c;
+    return crossed;
+}
+
 // A subgraph is laid out on its own when no edge crosses its border (then
 // its direction applies and it is one node of its parent's layout), or else
 // as a cluster of its parent's layout, like Mermaid does.
@@ -948,6 +980,30 @@ private:
         const size_t n = p_.nodes.size();
         auto along_size = [&](size_t i) { return lr ? placed_[i].w : placed_[i].h; };
         auto across_size = [&](size_t i) { return lr ? placed_[i].h : placed_[i].w; };
+        // Each edge's ends as nodes: a subgraph (a lane) stands in by a node
+        // inside it, not the other end if another is there (-1: an empty one).
+        auto node_in = [&](const Ref& r, int avoid) {
+            if (!r.cluster) return r.index;
+            int first = -1;
+            for (size_t i = 0; i < n; ++i) {
+                bool in = false;
+                for (int c = p_.nodes[i].cluster, guard = 0; c >= 0 && !in && guard <= kMaxNesting + 1; c = Parent(c), ++guard) {
+                    in = c == r.index;
+                }
+                if (!in) continue;
+                if (static_cast<int>(i) != avoid) return static_cast<int>(i);
+                if (first < 0) first = static_cast<int>(i);
+            }
+            return first;
+        };
+        std::vector<std::pair<int, int>> ends(p_.edges.size());
+        for (size_t ei = 0; ei < p_.edges.size(); ++ei) {
+            const Edge& e = p_.edges[ei];
+            int a = node_in(e.from, -1);
+            const int z = node_in(e.to, a);
+            if (a == z && e.from.cluster) a = node_in(e.from, z);
+            ends[ei] = {a, z};
+        }
         // Ranks and orders.
         LayeredGraph g;
         g.dir = RankDir::TB;
@@ -957,12 +1013,13 @@ private:
             gn.h = 0;  // ranks alone: one rank at one depth whatever the heights (the layers are sized below)
             g.nodes.push_back(gn);
         }
-        for (const Edge& e : p_.edges) {
-            if (e.from.cluster || e.to.cluster || e.from.index == e.to.index) continue;
+        for (size_t ei = 0; ei < p_.edges.size(); ++ei) {
+            const auto [a, z] = ends[ei];
+            if (a < 0 || z < 0 || a == z) continue;
             LayeredGraph::Edge ge;
-            ge.from = e.from.index;
-            ge.to = e.to.index;
-            ge.minlen = std::max(1, e.length);
+            ge.from = a;
+            ge.to = z;
+            ge.minlen = std::max(1, p_.edges[ei].length);
             g.edges.push_back(ge);
         }
         const LayeredLayout lay = LayoutLayered(g);
@@ -1077,13 +1134,23 @@ private:
         // (before the nodes) back up.
         std::vector<std::pair<size_t, D2D1_POINT_2F>> labels;
         std::vector<int> incoming(n, 0);
-        for (const Edge& e : p_.edges) {
-            if (!e.from.cluster && !e.to.cluster && e.from.index != e.to.index && e.stroke != 3) ++incoming[static_cast<size_t>(e.to.index)];
+        std::vector<size_t> self_loops;  // a node's edges to itself, drawn as loops
+        for (size_t ei = 0; ei < p_.edges.size(); ++ei) {
+            const Edge& e = p_.edges[ei];
+            const auto [a, z] = ends[ei];
+            if (a < 0 || z < 0 || e.stroke == 3) continue;
+            if (a != z) {
+                ++incoming[static_cast<size_t>(z)];
+            } else if (!e.from.cluster && !e.to.cluster) {
+                self_loops.push_back(ei);
+                ++placed_[static_cast<size_t>(a)].loops;
+                placed_[static_cast<size_t>(a)].loop_below = lr;
+            }
         }
         for (size_t ei = 0; ei < p_.edges.size(); ++ei) {
             const Edge& e = p_.edges[ei];
-            if (e.from.cluster || e.to.cluster || e.from.index == e.to.index || e.stroke == 3) continue;
-            const size_t a = static_cast<size_t>(e.from.index), z = static_cast<size_t>(e.to.index);
+            if (ends[ei].first < 0 || ends[ei].second < 0 || ends[ei].first == ends[ei].second || e.stroke == 3) continue;
+            const size_t a = static_cast<size_t>(ends[ei].first), z = static_cast<size_t>(ends[ei].second);
             const D2D1_POINT_2F ca = canon[a], cz = canon[z];
             const int la = layer[a], lz = layer[z];
             // Routes in order of preference; the first that passes no other
@@ -1164,8 +1231,8 @@ private:
             const Route q = *chosen;
             std::vector<D2D1_POINT_2F> pts;
             for (const D2D1_POINT_2F& k : q) pts.push_back(page(k));
-            pts.front() = Clip(e.from, pts[1]);
-            pts.back() = Clip(e.to, pts[pts.size() - 2]);
+            pts.front() = Clip(Ref{static_cast<int>(a), false}, pts[1]);
+            pts.back() = Clip(Ref{static_cast<int>(z), false}, pts[pts.size() - 2]);
             DropDoubledEnds(&pts);
             Style st = p_.default_link;
             if (auto it = p_.link_styles.find(ei); it != p_.link_styles.end()) st.Merge(it->second);
@@ -1200,6 +1267,18 @@ private:
             b_.Rect(D2D1::RectF(c.x - m.w / 2 - 2, c.y - m.h / 2, c.x + m.w / 2 + 2, c.y + m.h / 2), 0, Role(kDgLabelBg), Role(kDgNone));
             b_.Text(m, D2D1::Point2F(c.x - m.w / 2, c.y - m.h / 2), st.color.role != kDgNone ? st.color : Role(kDgText), p_.edges[ei].label.pos,
                     p_.edges[ei].label.len);
+        }
+        std::vector<int> loops(n, 0);
+        std::vector<float> loop_labels(n, 0.f);
+        for (const size_t ei : self_loops) {
+            const Edge& e = p_.edges[ei];
+            Style st = p_.default_link;
+            if (auto it = p_.link_styles.find(ei); it != p_.link_styles.end()) st.Merge(it->second);
+            const DgColor color = st.stroke.role != kDgNone ? st.stroke : Role(kDgLine);
+            const float lw = st.stroke_width >= 0 ? st.stroke_width : (e.stroke == 1 ? 3.5f : 2.f);
+            const uint8_t dash = e.stroke == 2 ? 2 : (st.dash == 1 ? 1 : 0);
+            const size_t i = static_cast<size_t>(e.from.index);
+            DrawLoop(e, ei, loops[i]++, &loop_labels[i], color, lw, dash, st);
         }
         DrawNodes();
         return b_.Finish(width, height);
@@ -1323,33 +1402,16 @@ private:
         }
     }
 
-    // Subgraphs around an edge end, innermost first (a subgraph end itself
-    // is not inside itself).
-    std::vector<int> Around(const Ref& r) const {
-        std::vector<int> out;
-        int c = r.cluster ? Parent(r.index) : p_.nodes[static_cast<size_t>(r.index)].cluster;
-        for (int guard = 0; c >= 0 && guard <= kMaxNesting + 1; ++guard, c = Parent(c)) out.push_back(c);
-        return out;
-    }
+    std::vector<int> Around(const Ref& r) const { return ClustersAround(p_, r); }
 
     // Which subgraphs are laid out on their own, and the levels.
     void Classify() {
         const size_t nc = p_.clusters.size();
-        std::vector<char> crossed(nc, 0);
-        for (const Edge& e : p_.edges) {
-            const std::vector<int> a = Around(e.from), b = Around(e.to);
-            for (const auto* side : {&a, &b}) {
-                const auto* other = side == &a ? &b : &a;
-                for (int c : *side) {
-                    const bool is_end = (e.from.cluster && e.from.index == c) || (e.to.cluster && e.to.index == c);
-                    if (!is_end && std::find(other->begin(), other->end(), c) == other->end()) crossed[static_cast<size_t>(c)] = 1;
-                }
-            }
-        }
+        const std::vector<char> isolated = IsolatedClusters(p_);
         levels_.assign(1, Level{});
         for (size_t c = 0; c < nc; ++c) {
             ClusterBox& box = boxes_[c];
-            box.isolated = !crossed[c];
+            box.isolated = isolated[c];
             if (box.isolated) {
                 box.level = static_cast<int>(levels_.size());
                 levels_.push_back(Level{});
@@ -1861,20 +1923,29 @@ namespace {
 
 // Whether the layout will fit its budget, found when the document is read
 // (a diagram too large stays code): every node and subgraph in one layered
-// graph, sizes aside, as they don't change the ranks.
+// graph, sizes aside, as they don't change the ranks. A subgraph laid out on
+// its own is no frame of it (as one, 24 nested ones around a chain were
+// "too large", laid out in milliseconds).
 void CheckBudget(const Parser& p) {
+    const std::vector<char> isolated = IsolatedClusters(p);
+    auto framed = [&](int c) {  // the innermost subgraph around, c included, drawn as a frame
+        for (int guard = 0; c >= 0 && isolated[static_cast<size_t>(c)] && guard <= kMaxNesting + 1; ++guard) {
+            c = p.clusters[static_cast<size_t>(c)].parent;
+        }
+        return c;
+    };
     LayeredGraph g;
     g.dir = p.dir;
     for (const Cluster& c : p.clusters) {
         LayeredGraph::Cluster gc;
-        gc.parent = c.parent;
+        gc.parent = framed(c.parent);
         g.clusters.push_back(gc);
     }
     std::vector<int> member(p.clusters.size(), -1);  // a node inside each subgraph
     for (size_t i = 0; i < p.nodes.size(); ++i) {
         LayeredGraph::Node n;
         n.w = n.h = 10;
-        n.cluster = p.nodes[i].cluster;
+        n.cluster = framed(p.nodes[i].cluster);
         g.nodes.push_back(n);
         for (int c = p.nodes[i].cluster; c >= 0 && member[static_cast<size_t>(c)] < 0; c = p.clusters[static_cast<size_t>(c)].parent) {
             member[static_cast<size_t>(c)] = static_cast<int>(i);
