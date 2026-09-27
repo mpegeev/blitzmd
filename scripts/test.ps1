@@ -86,6 +86,7 @@ Step 'search' { & $t search $dll (Join-Path $tmp 'search') | Where-Object { $_ -
 Step 'Windows theme' { & $t theme $dll (Join-Path $tmp 'theme') | Where-Object { $_ -match 'FAIL|theme' } }
 Step 'printer' { & $t printer dialog | Where-Object { $_ -match 'FAIL|printer' } }
 Step 'unload' { & $t unload $dll (Join-Path $tmp 'unload') | Where-Object { $_ -match 'FAIL|unload' } }
+Step 'first paint' { & $t firstpaint $dll (Join-Path $tmp 'firstpaint') | Where-Object { $_ -match 'FAIL|firstpaint' } }
 Step 'heavy paragraphs' { & $t heavy 5000 | Where-Object { $_ -match 'FAIL|heavy' } }
 Step 'closed in a modal loop' { & $t modal $dll (Join-Path $tmp 'modal') | Where-Object { $_ -match 'FAIL|modal' } }
 

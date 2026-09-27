@@ -24,6 +24,7 @@
 //   search <dll> <out-dir>                   ListSearchTextW both ways
 //   theme <dll> <out-dir>                    "Auto" follows the Windows theme
 //   unload <dll> <out-dir>                   loaded and freed again, nothing left
+//   firstpaint <dll> <out-dir>               the first paint doesn't lay out again
 //   printer dialog                           the print dialog starts with TC's printer
 //   remote <dll> <out-dir>                   pictures on a server that never answers
 //   longpath <out-dir>                       a picture in a path past MAX_PATH
@@ -92,7 +93,8 @@ int Usage() {
                  "  post <class> <msg> <wparam> [lparam] [--async]\n"
                  "  plugin <dll> <file.md> <out.png> [search text] [--dark] [--hover X Y] [--idle]\n"
                  "  settings|zoom <dll> <file.md> <out-prefix>  reload <dll> <dir>\n"
-                 "  modal|search|remote|theme|unload <dll> <out-dir>  longpath <out-dir>  inputs all\n"
+                 "  modal|search|remote|theme|unload|firstpaint <dll> <out-dir>\n"
+                 "  longpath <out-dir>    inputs all\n"
                  "  printer dialog\n"
                  "  heavy <limit-ms>    details <file.md>...    flags <file.md>\n"
                  "  math <file.md> [iterations]                 tex \"<TeX source>\"\n"
@@ -1009,6 +1011,70 @@ int main(int argc, char** ansi_argv) {
         DestroyWindow(host);
         FreeLibrary(dll);
         std::printf(failures ? "theme FAILED\n" : "theme OK\n");
+        return failures ? 1 : 0;
+    }
+    if (cmd == "firstpaint" && argc >= 4) {
+        // firstpaint <dll> <out-dir>: the first paint after ListLoadW doesn't
+        // lay the text out again (all of it was: the render target came
+        // after the first layout, #179).
+        HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
+        using SetParamsFn = void(__stdcall*)(void*);
+        using LoadFn = HWND(__stdcall*)(HWND, const wchar_t*, int);
+        using CloseFn = void(__stdcall*)(HWND);
+        auto set_params = dll ? reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams")) : nullptr;
+        auto load = dll ? reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW")) : nullptr;
+        auto close = dll ? reinterpret_cast<CloseFn>(GetProcAddress(dll, "ListCloseWindow")) : nullptr;
+        if (!set_params || !load || !close) {
+            std::fprintf(stderr, "cannot load plugin\n");
+            return 1;
+        }
+        const std::wstring dir = FullPath(argv[3]) + L"\\";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        DeleteFileW((dir + L"mdview.ini").c_str());
+        struct {
+            int size;
+            DWORD lo, hi;
+            char ini[MAX_PATH];
+        } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
+        strncpy_s(dp.ini, AnsiPath(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        set_params(&dp);
+        {
+            std::string md = "# Code\n\n```js\n";
+            for (int i = 0; i < 10000; ++i) md += "const value" + std::to_string(i) + " = compute(alpha, \"text\", 42); // note\n";
+            md += "```\n";
+            HANDLE f = CreateFileW((dir + L"code.md").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD n = 0;
+            if (f != INVALID_HANDLE_VALUE) {
+                WriteFile(f, md.data(), static_cast<DWORD>(md.size()), &n, nullptr);
+                CloseHandle(f);
+            }
+        }
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"MdViewFirstPaintHost";
+        RegisterClassW(&wc);
+        HWND host = CreateWindowExW(0, wc.lpszClassName, L"first paint test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40, 900,
+                                    700, nullptr, nullptr, wc.hInstance, nullptr);
+        const double t0 = NowMs();
+        HWND viewer = load(host, (dir + L"code.md").c_str(), 0);
+        const double t1 = NowMs();
+        if (!viewer) {
+            std::fprintf(stderr, "ListLoadW failed\n");
+            return 1;
+        }
+        UpdateWindow(viewer);
+        const double t2 = NowMs();
+        int failures = 0;
+        std::printf("a code block of 10 000 lines: ListLoadW %.0f ms, first paint %.0f ms\n", t1 - t0, t2 - t1);
+        if (t2 - t1 > (t1 - t0) / 2 + 30) {
+            std::printf("FAIL: the first paint lays the text out again\n");
+            ++failures;
+        }
+        close(viewer);
+        DestroyWindow(host);
+        FreeLibrary(dll);
+        std::printf(failures ? "firstpaint FAILED\n" : "firstpaint OK\n");
         return failures ? 1 : 0;
     }
     if (cmd == "unload" && argc >= 4) {
@@ -4899,6 +4965,57 @@ int main(int argc, char** ansi_argv) {
             std::printf("  an SVG of 50 000 texts drawn again: %.0f ms\n", ms);
             if (ms < 0 || ms > 150) {
                 std::printf("FAIL: an SVG's texts are all laid out at each paint (%.0f ms)\n", ms);
+                ++failures;
+            }
+        }
+        {
+            // 40 flowcharts of 500 edges: the first layout laid them all out
+            // for its estimates, not only those in view (#178).
+            auto layout_ms = [&](int diagrams) {
+                std::string md = "# Diagrams\n\n";
+                for (int d = 0; d < diagrams; ++d) {
+                    md += "```mermaid\nflowchart TD\n";
+                    for (int i = 0; i < 500; ++i) {
+                        const std::string a = std::to_string((i * 37 + d) % 300), z = std::to_string((i * 91 + 7) % 300);
+                        md += "  n" + a + "[Node " + a + "] --> n" + z + "[Node " + z + "]\n";
+                    }
+                    md += "```\n\nText.\n\n";
+                }
+                auto doc = ParseMarkdown(md, L"C:\\heavy.md");
+                OffscreenOptions o;
+                o.width = 900.f;
+                o.max_height = 800.f;
+                OffscreenStats stats;
+                return RenderToBitmap(*doc, o, &stats) ? stats.layout_ms : -1.0;
+            };
+            const double one = layout_ms(1), forty = layout_ms(40);
+            std::printf("  flowcharts of 500 edges, the first screen: layout %.0f ms for one, %.0f ms for 40\n", one, forty);
+            if (one < 0 || forty < 0 || forty > one * 3 + 60) {
+                std::printf("FAIL: every diagram is laid out for the first screen\n");
+                ++failures;
+            }
+        }
+        {
+            // 20 000 paragraphs with a picture each: all were measured
+            // exactly, wherever they were (#179).
+            auto layout_ms = [&](bool pictures) {
+                std::string md = "# Pictures\n\n";
+                for (int i = 0; i < 20000; ++i) {
+                    md += "Some words of a paragraph, as many as fill most of a line here " + std::to_string(i) +
+                          (pictures ? " ![i](missing" + std::to_string(i) + ".png)" : std::string(" and some more")) + "\n\n";
+                }
+                auto doc = ParseMarkdown(md, L"C:\\heavy-missing\\doc.md");
+                OffscreenOptions o;
+                o.width = 900.f;
+                o.max_height = 800.f;
+                OffscreenStats stats;
+                RenderToBitmap(*doc, o, &stats);
+                return stats.layout_ms;
+            };
+            const double with = layout_ms(true), without = layout_ms(false);
+            std::printf("  20 000 paragraphs: layout %.0f ms with a picture each, %.0f ms without\n", with, without);
+            if (with > without * 5 + 150) {
+                std::printf("FAIL: paragraphs with pictures are all measured exactly\n");
                 ++failures;
             }
         }
