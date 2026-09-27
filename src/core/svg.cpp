@@ -265,6 +265,9 @@ void SvgImage::ReleaseDeviceResources() {
     doc_.Reset();
     doc_rt_ = nullptr;
     doc_failed_ = false;
+    raster_.Reset();
+    asked_px_ = {};
+    raster_failed_ = false;
     for (Image& im : images_) {
         im.bitmap.Reset();
         if (im.svg) im.svg->ReleaseDeviceResources();
@@ -274,6 +277,7 @@ void SvgImage::ReleaseDeviceResources() {
 size_t SvgImage::MemoryBytes() const {
     // (Direct2D's document of a 4 MB drawing of rectangles took some 30 MB.)
     size_t n = source_.size() * (doc_ ? 9 : 1) + texts_.size() * sizeof(Text);
+    if (raster_) n += static_cast<size_t>(raster_px_.width) * raster_px_.height * 4;
     for (const Image& im : images_) {
         n += im.pixels.size() * (im.bitmap ? 2 : 1);
         if (im.svg) n += im.svg->MemoryBytes();
@@ -336,6 +340,7 @@ void SvgImage::ParseStructure() {
     };
     while (tz.Next(tok)) {
         if (tok.kind == HtmlToken::StartTag) {
+            ++elements_;
             Inherited in = stack.back();
             for (const HtmlAttr& a : tok.attrs) {
                 if (a.name == L"transform") {
@@ -500,6 +505,9 @@ void SvgImage::Draw(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFacto
         doc_.Reset();
         doc_failed_ = false;
         doc_rt_ = rt;
+        raster_.Reset();
+        asked_px_ = {};
+        raster_failed_ = false;
         for (Image& im : images_) im.bitmap.Reset();
     }
     if (!doc_ && !doc_failed_) {
@@ -510,6 +518,57 @@ void SvgImage::Draw(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFacto
             doc_failed_ = true;
         }
     }
+    if (!DrawRaster(rt, rect, dw)) Render(rt, dc5.Get(), rect, dw);
+}
+
+bool SvgImage::DrawRaster(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFactory* dw) {
+    constexpr size_t kMinElements = 2000;             // below: cheap enough to draw each time
+    constexpr double kMaxPixels = 4096.0 * 4096.0;    // 64 MB
+    if (!doc_ || elements_ < kMinElements || raster_failed_) return false;
+    // (A nested SVG drawn into the bitmap would drop its document for it.)
+    for (const Image& im : images_) {
+        if (im.svg) return false;
+    }
+    // Its size on the device (not turned: the viewer only moves and scales).
+    D2D1_MATRIX_3X2_F m;
+    rt->GetTransform(&m);
+    float dpi_x = 96, dpi_y = 96;
+    rt->GetDpi(&dpi_x, &dpi_y);
+    const double w = (rect.right - rect.left) * m._11 * dpi_x / 96, h = (rect.bottom - rect.top) * m._22 * dpi_y / 96;
+    if (m._12 != 0 || m._21 != 0 || !(w >= 1 && h >= 1 && w * h <= kMaxPixels)) return false;
+    const D2D1_SIZE_U px = D2D1::SizeU(static_cast<UINT32>(std::lround(w)), static_cast<UINT32>(std::lround(h)));
+    const bool again = px.width == asked_px_.width && px.height == asked_px_.height;
+    asked_px_ = px;
+    if (!raster_ || raster_px_.width != px.width || raster_px_.height != px.height) {
+        raster_.Reset();
+        if (!again) return false;  // (zooming: each size is asked for once)
+        raster_failed_ = true;     // (until it is made)
+        ComPtr<ID2D1BitmapRenderTarget> target;
+        ComPtr<ID2D1DeviceContext5> dc5;
+        if (FAILED(rt->CreateCompatibleRenderTarget(
+                D2D1::SizeF(static_cast<float>(px.width), static_cast<float>(px.height)), px,
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+                D2D1_COMPATIBLE_RENDER_TARGET_OPTIONS_NONE, &target)) ||
+            FAILED(target->QueryInterface(IID_PPV_ARGS(&dc5)))) {
+            return false;
+        }
+        target->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);  // (no ClearType on transparency)
+        target->BeginDraw();
+        target->Clear(D2D1::ColorF(0, 0, 0, 0));
+        Render(target.Get(), dc5.Get(), D2D1::RectF(0, 0, static_cast<float>(px.width), static_cast<float>(px.height)), dw);
+        if (FAILED(target->EndDraw()) || FAILED(target->GetBitmap(&raster_))) {
+            raster_.Reset();
+            return false;
+        }
+        raster_px_ = px;
+        raster_failed_ = false;
+    }
+    // (Pixel for pixel: the nearest one is the one.)
+    rt->DrawBitmap(raster_.Get(), rect, 1.f, D2D1_BITMAP_INTERPOLATION_MODE_NEAREST_NEIGHBOR);
+    return true;
+}
+
+void SvgImage::Render(ID2D1RenderTarget* rt, ID2D1DeviceContext5* dc5, const D2D1_RECT_F& rect, IDWriteFactory* dw) {
     D2D1_MATRIX_3X2_F old;
     rt->GetTransform(&old);
     // Like a browser, nothing is drawn outside the image's viewport.

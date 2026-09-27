@@ -61,6 +61,10 @@ private:
     static std::shared_ptr<SvgImage> Parse(std::string bytes, int depth, size_t* raster_left);
     void ParseStructure();
     void AddImage(Image im, std::wstring_view href);
+    // The drawing itself, into `rt` (`dc` is it).
+    void Render(ID2D1RenderTarget* rt, ID2D1DeviceContext5* dc, const D2D1_RECT_F& rect, IDWriteFactory* dw);
+    // Draws from raster_ if it is (or now becomes) the one for this size.
+    bool DrawRaster(ID2D1RenderTarget* rt, const D2D1_RECT_F& rect, IDWriteFactory* dw);
 
     std::string source_;
     int depth_ = 0;  // nesting level of this document inside <image>s
@@ -69,10 +73,18 @@ private:
     float vb_x_ = 0, vb_y_ = 0, vb_w_ = 0, vb_h_ = 0;
     std::vector<Text> texts_;
     std::vector<Image> images_;
+    size_t elements_ = 0;  // start tags
 
     ID2D1RenderTarget* doc_rt_ = nullptr;
     ComPtr<ID2D1SvgDocument> doc_;
     bool doc_failed_ = false;
+    // Direct2D draws a big drawing (thousands of elements) anew each time,
+    // some 0.1 s, and a document may show it many times each paint. Asked
+    // for at one device size twice in a row, it is drawn from a bitmap of
+    // itself at that size.
+    ComPtr<ID2D1Bitmap> raster_;
+    D2D1_SIZE_U raster_px_{}, asked_px_{};
+    bool raster_failed_ = false;
 };
 
 }  // namespace mdv
