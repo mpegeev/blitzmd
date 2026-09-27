@@ -11,9 +11,9 @@
 
 | Светлая тема | Тёмная тема |
 |---|---|
-| ![BlitzMD показывает README в стиле GitHub в Total Commander, светлая тема](docs/screenshot-light.png) | ![BlitzMD показывает alerts GitHub в Total Commander, тёмная тема](docs/screenshot-dark.png) |
+| ![Обзор BlitzMD в самом BlitzMD, светлая тема: логотип, бейджи, таблица, список задач и подсказка](docs/screenshot-light.png) | ![Схема Mermaid, формула и alerts GitHub в BlitzMD, тёмная тема](docs/screenshot-dark.png) |
 
-![BlitzMD показывает блоки кода с подсветкой синтаксиса](docs/screenshot-code.png)
+![Блоки кода с подсветкой синтаксиса и номерами строк в BlitzMD](docs/screenshot-code.png)
 
 ## Коротко
 
@@ -281,6 +281,7 @@ out\build\x64-release\highlight_test.exe -q   # подсветка синтак�
 эталоном (примеры с HTML намеренно интерпретируются, а не выводятся как есть). Прогон под
 AddressSanitizer (`-DMDVIEW_ASAN=ON`) и фаззинг чисты.
 
+`scripts\screenshots.ps1` заново снимает скриншоты README с документов в `docs/screenshots/`.
 `samples/gfm/` — документы для проверки на глаз: обзор всей спецификации, README в стиле GitHub,
 alerts, сноски и формулы, 45+ языков программирования, таблицы, списки, типографика на 15+ языках
 (включая письмо справа налево), пограничные случаи и документ на 2,5 МБ.
