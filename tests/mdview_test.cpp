@@ -3620,6 +3620,67 @@ int main(int argc, char** ansi_argv) {
                 ++failures;
             }
         }
+        {  // architecture: 450 groups of two services around a hub (placing
+           // each went through every group for each place tried: "too large", #176)
+            std::wstring src = L"architecture-beta\nservice hub(server)[Hub]\n";
+            for (int i = 0; i < 450; ++i) {
+                const std::wstring k = std::to_wstring(i);
+                src += L"group g" + k + L"[G" + k + L"]\nservice a" + k + L"(disk)[A] in g" + k + L"\nservice b" + k +
+                       L"(disk)[B] in g" + k + L"\na" + k + L":R -- L:b" + k + L"\nhub:R -- L:a" + k + L"\n";
+            }
+            std::wstring error;
+            const double t0 = NowMs();
+            const auto scene = layout(src, &error);
+            const double ms = NowMs() - t0;
+            std::printf("  architecture 450 groups: %s in %.0f ms\n", scene ? "drawn" : WideToUtf8(error).c_str(), ms);
+            if (!scene) {
+                std::printf("FAIL: architecture: 450 groups around a hub are \"too large\"\n");
+                ++failures;
+            }
+        }
+        {  // flowchart: a chain in 24 nested subgraphs no edge crosses (the
+           // budget check framed each: "too large", #180)
+            std::wstring src = L"flowchart TD\n";
+            for (int i = 0; i < 24; ++i) src += L"subgraph d" + std::to_wstring(i) + L"\n";
+            for (int i = 0; i < 60; ++i) src += L"n" + std::to_wstring(i) + L" ----------> n" + std::to_wstring(i + 1) + L"\n";
+            for (int i = 0; i < 24; ++i) src += L"end\n";
+            std::wstring error;
+            const auto scene = layout(src, &error);
+            std::printf("  flowchart chain in 24 nested subgraphs: %s\n", scene ? "drawn" : WideToUtf8(error).c_str());
+            if (!scene) {
+                std::printf("FAIL: flowchart: nested subgraphs no edge crosses are \"too large\"\n");
+                ++failures;
+            }
+        }
+        {  // flowchart: a subgraph's only edges go to its own nodes (they were
+           // lost: laid out on its own, it stood for both ends, #181)
+            std::wstring error;
+            auto shapes = [&](const std::wstring& edges) {
+                const auto scene = layout(L"flowchart TD\nsubgraph S\nx\ny\nend\n" + edges, &error);
+                return scene ? scene->shapes.size() : size_t{0};
+            };
+            const size_t none = shapes(L""), edges = shapes(L"x --> S\nS --> y\n");
+            const size_t inner_none = shapes(L"subgraph C\nz\nend\n"), inner = shapes(L"subgraph C\nz\nend\nS --> C\n");
+            std::printf("  subgraph to its own nodes: %zu shapes, without the edges %zu; to its own subgraph: %zu, %zu\n", edges, none,
+                        inner, inner_none);
+            if (edges <= none || inner <= inner_none) {
+                std::printf("FAIL: flowchart: edges between a subgraph and what is inside it are lost\n");
+                ++failures;
+            }
+        }
+        {  // swimlanes: a node's loop and edges to a lane were not drawn (#182)
+            std::wstring error;
+            auto shapes = [&](const std::wstring& edges) {
+                const auto scene = layout(L"swimlane-beta TD\nsubgraph A\na --> b\nend\nsubgraph B\nc\nend\n" + edges, &error);
+                return scene ? scene->shapes.size() : size_t{0};
+            };
+            const size_t plain = shapes(L""), loop = shapes(L"a --> a\n"), to_lane = shapes(L"A --> c\n"), from_lane = shapes(L"b --> B\n");
+            std::printf("  swimlanes: %zu shapes; with a loop %zu, from a lane %zu, to a lane %zu\n", plain, loop, to_lane, from_lane);
+            if (loop <= plain || to_lane <= plain || from_lane <= plain) {
+                std::printf("FAIL: swimlanes: loops or edges with a lane end are not drawn\n");
+                ++failures;
+            }
+        }
         {  // Long runs of blanks, and one line of many blocks: time grows with the
            // input, not its square (each blank or block looked to the end of
            // its run or the text again: #169, #173, #174).

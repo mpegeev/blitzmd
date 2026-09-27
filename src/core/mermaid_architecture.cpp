@@ -684,18 +684,14 @@ private:
                     int c0, r0, c1, r1;
                 };
                 std::vector<Box> taken;
-                std::vector<size_t> big;              // those of taken bigger than a cell
-                std::unordered_set<uint64_t> occupied;  // the cells of the others
+                // The cells taken (a group's all: going through the groups
+                // for each place tried made 450 groups "too large").
+                std::unordered_set<uint64_t> occupied;
                 auto cell = [](int c, int r) { return (static_cast<uint64_t>(static_cast<uint32_t>(c)) << 32) | static_cast<uint32_t>(r); };
                 std::vector<std::pair<int, int>> ring;
                 for (const size_t v : part) {
                     Unit& u = units[static_cast<size_t>(kids[v])];
                     auto free_at = [&](int c, int r) {
-                        for (const size_t b : big) {
-                            const Box& o = taken[b];
-                            if (++work > kMaxWork) TooLarge();
-                            if (c < o.c1 && c + u.w > o.c0 && r < o.r1 && r + u.h > o.r0) return false;
-                        }
                         for (int dc = 0; dc < u.w; ++dc) {
                             for (int dr = 0; dr < u.h; ++dr) {
                                 if (++work > kMaxWork) TooLarge();
@@ -724,8 +720,12 @@ private:
                         }
                     }
                     taken.push_back({u.col, u.row, u.col + u.w, u.row + u.h});
-                    if (u.w == 1 && u.h == 1) occupied.insert(cell(u.col, u.row));
-                    else big.push_back(taken.size() - 1);
+                    for (int dc = 0; dc < u.w; ++dc) {
+                        for (int dr = 0; dr < u.h; ++dr) {
+                            if (++work > kMaxWork) TooLarge();
+                            occupied.insert(cell(u.col + dc, u.row + dr));
+                        }
+                    }
                 }
                 int c0 = std::numeric_limits<int>::max(), r0 = c0, c1 = std::numeric_limits<int>::min(), r1 = c1;
                 for (const Box& o : taken) {
