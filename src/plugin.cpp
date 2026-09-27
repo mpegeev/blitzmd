@@ -48,6 +48,23 @@ std::wstring AnsiToWide(const char* s) {
     return w;
 }
 
+// The ini path Total Commander suggests comes in ANSI: characters the code
+// page lacks are lost ('?', or a look-alike) and its folder isn't found. It
+// is next to TC's own ini, whose path is in COMMANDER_INI in Unicode.
+std::wstring SuggestedIniPath(const char* ansi) {
+    const std::wstring ini = AnsiToWide(ansi);
+    if (ini.empty()) return ini;
+    const DWORD attr = GetFileAttributesW(DirectoryOf(ini).c_str());
+    if (ini.find(L'?') == std::wstring::npos && attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        return ini;
+    }
+    std::wstring tc_ini(32768, L'\0');
+    const DWORD n = GetEnvironmentVariableW(L"COMMANDER_INI", tc_ini.data(), static_cast<DWORD>(tc_ini.size()));
+    if (n == 0 || n >= tc_ini.size()) return ini;
+    tc_ini.resize(n);
+    return tc_ini;
+}
+
 HBITMAP PreviewBitmap(const std::wstring& path, int width, int height, const char* buf, int buflen) {
     if (width <= 0 || height <= 0) return nullptr;
     // A thumbnail only shows the beginning of the document: parse up to 64 KB.
@@ -105,7 +122,7 @@ void __stdcall ListSetDefaultParams(ListDefaultParamStruct* dps) {
         if (!dps) return;
         Host().interface_hi = dps->PluginInterfaceVersionHi;
         Host().interface_lo = dps->PluginInterfaceVersionLow;
-        const std::wstring ini = AnsiToWide(dps->DefaultIniName);
+        const std::wstring ini = SuggestedIniPath(dps->DefaultIniName);
         if (!ini.empty()) SetSettingsPath(ini);
         EnsureSettings();
     } catch (...) {

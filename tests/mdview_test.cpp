@@ -1438,14 +1438,20 @@ int main(int argc, char** ansi_argv) {
         const std::string prefix = argv[4];
         const std::wstring dir = DirectoryOf(FullPath(argv[4]));
         CreateDirectoryW(dir.c_str(), nullptr);
-        const std::wstring ini = dir + L"mdview.ini";
+        // Total Commander's settings in a folder whose name the ANSI path
+        // TC suggests may not keep ("用户"): the plugin finds it through
+        // COMMANDER_INI (#160).
+        const std::wstring tc_dir = dir + L"\x7528\x6237\\";
+        CreateDirectoryW(tc_dir.c_str(), nullptr);
+        SetEnvironmentVariableW(L"COMMANDER_INI", (tc_dir + L"wincmd.ini").c_str());
+        const std::wstring ini = tc_dir + L"mdview.ini";
         DeleteFileW(ini.c_str());
         struct {
             int size;
             DWORD lo, hi;
             char ini[MAX_PATH];
         } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
-        strncpy_s(dp.ini, AnsiPath(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        strncpy_s(dp.ini, AnsiPath(tc_dir + L"lsplugin.ini").c_str(), _TRUNCATE);
         set_params(&dp);
 
         WNDCLASSW wc{};
