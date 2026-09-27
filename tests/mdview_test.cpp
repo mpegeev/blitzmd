@@ -881,6 +881,130 @@ int main(int argc, char** ansi_argv) {
         std::printf(failures ? "search: %d FAILED\n" : "search OK\n", failures);
         return failures ? 1 : 0;
     }
+    if (cmd == "theme" && argc >= 4) {
+        // theme <mdview.wlx64> <out-dir>: under a Total Commander that doesn't
+        // report its dark mode (plugin interface before 2.12) the "Auto" theme
+        // follows a change of the Windows one (#157), and no window of the
+        // plugin outlives the last viewer. The Windows theme changed is this
+        // process's own: HKEY_CURRENT_USER is a private hive meanwhile.
+        HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
+        using SetParamsFn = void(__stdcall*)(void*);
+        using LoadFn = HWND(__stdcall*)(HWND, const wchar_t*, int);
+        using CloseFn = void(__stdcall*)(HWND);
+        auto set_params = dll ? reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams")) : nullptr;
+        auto load = dll ? reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW")) : nullptr;
+        auto close = dll ? reinterpret_cast<CloseFn>(GetProcAddress(dll, "ListCloseWindow")) : nullptr;
+        if (!set_params || !load || !close) {
+            std::fprintf(stderr, "cannot load plugin\n");
+            return 1;
+        }
+        const std::wstring dir = FullPath(argv[3]) + L"\\";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        DeleteFileW((dir + L"mdview.ini").c_str());
+        struct {
+            int size;
+            DWORD lo, hi;
+            char ini[MAX_PATH];
+        } dp{static_cast<int>(sizeof(dp)), 11, 2, {}};
+        strncpy_s(dp.ini, AnsiPath(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        set_params(&dp);
+        {
+            const std::string md = "# Theme\n\nSome text.\n";
+            HANDLE f = CreateFileW((dir + L"theme.md").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD n = 0;
+            if (f != INVALID_HANDLE_VALUE) {
+                WriteFile(f, md.data(), static_cast<DWORD>(md.size()), &n, nullptr);
+                CloseHandle(f);
+            }
+        }
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"MdViewThemeHost";
+        RegisterClassW(&wc);
+        HWND host = CreateWindowExW(0, wc.lpszClassName, L"theme test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40, 800,
+                                    600, nullptr, nullptr, wc.hInstance, nullptr);
+        HWND viewer = load(host, (dir + L"theme.md").c_str(), 0);
+        if (!viewer) {
+            std::fprintf(stderr, "ListLoadW failed\n");
+            return 1;
+        }
+        auto pump = [](int ms) {
+            const double end = NowMs() + ms;
+            MSG msg;
+            while (NowMs() < end) {
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                Sleep(5);
+            }
+        };
+        struct Windows {
+            HMODULE dll;
+            int count = 0;
+        };
+        auto plugin_windows = [dll] {  // top-level ones, on this thread
+            Windows w{dll};
+            EnumThreadWindows(
+                GetCurrentThreadId(),
+                [](HWND h, LPARAM lp) {
+                    auto* w = reinterpret_cast<Windows*>(lp);
+                    if (reinterpret_cast<HMODULE>(GetClassLongPtrW(h, GCLP_HMODULE)) == w->dll) ++w->count;
+                    return TRUE;
+                },
+                reinterpret_cast<LPARAM>(&w));
+            return w.count;
+        };
+        int failures = 0;
+        auto expect = [&failures](bool ok, const char* what) {
+            std::printf("%s: %s\n", ok ? "ok  " : "FAIL", what);
+            if (!ok) ++failures;
+        };
+        pump(300);
+        const std::string prefix = WideToUtf8(dir) + "theme";
+        const bool dark = IsDarkPixel(CaptureWindow(host, prefix + "0.png", true));
+        std::printf("the Windows theme is %s\n", dark ? "dark" : "light");
+        HKEY hive = nullptr;
+        if (RegLoadAppKeyW((dir + L"hkcu.dat").c_str(), &hive, KEY_ALL_ACCESS, 0, 0) != ERROR_SUCCESS) {
+            expect(false, "a private registry hive");
+        } else {
+            // What Windows does: WM_SETTINGCHANGE to every top-level window
+            // (of this thread: the rest of the desktop has nothing to do with it).
+            auto change_windows_theme = [&](bool to_dark) {
+                const DWORD light = to_dark ? 0 : 1;
+                RegSetKeyValueW(hive, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                                L"AppsUseLightTheme", REG_DWORD, &light, sizeof light);
+                RegOverridePredefKey(HKEY_CURRENT_USER, hive);
+                EnumThreadWindows(
+                    GetCurrentThreadId(),
+                    [](HWND h, LPARAM) {
+                        SendMessageW(h, WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(L"ImmersiveColorSet"));
+                        return TRUE;
+                    },
+                    0);
+                RegOverridePredefKey(HKEY_CURRENT_USER, nullptr);
+                pump(300);
+            };
+            change_windows_theme(!dark);
+            expect(IsDarkPixel(CaptureWindow(host, prefix + "1.png", true)) != dark,
+                   "the viewer follows a change of the Windows theme");
+            change_windows_theme(dark);
+            expect(IsDarkPixel(CaptureWindow(host, prefix + "2.png", true)) == dark, "... and a change back");
+            RegCloseKey(hive);
+        }
+        close(viewer);
+        expect(plugin_windows() == 0, "no window of the plugin is left after the last viewer");
+        dp.lo = 13;  // a Total Commander that reports its dark mode: nothing to watch
+        set_params(&dp);
+        viewer = load(host, (dir + L"theme.md").c_str(), 0);
+        expect(viewer && plugin_windows() == 0, "no top-level window under Total Commander 2.12+");
+        if (viewer) close(viewer);
+        DestroyWindow(host);
+        FreeLibrary(dll);
+        std::printf(failures ? "theme FAILED\n" : "theme OK\n");
+        return failures ? 1 : 0;
+    }
     if (cmd == "modal" && argc >= 4) {
         // modal <mdview.wlx64> <out-dir>: Total Commander closes the viewer
         // while one of its modal loops runs: the context menu, and the "Run
