@@ -84,6 +84,7 @@ Step 'long paths' { & $t longpath (Join-Path $tmp 'longpath') | Where-Object { $
 Step 'remote pictures' { & $t remote $dll (Join-Path $tmp 'remote') | Where-Object { $_ -match 'FAIL|remote' } }
 Step 'search' { & $t search $dll (Join-Path $tmp 'search') | Where-Object { $_ -match 'FAIL|search' } }
 Step 'Windows theme' { & $t theme $dll (Join-Path $tmp 'theme') | Where-Object { $_ -match 'FAIL|theme' } }
+Step 'printer' { & $t printer dialog | Where-Object { $_ -match 'FAIL|printer' } }
 Step 'heavy paragraphs' { & $t heavy 5000 | Where-Object { $_ -match 'FAIL|heavy' } }
 Step 'closed in a modal loop' { & $t modal $dll (Join-Path $tmp 'modal') | Where-Object { $_ -match 'FAIL|modal' } }
 
