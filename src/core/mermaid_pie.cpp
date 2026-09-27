@@ -180,16 +180,21 @@ std::wstring Number(double v) {
 
 std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Source& src) {
     using M = SceneBuilder::Measured;
+    // Values as shares of the largest: the sum of two near 1e308 is infinite
+    // (and every slice 0%).
+    double largest = 0;
+    for (const Slice& s : p.slices) largest = std::max(largest, s.value);
+    auto share = [&](size_t i) { return largest > 0 ? p.slices[i].value / largest : 0.0; };
     double sum = 0;
-    for (const Slice& s : p.slices) sum += s.value;
+    for (size_t i = 0; i < p.slices.size(); ++i) sum += share(i);
     // Slices under 1% are left out (the others fill the circle), as Mermaid
     // does; percentages are of the whole.
     std::vector<size_t> shown;
     double shown_sum = 0;
     for (size_t i = 0; i < p.slices.size(); ++i) {
-        if (sum > 0 && p.slices[i].value / sum * 100 >= 1) {
+        if (sum > 0 && share(i) / sum * 100 >= 1) {
             shown.push_back(i);
-            shown_sum += p.slices[i].value;
+            shown_sum += share(i);
         }
     }
     // The title: the pie's own, or the front matter's (25px, as Mermaid's).
@@ -225,7 +230,7 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
     if (shown_sum > 0) {
         float a = 0;
         for (size_t i : shown) {
-            const float a1 = a + static_cast<float>(p.slices[i].value / shown_sum) * 2 * kPi;
+            const float a1 = a + static_cast<float>(share(i) / shown_sum) * 2 * kPi;
             AddSlice(b, c, kRadius, a, std::min(a1, 2 * kPi));
             b.End(Role(static_cast<uint8_t>(kDgCategory + i % 12)), black, 2.f);
             a = a1;
@@ -233,11 +238,11 @@ std::shared_ptr<DiagramScene> Build(const Parser& p, SceneBuilder& b, const Sour
         // The percentages on them, three quarters out.
         a = 0;
         for (size_t i : shown) {
-            const float a1 = a + static_cast<float>(p.slices[i].value / shown_sum) * 2 * kPi;
+            const float a1 = a + static_cast<float>(share(i) / shown_sum) * 2 * kPi;
             const float mid = (a + a1) / 2;
             a = a1;
             RichText t;
-            t.text = std::to_wstring(std::lround(p.slices[i].value / sum * 100)) + L"%";
+            t.text = std::to_wstring(std::lround(share(i) / sum * 100)) + L"%";
             const M m = b.Measure(t, 0, false, 1.0625f);
             const D2D1_POINT_2F at = D2D1::Point2F(c.x + 0.75f * kRadius * std::sin(mid), c.y - 0.75f * kRadius * std::cos(mid));
             b.Text(m, D2D1::Point2F(at.x - m.w / 2, at.y - m.h / 2), Role(kDgText));

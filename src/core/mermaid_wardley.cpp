@@ -537,8 +537,9 @@ private:
         if (neg_y) ++i_;
         const double y = IntValue();
         Expect(T::Rbr, Tr(L"Expected \"]\"", L"Ожидалось «]»"));
-        n->label_dx = neg_x ? -x : x;
-        n->label_dy = neg_y ? -y : y;
+        // (400 digits are infinite: a label drawn nowhere.)
+        n->label_dx = std::clamp(neg_x ? -x : x, -1e4, 1e4);
+        n->label_dy = std::clamp(neg_y ? -y : y, -1e4, 1e4);
     }
 
     void PipelineStatement() {

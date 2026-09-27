@@ -215,25 +215,27 @@ private:
             {L"<[", L"]>", Shape::Arrow},          {L"[", L"]", Shape::Rect},         {L"(", L")", Shape::Round},
             {L">", L"]", Shape::Asymmetric},       {L"{", L"}", Shape::Diamond},
         };
+        static constexpr wchar_t kQuote[] = L"\"", kNewline[] = L"\n";
         for (const auto& s : kShapes) {
             const std::wstring_view rest = c_.Rest();
             if (!rest.starts_with(s.open)) continue;
             // The label: "quoted" or up to the closing.
             const std::wstring_view after = rest.substr(std::wcslen(s.open));
+            const size_t base = static_cast<size_t>(after.data() - src_.text.data());
             std::wstring_view label;
             size_t used;
             if (!after.empty() && after.front() == L'"') {
-                const size_t q = after.find(L'"', 1);
-                if (q == std::wstring_view::npos) continue;
-                label = after.substr(1, q - 1);
-                if (!after.substr(q + 1).starts_with(s.close)) continue;
-                used = q + 1;
+                const size_t q = FindFrom(kQuote, base + 1);
+                if (q == std::wstring::npos) continue;
+                label = after.substr(1, q - base - 1);
+                if (!after.substr(q - base + 1).starts_with(s.close)) continue;
+                used = q - base + 1;
             } else {
-                const size_t e = after.find(s.close);
-                const size_t nl = after.find(L'\n');
-                if (e == std::wstring_view::npos || (nl != std::wstring_view::npos && nl < e)) continue;
-                label = after.substr(0, e);
-                used = e;
+                const size_t e = FindFrom(s.close, base);
+                const size_t nl = FindFrom(kNewline, base);
+                if (e == std::wstring::npos || (nl != std::wstring::npos && nl < e)) continue;
+                label = after.substr(0, e - base);
+                used = e - base;
             }
             if (label.size() > kMaxLabel) c_.Fail(Tr(L"Text too long", L"Слишком длинный текст"));
             b->label = std::wstring(label);
@@ -250,6 +252,18 @@ private:
             return true;
         }
         return false;
+    }
+
+    // The first `what` in the source at or after `from` (npos: none). Found
+    // once for a stretch: a line of thousands of blocks looked for each
+    // one's closing to its end (quadratic).
+    size_t FindFrom(const wchar_t* what, size_t from) {
+        Found& f = found_[what];
+        if (!(f.from <= from && from <= f.at)) {  // (none in [f.from, f.at))
+            f.from = from;
+            f.at = src_.text.find(what, from);
+        }
+        return f.at;
     }
 
     // -->, ---, -.->, ==>, <-->, -- "label" -->, -->|label|
@@ -337,6 +351,10 @@ private:
     Cursor c_;
     std::unordered_map<std::wstring, int> ids_;
     size_t class_chars_ = 0;  // ChargeClasses
+    struct Found {
+        size_t from = std::wstring::npos, at = 0;  // (nothing found yet)
+    };
+    std::unordered_map<const wchar_t*, Found> found_;  // FindFrom's, by string
 };
 
 // ---------------------------------------------------------------------------
