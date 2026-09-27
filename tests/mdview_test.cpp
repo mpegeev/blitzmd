@@ -4853,6 +4853,48 @@ int main(int argc, char** ansi_argv) {
                 ++failures;
             }
         }
+        {
+            // The block tree is at most 128 deep (the layout and rendering
+            // recurse over it). A footnote body under 200 open <blockquote>s,
+            // with one of its own under as many, and so on: each body counted
+            // its depth from 0 (#164).
+            std::string md;
+            for (int level = 0; level < 4; ++level) {
+                const std::string indent(static_cast<size_t>(level) * 4, ' ');
+                md += repeat(indent + "<blockquote>\n", 200) + "\n" + indent + "Ref[^a]\n\n" + indent + "[^a]: first\n\n";
+            }
+            md += std::string(16, ' ') + repeat("> ", 200) + "deep\n";
+            auto doc = ParseMarkdown(md, L"C:\\heavy.md");
+            size_t deepest = 0;
+            for (const auto& b : doc->storage) {
+                size_t depth = 0;
+                for (const Block* p = b->parent; p; p = p->parent) ++depth;
+                deepest = std::max(deepest, depth);
+            }
+            std::printf("  footnote bodies under 200 <blockquote>s, 4 deep: the tree is %zu deep\n", deepest);
+            // (At the limit a body still goes a level under its definition:
+            // 4 more at most, bodies nest 4 deep.)
+            if (deepest > 128 + 4) {
+                std::printf("FAIL: footnote bodies make the tree deeper than its limit\n");
+                ++failures;
+            }
+        }
+        {
+            // 65536 nested <b>: the text after they close is not bold (the
+            // count of open ones was 16 bits: it wrapped to 0, #165).
+            const std::string md = "x " + repeat("<b>", 65536) + "bold" + repeat("</b>", 65536) + " after\n";
+            auto doc = ParseMarkdown(md, L"C:\\heavy.md");
+            const Block* leaf = doc->leaves.empty() ? nullptr : doc->leaves[0];
+            const size_t at = leaf ? leaf->text.find(L"after") : std::wstring::npos;
+            bool bold_after = false;
+            for (const StyleRun& r : leaf && at != std::wstring::npos ? leaf->runs : std::vector<StyleRun>{}) {
+                if (r.start <= at && at < r.start + r.length) bold_after = (r.flags & kBold) != 0;
+            }
+            if (at == std::wstring::npos || bold_after) {
+                std::printf("FAIL: the text after 65536 nested <b> is still bold\n");
+                ++failures;
+            }
+        }
         std::printf(failures ? "heavy: %d FAILED\n" : "heavy OK\n", failures);
         return failures ? 1 : 0;
     }

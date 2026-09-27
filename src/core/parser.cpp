@@ -428,7 +428,7 @@ private:
     std::vector<Block*> implicit_lists_;  // open lists implied by a stray <li>, innermost last
 
     uint32_t mask_ = 0;
-    uint16_t counts_[kStyleBitCount] = {};
+    uint32_t counts_[kStyleBitCount] = {};  // (not 16 bits: 65536 <b> in a paragraph wrapped)
     std::vector<int32_t> links_;
     std::vector<bool> a_has_href_;
     std::wstring pending_text_;  // buffered MD_TEXT_NORMAL (for emoji shortcodes)
@@ -484,7 +484,9 @@ Block* Builder::Push(BlockType type) {
     Block* parent = Top();
     // Layout and rendering recurse over the tree: beyond a sane depth, blocks
     // still open and close in order but are attached at the deepest level.
-    if (stack_.size() > kMaxNesting) parent = stack_[kMaxNesting - 1];
+    // (A footnote body's tree goes under its definition: that much less.)
+    const size_t limit = std::max<size_t>(kMaxNesting - std::min(opt_.nesting_base, kMaxNesting), 1);
+    if (stack_.size() > limit) parent = stack_[limit - 1];
     Block* b = doc_.NewBlock(type);
     b->parent = parent;
     parent->children.push_back(b);
@@ -742,7 +744,7 @@ void Builder::PopStyle(uint32_t flags) {
 
 void Builder::ResetInline() {
     mask_ = 0;
-    std::fill(std::begin(counts_), std::end(counts_), uint16_t{0});
+    std::fill(std::begin(counts_), std::end(counts_), 0u);
     links_.clear();
     a_has_href_.clear();
     hidden_depth_ = 0;
@@ -1066,6 +1068,7 @@ void Builder::AppendFootnoteBody(Block* def) {
     ParseOptions sub_opt = opt_;
     ++sub_opt.footnote_nesting;
     sub_opt.footnote_base = next_footnote_;
+    for (const Block* p = def; p->parent; p = p->parent) ++sub_opt.nesting_base;
     std::unique_ptr<Document> sub = ParseMarkdown(it->second, doc_.path, sub_opt);
     const int32_t link_off = static_cast<int32_t>(doc_.links.size());
     const int32_t image_off = static_cast<int32_t>(doc_.images.size());
