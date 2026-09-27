@@ -88,6 +88,10 @@ private:
 // Registered window message sent when asynchronous image work completes.
 UINT ImageLoadedMessage();
 
+// When the DLL is unloaded: the pictures' thread pool, which keeps a thread
+// even when idle, is closed.
+void ReleaseImagePool();
+
 // Whether a URL's host is this computer or on its local network (a name
 // without a dot, .local, or an address, the name's included, that is
 // loopback, private, link-local...). Remote pictures are never loaded from

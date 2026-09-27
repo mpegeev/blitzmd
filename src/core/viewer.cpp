@@ -511,8 +511,11 @@ Viewer::~Viewer() {
     if (it != list.end()) {
         list.erase(it);
         if (list.empty()) {
+            // (The DLL may be unloaded next: nothing left to release under
+            // the loader lock.)
             G().d2d.Reset();
-            if (G().watcher) DestroyWindow(G().watcher);  // (the DLL may be unloaded next)
+            G().dw.Reset();
+            if (G().watcher) DestroyWindow(G().watcher);
             G().watcher = nullptr;
         }
     }
@@ -1062,7 +1065,8 @@ void Viewer::OnPaint() {
     images_.TrimMemory();
     if (anim_) {
         // Keep animating at the display's refresh rate.
-        DwmFlush();
+        static const bool dwm = SystemDllLoads(L"dwmapi.dll");
+        if (dwm) DwmFlush();
         Invalidate();
     }
     layout_.EvictFar(scroll_y_, scroll_y_ + ViewHeight());

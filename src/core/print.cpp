@@ -144,6 +144,7 @@ HGLOBAL PrinterDevNames(const wchar_t* printer) {
 
 bool PrintDocument(HWND owner, Document& doc, const LayoutConfig& config, const std::wstring& title,
                    const wchar_t* printer, const RECT* margins) {
+    if (!SystemDllLoads(L"comdlg32.dll")) return false;
     constexpr DWORD kFlags = PD_RETURNDC | PD_NOSELECTION | PD_USEDEVMODECOPIESANDCOLLATE | PD_ALLPAGES;
     PRINTDLGW pd{};
     pd.lStructSize = sizeof pd;
