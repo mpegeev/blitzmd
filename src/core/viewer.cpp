@@ -2976,7 +2976,7 @@ LRESULT Viewer::Proc(UINT msg, WPARAM wp, LPARAM lp) {
     return DefWindowProcW(hwnd_, msg, wp, lp);
 }
 
-bool Viewer::Print(const wchar_t* /*printer*/, const RECT* margins) {
+bool Viewer::Print(const wchar_t* printer, const RECT* margins) {
     if (!doc_ || printing_) return false;
     LayoutConfig cfg = MakeLayoutConfig();
     cfg.dark = false;             // paper is white
@@ -2994,7 +2994,7 @@ bool Viewer::Print(const wchar_t* /*printer*/, const RECT* margins) {
     const HWND self = hwnd_;
     printing_ = true;
     try {
-        ok = PrintDocument(self, *doc_, cfg, title, margins);
+        ok = PrintDocument(self, *doc_, cfg, title, printer, margins);
     } catch (...) {
         ok = false;
     }

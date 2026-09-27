@@ -22,6 +22,8 @@
 //   reload <dll> <dir>                       auto-reload after an editor's save
 //   modal <dll> <out-dir>                    closed while a modal loop runs
 //   search <dll> <out-dir>                   ListSearchTextW both ways
+//   theme <dll> <out-dir>                    "Auto" follows the Windows theme
+//   printer dialog                           the print dialog starts with TC's printer
 //   remote <dll> <out-dir>                   pictures on a server that never answers
 //   longpath <out-dir>                       a picture in a path past MAX_PATH
 //   inputs all                               data: URIs, text encodings, SVG sniffing
@@ -36,10 +38,12 @@
 //   fuzz <iterations> [seed]                 random documents through everything
 #include <windows.h>
 #include <winsock2.h>
+#include <commdlg.h>
 #include <dwmapi.h>
 #include <psapi.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
+#include <winspool.h>
 
 #include <algorithm>
 #include <atomic>
@@ -87,7 +91,8 @@ int Usage() {
                  "  post <class> <msg> <wparam> [lparam] [--async]\n"
                  "  plugin <dll> <file.md> <out.png> [search text] [--dark] [--hover X Y] [--idle]\n"
                  "  settings|zoom <dll> <file.md> <out-prefix>  reload <dll> <dir>\n"
-                 "  modal|search|remote <dll> <out-dir>         longpath <out-dir>    inputs all\n"
+                 "  modal|search|remote|theme <dll> <out-dir>   longpath <out-dir>    inputs all\n"
+                 "  printer dialog\n"
                  "  heavy <limit-ms>    details <file.md>...    flags <file.md>\n"
                  "  math <file.md> [iterations]                 tex \"<TeX source>\"\n"
                  "  mermaid <file.md>... [fuzz iterations]\n"
@@ -1005,6 +1010,78 @@ int main(int argc, char** ansi_argv) {
         std::printf(failures ? "theme FAILED\n" : "theme OK\n");
         return failures ? 1 : 0;
     }
+    if (cmd == "printer") {
+        // printer dialog: the print dialog starts with the printer chosen in
+        // Total Commander (#159), here one that isn't the default. The dialog
+        // is the classic one, which a hook asks for (Windows 11 may show its
+        // own, in another process): the hook reads the printer shown and
+        // cancels.
+        std::vector<std::wstring> printers;
+        {
+            DWORD bytes = 0, count = 0;
+            const DWORD where = PRINTER_ENUM_LOCAL | PRINTER_ENUM_CONNECTIONS;
+            EnumPrintersW(where, nullptr, 4, nullptr, 0, &bytes, &count);
+            std::vector<BYTE> buf(bytes);
+            if (bytes && EnumPrintersW(where, nullptr, 4, buf.data(), bytes, &bytes, &count)) {
+                const auto* info = reinterpret_cast<const PRINTER_INFO_4W*>(buf.data());
+                for (DWORD i = 0; i < count; ++i) printers.push_back(info[i].pPrinterName);
+            }
+        }
+        wchar_t default_printer[512] = {};
+        DWORD default_n = static_cast<DWORD>(std::size(default_printer));
+        if (!GetDefaultPrinterW(default_printer, &default_n)) default_printer[0] = 0;
+        std::wstring printer;
+        for (const std::wstring& p : printers) {
+            if (p != default_printer && (printer.empty() || p == L"Microsoft Print to PDF")) printer = p;
+        }
+        // The printer the dialog shows when started with `name` ("" if it
+        // didn't show), and its error.
+        auto dialog = [](const wchar_t* name, DWORD& error) {
+            std::wstring shown;
+            PRINTDLGW pd{};
+            pd.lStructSize = sizeof pd;
+            pd.Flags = PD_ENABLEPRINTHOOK | PD_NOWARNING;
+            pd.hDevNames = PrinterDevNames(name);
+            pd.lCustData = reinterpret_cast<LPARAM>(&shown);
+            pd.lpfnPrintHook = [](HWND dlg, UINT msg, WPARAM, LPARAM lp) -> UINT_PTR {
+                if (msg == WM_INITDIALOG) {
+                    auto* out = reinterpret_cast<std::wstring*>(reinterpret_cast<PRINTDLGW*>(lp)->lCustData);
+                    wchar_t text[512] = {};
+                    GetDlgItemTextW(dlg, 1139, text, static_cast<int>(std::size(text)));  // (cmb4)
+                    *out = text[0] ? text : L"(none)";
+                    PostMessageW(dlg, WM_COMMAND, IDCANCEL, 0);
+                }
+                return 0;
+            };
+            error = PrintDlgW(&pd) ? 0 : CommDlgExtendedError();
+            if (pd.hDevMode) GlobalFree(pd.hDevMode);
+            if (pd.hDevNames) GlobalFree(pd.hDevNames);
+            return shown;
+        };
+        int failures = 0;
+        if (printer.empty()) {
+            std::printf("no printer but the default one: not checked\n");
+        } else {
+            DWORD error = 0;
+            const std::wstring shown = dialog(printer.c_str(), error);
+            std::printf("\"%s\" chosen: the dialog shows \"%s\" (error %lu)\n", WideToUtf8(printer).c_str(),
+                        WideToUtf8(shown).c_str(), error);
+            if (shown != printer || error != 0) {
+                std::printf("FAIL: the print dialog does not start with the printer chosen\n");
+                ++failures;
+            }
+            // A printer removed since: the default one (or an error, and
+            // PrintDocument shows the dialog again without it).
+            const std::wstring gone = dialog(L"No such printer (mdview test)", error);
+            std::printf("a printer gone: \"%s\" (error 0x%lx)\n", WideToUtf8(gone).c_str(), error);
+            if (error == 0 && gone != default_printer) {
+                std::printf("FAIL: the print dialog for a printer gone shows another than the default\n");
+                ++failures;
+            }
+        }
+        std::printf(failures ? "printer FAILED\n" : "printer OK\n");
+        return failures ? 1 : 0;
+    }
     if (cmd == "modal" && argc >= 4) {
         // modal <mdview.wlx64> <out-dir>: Total Commander closes the viewer
         // while one of its modal loops runs: the context menu, and the "Run
@@ -1438,14 +1515,20 @@ int main(int argc, char** ansi_argv) {
         const std::string prefix = argv[4];
         const std::wstring dir = DirectoryOf(FullPath(argv[4]));
         CreateDirectoryW(dir.c_str(), nullptr);
-        const std::wstring ini = dir + L"mdview.ini";
+        // Total Commander's settings in a folder whose name the ANSI path
+        // TC suggests may not keep ("用户"): the plugin finds it through
+        // COMMANDER_INI (#160).
+        const std::wstring tc_dir = dir + L"\x7528\x6237\\";
+        CreateDirectoryW(tc_dir.c_str(), nullptr);
+        SetEnvironmentVariableW(L"COMMANDER_INI", (tc_dir + L"wincmd.ini").c_str());
+        const std::wstring ini = tc_dir + L"mdview.ini";
         DeleteFileW(ini.c_str());
         struct {
             int size;
             DWORD lo, hi;
             char ini[MAX_PATH];
         } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
-        strncpy_s(dp.ini, AnsiPath(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+        strncpy_s(dp.ini, AnsiPath(tc_dir + L"lsplugin.ini").c_str(), _TRUNCATE);
         set_params(&dp);
 
         WNDCLASSW wc{};

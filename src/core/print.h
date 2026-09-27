@@ -53,9 +53,14 @@ private:
     UINT width_px_ = 0, band_px_ = 0;
 };
 
-// Shows the print dialog and prints `doc`. `margins` are in 0.1 mm
-// (MM_LOMETRIC) as passed by Total Commander; may be null.
+// Shows the print dialog and prints `doc`. The dialog starts with `printer`
+// (the one chosen in Total Commander; null or empty, or one PrintDlg doesn't
+// take: the default one). `margins` are in 0.1 mm (MM_LOMETRIC) as passed by
+// Total Commander; may be null.
 bool PrintDocument(HWND owner, Document& doc, const LayoutConfig& config, const std::wstring& title,
-                   const RECT* margins);
+                   const wchar_t* printer, const RECT* margins);
+
+// PRINTDLG's hDevNames naming `printer` (GlobalFree it), null for none.
+HGLOBAL PrinterDevNames(const wchar_t* printer);
 
 }  // namespace mdv

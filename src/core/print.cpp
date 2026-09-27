@@ -118,19 +118,42 @@ IWICBitmap* PageRenderer::RenderBand(float y, float height, float clip_bottom) {
     return bitmap_.Get();
 }
 
+HGLOBAL PrinterDevNames(const wchar_t* printer) {
+    // "winspool", the printer, no port (the printer's own); offsets in
+    // characters from the start of the structure.
+    constexpr wchar_t kDriver[] = L"winspool";
+    constexpr size_t kHeader = sizeof(DEVNAMES) / sizeof(wchar_t);
+    constexpr size_t kDriverLength = std::size(kDriver);  // (with its terminator)
+    const size_t n = printer ? wcslen(printer) : 0;
+    if (n == 0 || n > 4096) return nullptr;
+    HGLOBAL h = GlobalAlloc(GHND, (kHeader + kDriverLength + n + 2) * sizeof(wchar_t));  // (zeroed)
+    auto* names = h ? static_cast<DEVNAMES*>(GlobalLock(h)) : nullptr;
+    if (!names) {
+        if (h) GlobalFree(h);
+        return nullptr;
+    }
+    names->wDriverOffset = static_cast<WORD>(kHeader);
+    names->wDeviceOffset = static_cast<WORD>(kHeader + kDriverLength);
+    names->wOutputOffset = static_cast<WORD>(kHeader + kDriverLength + n + 1);
+    wchar_t* chars = reinterpret_cast<wchar_t*>(names);
+    wmemcpy(chars + names->wDriverOffset, kDriver, kDriverLength);
+    wmemcpy(chars + names->wDeviceOffset, printer, n);
+    GlobalUnlock(h);
+    return h;
+}
+
 bool PrintDocument(HWND owner, Document& doc, const LayoutConfig& config, const std::wstring& title,
-                   const RECT* margins) {
+                   const wchar_t* printer, const RECT* margins) {
+    constexpr DWORD kFlags = PD_RETURNDC | PD_NOSELECTION | PD_USEDEVMODECOPIESANDCOLLATE | PD_ALLPAGES;
     PRINTDLGW pd{};
     pd.lStructSize = sizeof pd;
     pd.hwndOwner = owner;
-    pd.Flags = PD_RETURNDC | PD_NOSELECTION | PD_USEDEVMODECOPIESANDCOLLATE | PD_ALLPAGES;
+    pd.Flags = kFlags;
     pd.nMinPage = 1;
     pd.nMaxPage = 9999;
     pd.nFromPage = 1;
     pd.nToPage = 9999;
     pd.nCopies = 1;
-    if (!PrintDlgW(&pd)) return CommDlgExtendedError() == 0;  // cancelled, or failed (no printer...)
-    const HDC dc = pd.hDC;
     // Released however printing ends, an exception (out of memory) included:
     // a job started is ended or aborted, never left open in the spooler.
     struct Job {
@@ -145,6 +168,21 @@ bool PrintDocument(HWND owner, Document& doc, const LayoutConfig& config, const 
             if (pd.hDevNames) GlobalFree(pd.hDevNames);
         }
     } job{pd};
+    // The dialog starts with the printer chosen in Total Commander. One it
+    // doesn't take (removed since: PDERR_PRINTERNOTFOUND) is left out.
+    pd.hDevNames = PrinterDevNames(printer);
+    if (pd.hDevNames) pd.Flags |= PD_NOWARNING;
+    BOOL chosen = PrintDlgW(&pd);
+    if (!chosen && pd.hDevNames && CommDlgExtendedError() != 0 && IsWindow(owner)) {
+        GlobalFree(pd.hDevNames);
+        pd.hDevNames = nullptr;
+        if (pd.hDevMode) GlobalFree(pd.hDevMode);
+        pd.hDevMode = nullptr;
+        pd.Flags = kFlags;
+        chosen = PrintDlgW(&pd);
+    }
+    if (!chosen) return CommDlgExtendedError() == 0;  // cancelled, or failed (no printer...)
+    const HDC dc = pd.hDC;
     // The owner (the viewer, which owns `doc`) may have been closed while a
     // dialog was up: here, and in StartDoc (a printer to a file asks for its
     // name). Nothing touches `doc` before both.
