@@ -2,8 +2,12 @@
 
 [English](README.md) | **Русский**
 
-**BlitzMD** — бесплатный плагин с открытым кодом для **просмотра Markdown в
-[Total Commander](https://www.ghisler.com)** (Lister-плагин, WLX). Нажмите **F3** на `.md`-файле
+---
+
+**BlitzMD** — бесплатный плагин с открытым кодом для **просмотра Markdown файлов в
+[Total Commander](https://www.ghisler.com)** (Lister-плагин, WLX).
+
+Нажмите **F3** на `.md`-файле
 или откройте быстрый просмотр **Ctrl+Q** — файл сразу показывается так, как его рисует GitHub:
 таблицы, списки задач, сноски, alerts, формулы, диаграммы Mermaid, подсветка кода, эмодзи и
 тёмная тема. BlitzMD рисует документ сам, через Direct2D и DirectWrite: без браузерного движка,
@@ -27,14 +31,13 @@
 | Windows | Windows 10 версии 1703 и новее, Windows 11 |
 | Движок | Нативный C++: разбор [md4c](https://github.com/mity/md4c), отрисовка Direct2D + DirectWrite |
 | Зависимости | Нет: только системные библиотеки |
-| Интерфейс | Английский и русский (по языку интерфейса Windows) |
+| Интерфейс | Английский и русский |
 | Лицензия | MIT, бесплатно |
 
 ## Установка
 
 1. Скачайте `blitzmd.zip` из [последнего релиза](../../releases/latest).
-2. Откройте архив в Total Commander (Enter на файле) — TC предложит установить плагин,
-   подтвердите.
+2. Откройте архив в Total Commander (Enter на файле) — TC предложит установить плагин, подтвердите.
 3. Готово: F3 или Ctrl+Q на `.md`-файле.
 
 Вручную: распакуйте архив в любую папку и добавьте `blitzmd.wlx64` (или `blitzmd.wlx` для
@@ -145,13 +148,14 @@ BlitzMD точно размечает только видимую часть д�
 потоках, а память под них ограничена (192 МБ, в 32-битной версии 96 МБ): давно не показанные
 картинки выгружаются и декодируются заново, когда снова попадают на экран.
 
-Замеры на ноутбуке (AMD Ryzen 9 5900HX, Windows 11), от вызова Total Commander до первого кадра на
-экране:
+Замеры на AMD Ryzen 9 5900HX, Windows 11, от вызова Total Commander до первого кадра на экране:
 
 | Документ | Открывается за | Память |
 |---|---|---|
-| README в стиле GitHub с бейджами и картинками (`samples/gfm/02-github-readme.md`) | 40 мс | +22 МБ |
-| 2,4 МБ Markdown, 18 000 абзацев (`samples/gfm/09-large-document.md`) | 0,12 с | +51 МБ |
+| README в стиле GitHub с бейджами и картинками (`samples/gfm/02-github-readme.md`) | 40–45 мс | +22 МБ |
+| 2,4 МБ Markdown, 18 000 абзацев (`samples/gfm/09-large-document.md`) | 0,12–0,15 с | +51 МБ |
+
+Время от запуска к запуску зависит от состояния процессора; в таблице — обычный разброс.
 
 ## Управление
 
@@ -258,33 +262,65 @@ powershell -File scripts\test.ps1                                          # x64
 powershell -File scripts\test.ps1 -Build out\build\x86-release -Quick     # x86, меньше фаззинга
 ```
 
+Что проверяет `test.ps1`:
+
+- **Спецификации:** GFM 0.29, CommonMark 0.31.2, расширения GFM для таблиц, зачёркивания и
+  автоссылок, а также собственные случаи BlitzMD (`tests/spec/mdview-extensions.txt`: front
+  matter, HTML-списки, сноски и другое).
+- **Части рендерера:** подсветка синтаксиса (1,4 млн проверок и фаззинг), таблица эмодзи, флаги,
+  свёрнутые `<details>`, формулы, все диаграммы Mermaid из примеров (с враждебным вводом и
+  фаззингом), абзацы из десятков тысяч форматированных кусков.
+- **Каждый пример** из `samples/gfm/` рисуется при ширине 320 и 900 пикселей.
+- **Сам DLL, как его вызывает Total Commander:** три примера с миниатюрами, автообновление, окно
+  настроек, масштаб картинок, картинки с неотвечающего сервера, поиск, смена темы Windows,
+  принтер, выбранный в Total Commander, выгрузка DLL, первая отрисовка, закрытие внутри модального
+  цикла, data: URI, кодировки текста, пути длиннее 260 символов.
+- **Фаззинг:** 400 случайных документов (100 с `-Quick`) через разбор, разметку и отрисовку.
+
+Результат по спецификациям: 614 из 672 примеров GFM 0.29 совпадают с эталоном. Остальные 58:
+53 примера про «сырой» HTML (BlitzMD намеренно интерпретирует его, а не выводит как текст),
+3 примера, где разбор md4c расходится со спецификацией, и 2, отключённых в самой спецификации.
+CommonMark 0.31.2: совпадают 596 из 652, плюс те же 53 примера про HTML и 3 расхождения md4c.
+Проваленных примеров нет.
+
+Перед слиянием ветки `scripts\verify.ps1` собирает и проверяет рабочую копию так же, как CI, плюс
+сборку с AddressSanitizer (`-DMDVIEW_ASAN=ON`): x64 с полным `test.ps1`, x86 с `-Quick`, под ASan
+— фаззинг и тест модального цикла. `-Skip asan` пропускает сборку с ASan, `-Asan { … }` запускает
+под ней дополнительные команды; логи — в `out\verify\`.
+
 Отдельные проверки — инструмент `mdview_test.exe`, который собирается вместе с плагином:
 
 ```powershell
 $t = "out\build\x64-release\mdview_test.exe"
-& $t spec tests\spec\gfm-spec.txt           # тесты спецификации GFM 0.29 (672 примера)
-& $t spec tests\spec\commonmark-spec.txt    # тесты CommonMark 0.31.2
-& $t render samples\gfm\02-github-readme.md out.png --width 900 [--dark] [--zoom 1.5]
-& $t pages  samples\gfm\05-tables.md page   # постраничная разбивка как при печати
-& $t bench  samples\gfm\09-large-document.md
-& $t fuzz   2000                            # случайные документы: разбор + разметка + отрисовка
-& $t plugin out\build\x64-release\blitzmd.wlx64 README.md shot.png "поиск"   # сам DLL, как его вызывает TC
-& $t settings out\build\x64-release\blitzmd.wlx64 README.md out\tmp\set\s   # окно настроек
-& $t zoom out\build\x64-release\blitzmd.wlx64 tests\zoom.md out\tmp\zoom\z  # масштаб картинок
-& $t mermaid samples\gfm\20-mermaid-flowchart.md   # диаграммы: разбор, раскладка, враждебный ввод, фаззинг
-& $t math samples\gfm\18-math.md                   # формулы: разбор TeX, вёрстка, фаззинг
-& $t mmd diagram.mmd out.png [--dark]              # одна диаграмма Mermaid в PNG
-out\build\x64-release\highlight_test.exe -q   # подсветка синтаксиса: 1,4 млн проверок, фаззинг
+$dll = "out\build\x64-release\blitzmd.wlx64"
+& $t spec tests\spec\gfm-spec.txt [-v] [-n 42]      # файл спецификации или один его пример
+& $t render samples\gfm\02-github-readme.md out.png --width 900 [--dark] [--zoom 1.5] [--lines]
+& $t pages  samples\gfm\05-tables.md page           # постраничная разбивка как при печати
+& $t bench  samples\gfm\09-large-document.md        # время разбора и разметки
+& $t dump   README.md                               # разобранный документ в виде HTML
+& $t text   README.md                               # текст, который копирует Ctrl+A, Ctrl+C
+& $t fuzz   2000                                    # случайные документы (фаззинг)
+& $t mermaid samples\gfm\20-mermaid-flowchart.md    # диаграммы: разбор, раскладка, фаззинг
+& $t mmd diagram.mmd out.png [--dark]               # одна диаграмма Mermaid в PNG
+& $t math samples\gfm\18-math.md                    # формулы: разбор TeX, вёрстка, фаззинг
+& $t tex "\frac{a}{b}"                              # дерево одной формулы
+& $t plugin $dll README.md shot.png "поиск" [--dark]   # сам DLL, как его вызывает TC
+& $t settings $dll README.md out\tmp\set\s          # окно настроек
+& $t zoom $dll tests\zoom.md out\tmp\zoom\z         # масштаб картинок
+# <dll> <папка>: reload, search, remote, theme, unload, firstpaint, modal
+& $t reload $dll out\tmp\reload                     # автообновление
+& $t inputs all                                     # data: URI, кодировки текста, SVG
+& $t longpath out\tmp\longpath                      # картинка по пути длиннее 260 символов
+& $t printer dialog                                 # принтер, выбранный в Total Commander
+& $t heavy 5000                                     # огромные абзацы: первый экран за 5 с
+out\build\x64-release\highlight_test.exe -q         # подсветка синтаксиса
+out\build\x64-release\emoji_test.exe                # таблица эмодзи
 ```
-
-Результат по спецификации GFM: все 604 примера, не связанных с «сырым» HTML, совпадают с
-эталоном (примеры с HTML намеренно интерпретируются, а не выводятся как есть). Прогон под
-AddressSanitizer (`-DMDVIEW_ASAN=ON`) и фаззинг чисты.
 
 `scripts\screenshots.ps1` заново снимает скриншоты README с документов в `docs/screenshots/`.
 `samples/gfm/` — документы для проверки на глаз: обзор всей спецификации, README в стиле GitHub,
 alerts, сноски и формулы, 45+ языков программирования, таблицы, списки, типографика на 15+ языках
-(включая письмо справа налево), пограничные случаи и документ на 2,5 МБ.
+(включая письмо справа налево), пограничные случаи и документ на 2,4 МБ.
 
 ## Непрерывная сборка и выпуск версии
 
