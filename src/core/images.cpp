@@ -420,6 +420,12 @@ DWORD HttpRequest(HINTERNET session, const std::wstring& url, std::string& out, 
                     location.assign(target, bytes / sizeof(wchar_t));
                 }
             } else if (status == 200) {
+                // The answer has begun: 5 s of silence in it (not 15 as before
+                // the answer, which a badge service may take to make) ends it.
+                // A read can't be stopped, so a viewer closed meanwhile waits
+                // that long for the thread.
+                DWORD read_timeout = 5000;
+                WinHttpSetOption(req, WINHTTP_OPTION_RECEIVE_TIMEOUT, &read_timeout, sizeof read_timeout);
                 char buf[16384];
                 for (;;) {
                     DWORD got = 0;
