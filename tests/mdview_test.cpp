@@ -4841,6 +4841,39 @@ int main(int argc, char** ansi_argv) {
                 ++failures;
             }
         }
+        {
+            // An SVG of 70 000 rectangles shown 50 times: Direct2D drew it
+            // anew each time, 0.14 s each (7 s in all, #199).
+            wchar_t tmp[MAX_PATH] = {};
+            GetTempPathW(MAX_PATH, tmp);
+            const std::wstring dir = std::wstring(tmp) + L"mdview-heavy-svg\\";
+            CreateDirectoryW(dir.c_str(), nullptr);
+            static const char* const kFills[] = {"#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"};
+            std::string svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"400\" height=\"200\" viewBox=\"0 0 700 100\">";
+            for (int i = 0; i < 70000; ++i) {
+                svg += "<rect x=\"" + std::to_string(i % 700) + "\" y=\"" + std::to_string(i / 700 % 100) +
+                       "\" width=\"8\" height=\"8\" fill=\"" + kFills[i % 5] + "\"/>";
+            }
+            svg += "</svg>";
+            HANDLE f = CreateFileW((dir + L"big.svg").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD n = 0;
+            if (f != INVALID_HANDLE_VALUE) {
+                WriteFile(f, svg.data(), static_cast<DWORD>(svg.size()), &n, nullptr);
+                CloseHandle(f);
+            }
+            auto refs = ParseMarkdown(repeat("![b](big.svg)\n\n", 50), dir + L"refs.md");
+            OffscreenOptions o;
+            o.width = 900.f;
+            o.max_height = 12000.f;
+            const double t0 = NowMs();
+            const bool drawn = RenderToBitmap(*refs, o) != nullptr;
+            const double ms = NowMs() - t0;
+            std::printf("  an SVG of 70 000 rectangles shown 50 times: %.0f ms\n", ms);
+            if (!drawn || ms > 2000) {
+                std::printf("FAIL: a big SVG shown many times is drawn anew each time (%.0f ms)\n", ms);
+                ++failures;
+            }
+        }
         for (const auto& c : cases) {
             const double t0 = NowMs();  // (the parse is part of it)
             auto doc = ParseMarkdown(c.md, L"C:\\heavy.md");
