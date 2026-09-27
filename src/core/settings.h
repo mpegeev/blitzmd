@@ -1,4 +1,4 @@
-// Plugin settings, stored in mdview.ini next to Total Commander's plugin ini
+// Plugin settings, stored in blitzmd.ini next to Total Commander's plugin ini
 // (see ListSetDefaultParams). All values have sensible defaults; the file is
 // only written when the user changes something (context menu, settings dialog).
 #pragma once

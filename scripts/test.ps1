@@ -14,7 +14,7 @@ $root = Split-Path $PSScriptRoot -Parent
 Set-Location $root
 $bin = Resolve-Path $Build
 $t = Join-Path $bin 'mdview_test.exe'
-$dll = @(Get-ChildItem $bin -Filter 'mdview.wlx*' | Select-Object -First 1)[0].FullName
+$dll = @(Get-ChildItem $bin -Filter 'blitzmd.wlx*' | Select-Object -First 1)[0].FullName
 $tmp = Join-Path $root 'out/test'
 New-Item -ItemType Directory -Force $tmp | Out-Null
 
@@ -69,9 +69,9 @@ foreach ($f in Get-ChildItem samples/gfm/*.md) {
 
 # The plugin DLL driven like Total Commander does, and auto-reload.
 # (Not $name: inside Step that is its $Name parameter, PowerShell names ignoring case.)
-# (Each with the default settings: none left in out/test/mdview.ini.)
+# (Each with the default settings: none left in out/test/blitzmd.ini.)
 foreach ($sample in '02-github-readme.md', '04-code-highlighting.md', '16-front-matter.md') {
-    Remove-Item (Join-Path $tmp 'mdview.ini') -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $tmp 'blitzmd.ini') -ErrorAction SilentlyContinue
     Step "plugin $sample" { & $t plugin $dll "samples/gfm/$sample" (Join-Path $tmp 'plugin.png') | Summary }
 }
 Step 'auto-reload' { & $t reload $dll (Join-Path $tmp 'reload') | Summary }

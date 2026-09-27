@@ -4,7 +4,7 @@
 Usage:
     python scripts/gen_flags.py [--svg-dir DIR] [--tag TAG] [-o OUTPUT]
 
-Windows' emoji font has no country flags, so mdview draws them from Twemoji
+Windows' emoji font has no country flags, so BlitzMD draws them from Twemoji
 (https://github.com/jdecked/twemoji, graphics CC-BY 4.0): every regional
 indicator pair (1f1fa-1f1f8.svg = US) and every subdivision flag
 (1f3f4-e0067-e0062-e0065-e006e-e0067-e007f.svg = England). The SVGs come

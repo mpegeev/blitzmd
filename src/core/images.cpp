@@ -300,11 +300,11 @@ HINTERNET HttpSession() {
     static HINTERNET session = nullptr;
     std::call_once(once, [] {
         if (!SystemDllLoads(L"winhttp.dll")) return;
-        session = WinHttpOpen(L"mdview/" MDVIEW_VERSION " (Total Commander Lister plugin)",
+        session = WinHttpOpen(L"BlitzMD/" MDVIEW_VERSION " (Total Commander Lister plugin)",
                               WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
                               WINHTTP_NO_PROXY_BYPASS, 0);
         if (!session) {
-            session = WinHttpOpen(L"mdview/" MDVIEW_VERSION, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+            session = WinHttpOpen(L"BlitzMD/" MDVIEW_VERSION, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                                   WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
         }
         if (session) {
@@ -567,7 +567,7 @@ private:
 // ============================================================================
 
 UINT ImageLoadedMessage() {
-    static const UINT msg = RegisterWindowMessageW(L"mdview.ImageLoaded.v1");
+    static const UINT msg = RegisterWindowMessageW(L"BlitzMD.ImageLoaded.v1");
     return msg;
 }
 

@@ -108,7 +108,7 @@ int main() {
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 
-namespace MdView.Tools;
+namespace BlitzMD.Tools;
 
 public sealed record FileDigest(string Path, long Size, string Sha256);
 
@@ -135,7 +135,7 @@ public static class Hasher
 }
 
 // Usage:
-// foreach (var d in await Hasher.HashAllAsync(@"C:\Projects\mdview-wlx\samples"))
+// foreach (var d in await Hasher.HashAllAsync(@"C:\Projects\blitzmd\samples"))
 //     Console.WriteLine($"{d.Sha256[..12]}  {d.Size,10:N0}  {d.Path}");
 ```
 
@@ -359,7 +359,7 @@ The same language through the `delphi` alias:
 ```delphi
 procedure TMainForm.FormCreate(Sender: TObject);
 begin
-  Caption := Format('mdview %s (%d-bit)', [Version, SizeOf(Pointer) * 8]);
+  Caption := Format('blitzmd %s (%d-bit)', [Version, SizeOf(Pointer) * 8]);
   {$IFDEF DEBUG} ReportMemoryLeaksOnShutdown := True; {$ENDIF}
 end;
 ```
@@ -1100,10 +1100,10 @@ setlocal EnableExtensions EnableDelayedExpansion
 rem Install the Lister plugin into Total Commander's plugin folder
 set "TC_DIR=%COMMANDER_PATH%"
 if not defined TC_DIR set "TC_DIR=C:\Program Files\totalcmd"
-set "DEST=%TC_DIR%\Plugins\wlx\mdview"
+set "DEST=%TC_DIR%\Plugins\wlx\blitzmd"
 
-if not exist "%~dp0mdview.wlx64" (
-    echo [ERROR] mdview.wlx64 not found next to this script. 1>&2
+if not exist "%~dp0blitzmd.wlx64" (
+    echo [ERROR] blitzmd.wlx64 not found next to this script. 1>&2
     exit /b 1
 )
 
@@ -1245,7 +1245,7 @@ jobs:
         run: ctest --preset ${{ matrix.arch }}-release --output-on-failure
       - uses: actions/upload-artifact@v4
         with:
-          name: mdview-${{ matrix.arch }}
+          name: blitzmd-${{ matrix.arch }}
           path: |
             out/build/**/*.wlx
             out/build/**/*.wlx64
@@ -1291,7 +1291,7 @@ ratios = [0.5, 1.0, 1.5e3, inf, nan]
 ### INI
 
 ```ini
-; mdview.ini: Lister plugin settings
+; blitzmd.ini: Lister plugin settings
 [General]
 Theme=auto              ; auto | light | dark
 FontFace=Segoe UI
@@ -1309,7 +1309,7 @@ Link=#0969DA
 CodeBackground=#F6F8FA
 
 [Paths\Recent]
-1=C:\Projects\mdview-wlx\README.md
+1=C:\Projects\blitzmd\README.md
 2=\\server\share\docs\CHANGELOG.md
 ```
 
@@ -1318,12 +1318,12 @@ CodeBackground=#F6F8FA
 ```protobuf
 syntax = "proto3";
 
-package mdview.render.v1;
+package blitzmd.render.v1;
 
 import "google/protobuf/timestamp.proto";
 
-option go_package = "github.com/example/mdview/gen/renderv1";
-option csharp_namespace = "MdView.Render.V1";
+option go_package = "github.com/example/blitzmd/gen/renderv1";
+option csharp_namespace = "BlitzMD.Render.V1";
 
 // A request to render a Markdown document.
 message RenderRequest {
@@ -1441,7 +1441,7 @@ clean:
 
 ```cmake
 cmake_minimum_required(VERSION 3.21)
-project(mdview-wlx VERSION 0.6.0 LANGUAGES C CXX)
+project(blitzmd VERSION 0.6.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -1449,24 +1449,24 @@ option(MDVIEW_BUILD_TESTS "Build unit tests" ON)
 
 add_subdirectory(third_party/md4c EXCLUDE_FROM_ALL)
 
-add_library(mdview SHARED
+add_library(blitzmd SHARED
     src/plugin.cpp
     src/render/layout.cpp
     src/render/d2d_renderer.cpp
     src/plugin.def
 )
-target_link_libraries(mdview PRIVATE md4c d2d1 dwrite windowscodecs shlwapi)
-target_compile_definitions(mdview PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+target_link_libraries(blitzmd PRIVATE md4c d2d1 dwrite windowscodecs shlwapi)
+target_compile_definitions(blitzmd PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set_target_properties(mdview PROPERTIES SUFFIX ".wlx64" PREFIX "")
+    set_target_properties(blitzmd PROPERTIES SUFFIX ".wlx64" PREFIX "")
 else()
-    set_target_properties(mdview PROPERTIES SUFFIX ".wlx" PREFIX "")
+    set_target_properties(blitzmd PROPERTIES SUFFIX ".wlx" PREFIX "")
 endif()
 
 if(MSVC)
-    target_compile_options(mdview PRIVATE /W4 /permissive- /utf-8 $<$<CONFIG:Release>:/GL>)
-    target_link_options(mdview PRIVATE $<$<CONFIG:Release>:/LTCG>)
+    target_compile_options(blitzmd PRIVATE /W4 /permissive- /utf-8 $<$<CONFIG:Release>:/GL>)
+    target_link_options(blitzmd PRIVATE $<$<CONFIG:Release>:/LTCG>)
 endif()
 
 if(MDVIEW_BUILD_TESTS)
@@ -1499,9 +1499,9 @@ variable "environment" {
 }
 
 locals {
-  prefix = "mdview-${var.environment}"
+  prefix = "blitzmd-${var.environment}"
   tags = {
-    project     = "mdview"
+    project     = "blitzmd"
     environment = var.environment
     managed_by  = "terraform"
   }
@@ -1882,7 +1882,7 @@ sample-large.md	178915	2026-05-11	Markdown
 A directory tree drawn with box-drawing characters. Vertical lines must connect without gaps, which requires the line height to match the font's box-drawing glyphs:
 
 ```text
-mdview-wlx/
+blitzmd/
 ├── CMakeLists.txt
 ├── src/
 │   ├── plugin.cpp          ← Lister entry points (ListLoadW, ListCloseWindow, …)
@@ -1901,7 +1901,7 @@ A box diagram, with double lines and shading:
 
 ```text
 ╔══════════════════════╗      ┌───────────────┐      ┏━━━━━━━━━━━━━━━┓
-║  Total Commander     ║─────▶│  mdview.wlx64 │─────▶┃  Direct2D     ┃
+║  Total Commander     ║─────▶│ blitzmd.wlx64 │─────▶┃  Direct2D     ┃
 ║  Lister (F3)         ║◀─────│  md4c parser  │      ┃  DirectWrite  ┃
 ╚══════════════════════╝      └───────────────┘      ┗━━━━━━━━━━━━━━━┛
  ░░░░ light  ▒▒▒▒ medium  ▓▓▓▓ dark  ████ full   ▁▂▃▄▅▆▇█ bars

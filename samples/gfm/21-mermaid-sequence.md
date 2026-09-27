@@ -112,7 +112,7 @@ title: Opening a file in Total Commander
 sequenceDiagram
     actor U as User
     participant TC as Total Commander
-    participant P as mdview.wlx
+    participant P as blitzmd.wlx
     U->>TC: F3 on README.md
     TC->>+P: ListLoadW(parent, "README.md", flags)
     P->>P: parse + layout

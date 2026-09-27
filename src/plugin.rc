@@ -21,11 +21,11 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "FileDescription", "mdview - GitHub Flavored Markdown viewer for Total Commander"
+            VALUE "FileDescription", "BlitzMD - fast Markdown viewer (Lister plugin) for Total Commander"
             VALUE "FileVersion", MDVIEW_VERSION
-            VALUE "InternalName", "mdview"
+            VALUE "InternalName", "blitzmd"
             VALUE "LegalCopyright", "MIT License"
-            VALUE "ProductName", "mdview"
+            VALUE "ProductName", "BlitzMD"
             VALUE "ProductVersion", MDVIEW_VERSION
         END
     END

@@ -55,7 +55,7 @@ if ('asan' -notin $Skip) {
             $d = Get-ChildItem $env:VCToolsInstallDir -Recurse -Filter clang_rt.asan_dynamic-x86_64.dll | Select-Object -First 1
             $env:PATH = $d.DirectoryName + ';' + $env:PATH
             $t = (Resolve-Path out/build/x64-asan-full/mdview_test.exe).Path
-            $dll = (Resolve-Path out/build/x64-asan-full/mdview.wlx64).Path
+            $dll = (Resolve-Path out/build/x64-asan-full/blitzmd.wlx64).Path
             $bad = 0
             & $t fuzz 400 | Select-Object -Last 1
             if ($LASTEXITCODE -ne 0) { $bad++ }

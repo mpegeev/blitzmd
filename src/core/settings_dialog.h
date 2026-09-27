@@ -1,4 +1,4 @@
-// The "Settings…" dialog: every mdview.ini option in one window. Changes are
+// The "Settings…" dialog: every blitzmd.ini option in one window. Changes are
 // previewed live in all open viewers; OK saves them, Cancel restores the old
 // ones.
 #pragma once

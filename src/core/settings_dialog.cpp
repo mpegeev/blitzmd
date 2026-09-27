@@ -244,7 +244,7 @@ DialogTemplate SettingsDialog::BuildTemplate() {
     constexpr short M = 7, Row = 16, Check = 13, Gap = 6;
     constexpr short LX = 14, LW = 80, CX = LX + LW + 4, CW = 136, NW = 44;  // left column ends at 234
     constexpr short RH = 248, RX = RH + 7, RW = 120, W = RX + RW + M;
-    DialogTemplate t(Tr(L"mdview Settings", L"Настройки mdview"), W);
+    DialogTemplate t(Tr(L"BlitzMD Settings", L"Настройки BlitzMD"), W);
     int header = 0;
     auto section = [&](short x, short& y, const wchar_t* text) {
         t.Add(kStatic, text, static_cast<WORD>(kIdHeader + header++), SS_LEFT | SS_NOPREFIX, x, y, W - M - x, 10);
@@ -465,7 +465,7 @@ void SettingsDialog::OnCommand(WORD id, WORD code) {
 void SettingsDialog::SelectFont(WORD id, const std::wstring& name, int first) {
     LRESULT index = Send(id, CB_FINDSTRINGEXACT, static_cast<WPARAM>(first - 1), reinterpret_cast<LPARAM>(name.c_str()));
     if (index == CB_ERR || index < first) {
-        // Not installed (or typed into mdview.ini by hand): keep it selectable.
+        // Not installed (or typed into blitzmd.ini by hand): keep it selectable.
         index = Send(id, CB_INSERTSTRING, static_cast<WPARAM>(first), reinterpret_cast<LPARAM>(name.c_str()));
     }
     Send(id, CB_SETCURSEL, static_cast<WPARAM>(index));

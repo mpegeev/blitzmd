@@ -1,6 +1,6 @@
 [plugininstall]
-description=mdview - GitHub Flavored Markdown viewer (Direct2D/DirectWrite)
+description=BlitzMD - fast Markdown viewer for Total Commander (Direct2D)
 type=wlx
-file=mdview.wlx
-defaultdir=mdview
+file=blitzmd.wlx
+defaultdir=blitzmd
 version=1.0.0

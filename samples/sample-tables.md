@@ -48,7 +48,7 @@
 |---------|
 | `git pull` |
 | `cmake --build .` |
-| `cp mdview.wlx64 ...` |
+| `cp blitzmd.wlx64 ...` |
 
 ## Минимальная таблица
 
