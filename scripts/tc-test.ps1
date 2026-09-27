@@ -28,7 +28,7 @@ Get-CimInstance Win32_Process -Filter "Name='TOTALCMD64.EXE'" |
 if ($Stop) { return }
 
 New-Item -ItemType Directory -Force (Join-Path $dir 'plugin') | Out-Null
-Copy-Item (Join-Path $root "out\build\$Build\mdview.wlx64") (Join-Path $dir 'plugin\mdview.wlx64') -Force
+Copy-Item (Join-Path $root "out\build\$Build\blitzmd.wlx64") (Join-Path $dir 'plugin\blitzmd.wlx64') -Force
 if (-not (Test-Path $ini)) {
     Copy-Item $SourceIni $ini
 }
@@ -46,7 +46,7 @@ foreach ($l in $lines) {
         $out.Add($l)
     }
 }
-$plugin = Join-Path $dir 'plugin\mdview.wlx64'
+$plugin = Join-Path $dir 'plugin\blitzmd.wlx64'
 $out.Add('[ListerPlugins]')
 $out.Add("0=$plugin")
 $out.Add('0_detect="EXT="MD" | EXT="MARKDOWN" | EXT="MDOWN" | EXT="MKD" | EXT="MKDN" | EXT="MDWN" | EXT="MDTXT" | EXT="MDTEXT" | EXT="RMD""')

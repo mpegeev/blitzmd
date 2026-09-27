@@ -1,7 +1,7 @@
 # Flag emoji 🇺🇳
 
 Windows' emoji font has no country flags: a pair of *regional indicator* letters
-such as 🇷 + 🇺 shows as two letters. mdview draws them from an embedded set
+such as 🇷 + 🇺 shows as two letters. BlitzMD draws them from an embedded set
 of Twemoji flags, sized like the emoji around them: 😀 🇷🇺 🎉 🇺🇸 🚀 🇯🇵 ✨ 🇧🇷.
 Copying or searching still sees the original characters.
 

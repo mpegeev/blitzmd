@@ -1,4 +1,4 @@
-# mdview-wlx
+# blitzmd
 
 > Lister-плагин для Total Commander, показывающий markdown-файлы по F3.
 > Парсинг через md4c, рендеринг через RichEdit с RTF.
@@ -21,10 +21,10 @@
 
 ## Установка
 
-1. Скачать `mdview.wlx64` из релизов
+1. Скачать `blitzmd.wlx64` из релизов
 2. Положить в любую папку, например:
    ```
-   %COMMANDER_PATH%\plugins\wlx\mdview\
+   %COMMANDER_PATH%\plugins\wlx\blitzmd\
    ```
 3. В TC: **Configuration → Options → Edit/View → Configure internal viewer → Lister Plugins → Add**
 4. Указать путь к `.wlx64`
@@ -51,18 +51,18 @@
 ### Команды
 
 ```bash
-git clone https://github.com/example/mdview-wlx.git
-cd mdview-wlx
+git clone https://github.com/example/blitzmd.git
+cd blitzmd
 cmake -S . -B build --preset x64-release
 cmake --build build --config Release
 ```
 
-Готовый файл: `out/build/x64-release/mdview.wlx64`.
+Готовый файл: `out/build/x64-release/blitzmd.wlx64`.
 
 ### Структура проекта
 
 ```
-mdview-wlx/
+blitzmd/
 ├── CMakeLists.txt          # сборка
 ├── CMakePresets.json       # пресеты x64/x86
 ├── src/

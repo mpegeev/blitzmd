@@ -1,5 +1,5 @@
 # Builds the plugin (x64 + x86), runs the tests, and publishes a release with
-# the installable mdview.zip when a version tag (v1.2.3) is pushed.
+# the installable blitzmd.zip when a version tag (v1.2.3) is pushed.
 name: CI
 
 on:
@@ -26,12 +26,12 @@ jobs:
           TAG: ${{ github.ref_name }}    # (as a variable: never pasted into the script)
         run: |
           $cmake = Get-Content CMakeLists.txt -Raw
-          if ($cmake -notmatch 'project\(mdview-wlx VERSION ([0-9.]+)') { throw 'No version in CMakeLists.txt' }
+          if ($cmake -notmatch 'project\(blitzmd VERSION ([0-9.]+)') { throw 'No version in CMakeLists.txt' }
           if ("v$($matches[1])" -ne $env:TAG) {
             throw "Tag $env:TAG does not match version $($matches[1]) in CMakeLists.txt"
           }
 
-      - name: Build x64 and x86, package dist/mdview.zip
+      - name: Build x64 and x86, package dist/blitzmd.zip
         shell: powershell
         run: .\scripts\build.ps1 -Arch all -Package
 
@@ -46,8 +46,8 @@ jobs:
       - name: Upload the package
         uses: actions/upload-artifact@v7
         with:
-          name: mdview
-          path: dist/mdview.zip
+          name: blitzmd
+          path: dist/blitzmd.zip
           if-no-files-found: error
 
   # The uploaded package, downloaded the way the release job gets it, has what
@@ -59,18 +59,18 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: mdview
+          name: blitzmd
 
       - name: Check the package contents
         shell: python
         run: |
           import sys, zipfile
-          z = zipfile.ZipFile("mdview.zip")
+          z = zipfile.ZipFile("blitzmd.zip")
           for info in z.infolist():
               print(f"{info.file_size:>10}  {info.filename}")
-          missing = {"mdview.wlx", "mdview.wlx64", "pluginst.inf", "README.md", "LICENSE"} - set(z.namelist())
+          missing = {"blitzmd.wlx", "blitzmd.wlx64", "pluginst.inf", "README.md", "LICENSE"} - set(z.namelist())
           if missing:
-              sys.exit(f"::error::mdview.zip lacks {', '.join(sorted(missing))}")
+              sys.exit(f"::error::blitzmd.zip lacks {', '.join(sorted(missing))}")
           if not z.read("pluginst.inf").startswith(b"[plugininstall]\r\n"):
               sys.exit("::error::pluginst.inf must start with [plugininstall] and use CRLF line endings")
 
@@ -84,7 +84,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: mdview
+          name: blitzmd
 
       - name: Publish the GitHub release
         env:
@@ -92,7 +92,7 @@ jobs:
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: >
-          gh release create "$TAG" mdview.zip
+          gh release create "$TAG" blitzmd.zip
           --repo "$REPO"
-          --title "mdview $TAG"
+          --title "BlitzMD $TAG"
           --generate-notes

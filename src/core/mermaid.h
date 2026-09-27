@@ -16,7 +16,7 @@ namespace mdv {
 // Limits for hostile input: Mermaid's own (maxTextSize).
 constexpr size_t kMaxMermaidSource = 50000;  // characters
 
-// Whether `source` is a diagram mdview draws. If not, `error` says why
+// Whether `source` is a diagram BlitzMD draws. If not, `error` says why
 // ("Unsupported diagram type: gitGraph", "Line 3: expected ']'").
 bool CheckMermaid(std::wstring_view source, std::wstring* error);
 

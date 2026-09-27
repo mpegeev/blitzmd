@@ -19,7 +19,7 @@ summary: |
 # Front matter
 
 The YAML block at the very top of this file (between the `---` lines) is not
-Markdown. mdview shows it as a two-column table, one row per top-level key.
+Markdown. BlitzMD shows it as a two-column table, one row per top-level key.
 (GitHub puts the keys side by side as columns, which gets wide and scrolls;
 reading top to bottom is easier.) It must **not** render as a thematic break
 followed by a setext heading.

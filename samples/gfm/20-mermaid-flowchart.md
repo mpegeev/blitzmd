@@ -1,6 +1,6 @@
 # Mermaid: flowcharts
 
-GitHub draws ```` ```mermaid ```` blocks as diagrams. mdview lays them out itself (no browser, no JavaScript), in the colors of GitHub's light and dark Mermaid themes; like images, they zoom with Ctrl + wheel and open in the whole window. Copying a diagram gives its source, and search finds text on its labels.
+GitHub draws ```` ```mermaid ```` blocks as diagrams. BlitzMD lays them out itself (no browser, no JavaScript), in the colors of GitHub's light and dark Mermaid themes; like images, they zoom with Ctrl + wheel and open in the whole window. Copying a diagram gives its source, and search finds text on its labels.
 
 ## A decision
 
@@ -103,7 +103,7 @@ flowchart TD
 
 ## Not drawn
 
-A diagram type mdview doesn't draw (ZenUML comes from a Mermaid plugin) stays code, with a note:
+A diagram type BlitzMD doesn't draw (ZenUML comes from a Mermaid plugin) stays code, with a note:
 
 ```mermaid
 zenuml

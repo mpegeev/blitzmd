@@ -1,339 +1,335 @@
-# mdview — просмотр Markdown для Total Commander
+# BlitzMD — fast Markdown viewer for Total Commander
 
-Lister-плагин (WLX) для Total Commander, который показывает `.md`-файлы по **F3** и в панели
-быстрого просмотра (**Ctrl+Q**) так, как их рисует GitHub: полная поддержка
-[GitHub Flavored Markdown](https://github.github.com/gfm/), расширения GitHub (alerts, сноски,
-формулы, эмодзи) и HTML-вставки, которые встречаются в README.
+**English** | [Русский](README_RU.md)
 
-Рендеринг — собственный движок на **Direct2D + DirectWrite** (без браузера, без RichEdit): быстро,
-с аккуратной типографикой и минимальным расходом памяти. Разбор Markdown —
-[md4c](https://github.com/mity/md4c).
+**BlitzMD** is a free, open-source **Markdown viewer plugin for [Total Commander](https://www.ghisler.com)**
+(a Lister plugin, WLX). Press **F3** on a `.md` file, or open Quick View with **Ctrl+Q**, and the
+file shows instantly, rendered the way GitHub renders it: tables, task lists, footnotes, alerts,
+math formulas, Mermaid diagrams, syntax-highlighted code, emoji and dark mode. BlitzMD draws the
+document itself with Direct2D and DirectWrite: no web browser engine, no WebView2, no .NET, nothing
+else to install.
 
-| Светлая тема | Тёмная тема |
+| Light theme | Dark theme |
 |---|---|
-| ![Светлая тема](docs/screenshot-light.png) | ![Тёмная тема](docs/screenshot-dark.png) |
+| ![BlitzMD showing a GitHub-style README in Total Commander, light theme](docs/screenshot-light.png) | ![BlitzMD showing GitHub alerts in Total Commander, dark theme](docs/screenshot-dark.png) |
 
-![Подсветка синтаксиса](docs/screenshot-code.png)
+![BlitzMD showing syntax-highlighted code blocks](docs/screenshot-code.png)
 
-## Возможности
+## At a glance
 
-**GitHub Flavored Markdown** — все конструкции спецификации GFM 0.29: заголовки ATX/Setext,
-абзацы, цитаты, списки (маркированные, нумерованные с любым начальным номером, вложенные,
-«тесные» и «свободные»), списки задач `- [x]`, блоки кода (fenced и с отступом), таблицы с
-выравниванием, зачёркивание, ссылки всех видов (inline, reference, autolink, расширенные
-autolink `www.` / `https://` / e-mail), изображения, HTML-сущности, экранирование, жёсткие
-переносы. Проверено официальным набором тестов спецификации (см. «Тестирование»).
-
-**Расширения GitHub**
-- Alerts: `> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]` — с иконками Octicons.
-- Сноски `[^1]`, включая многоабзацные (с кодом и списками внутри), с обратными ссылками ↩.
-- Формулы `$…$`, `` $`…`$ ``, `$$…$$` и блоки ```` ```math ```` свёрстаны по правилам TeX
-  шрифтом Cambria Math (его таблица OpenType MATH), как MathJax на GitHub: дроби, корни,
-  индексы и пределы у `\sum` / `\int` / `\lim`, растягиваемые скобки `\left…\right`, матрицы и
-  `cases` / `aligned`, акценты и фигурные скобки сверху/снизу, `\text`, `\mathbb` / `\mathcal` /
-  `\mathbf`…, пробелы, `\color`, `\boxed`. Выключные формулы по центру (слишком широкие
-  уменьшаются), строчные стоят на базовой линии текста. Неизвестные команды видны как есть
-  (красным, как в MathJax); копирование и поиск дают исходный TeX.
-- Диаграммы Mermaid (блоки ```` ```mermaid ````) рисуются самим плагином, без браузера и JavaScript,
-  в цветах светлой и тёмной темы Mermaid на GitHub. Поддержаны:
-  - flowchart / graph: узлы всех форм, все виды связей (концы, толщина, пунктир, длина, подписи),
-    подграфы (со своим направлением, если в них не ведут связи снаружи; иначе — кластерами общей
-    раскладки, как у Mermaid), `classDef` / `class` / `:::` / `style` / `linkStyle`, markdown и HTML
-    в подписях. Раскладка — послойная (Sugiyama: ранги сетевым симплексом, минимизация пересечений,
-    выравнивание узлов);
-  - sequenceDiagram: участники и актёры, все виды стрелок, активации, заметки, `autonumber`, блоки
-    `loop` / `alt` / `opt` / `par` / `critical` / `break` / `rect`, группы `box`, `create` / `destroy`;
-  - classDiagram: классы с аннотациями (`<<interface>>`), полями и методами (видимость, `$` / `*`,
-    обобщения `List~int~`), все виды связей с кратностями и подписями, lollipop-интерфейсы,
-    заметки, `namespace`, `direction`, стили;
-  - stateDiagram: состояния с описаниями, начало и конец `[*]`, `<<choice>>` / `<<fork>>` / `<<join>>`,
-    составные состояния (со своими `[*]` и параллельными областями `--`), заметки, стили;
-  - erDiagram: сущности с атрибутами (тип, имя, ключи PK/FK/UK, комментарий), связи с кратностями
-    в нотации «вороньей лапки» (символами и словами), идентифицирующие и нет, псевдонимы, подграфы
-    (связи и с ними самими), стили;
-  - pie: доли по часовой стрелке с процентами, легенда (`showData` — со значениями);
-  - journey: разделы, задачи с участниками и оценкой (лицо на своей высоте), легенда участников;
-  - gantt: задачи на оси времени по разделам, `done` / `active` / `crit` / `milestone` / `vert`,
-    даты в `dateFormat`, длительности, `after` / `until`, `excludes` / `includes` (выходные
-    удлиняют задачи), `axisFormat`, `tickInterval`, компактный режим (`displayMode: compact`),
-    линия сегодняшнего дня. Даты считаются как у Mermaid (dayjs): строгий `dateFormat`, запасной
-    разбор начала как у `Date` в JavaScript, календарные месяцы и годы в длительностях;
-  - timeline: периоды с событиями по разделам, слева направо или сверху вниз (`timeline TD`);
-  - mindmap: дерево по отступам, все формы узлов, ветви в цветах темы (раскладка — аккуратное
-    дерево в обе стороны от корня, а не «силовая», как у Mermaid);
-  - quadrantChart: квадранты, точки со стилями и `classDef`, подписи осей;
-  - xychart-beta: столбцы и линии по категориям или числовой оси, вертикально и горизонтально,
-    легенда для именованных рядов;
-  - gitGraph: ветки дорожками (слева направо или `TB` / `BT`), коммиты по порядку, слияния и
-    `cherry-pick`, типы коммитов, теги и id;
-  - kanban: колонки с карточками (тикет, исполнитель, приоритет цветной кромкой);
-  - packet-beta: поля пакета по 32 бита в строке с номерами битов;
-  - radar-beta: оси, шкала кругами или многоугольниками, сглаженные кривые, легенда;
-  - treemap-beta: вложенные разделы и листья, раскладка «squarified», как у d3;
-  - requirementDiagram: требования шести видов и элементы с полями, связи (`contains`, `copies`,
-    `derives`, `satisfies`, `verifies`, `refines`, `traces`), послойная раскладка, стили;
-  - sankey-beta: потоки из CSV между узлами по столбцам, раскладка как у d3-sankey, полосы
-    с переходом цвета от источника к цели;
-  - block-beta: блоки по сетке (`columns`, ширина в столбцах, `space`), вложенные блоки, все
-    формы узлов и блочные стрелки, связи с подписями, стили;
-  - C4 (`C4Context`, `C4Container`, `C4Component`, `C4Dynamic`, `C4Deployment`): люди, системы,
-    контейнеры и компоненты (внешние, базы, очереди), границы, связи с технологией, цвета C4;
-  - architecture-beta: сервисы значками (database, disk, server, internet, cloud; значки из
-    внешних наборов — «?», как у Mermaid без них), соединения, вложенные группы, связи между
-    сторонами со стрелками и подписями, `{group}`, `align`. Раскладка — по сетке, которую задают
-    стороны связей (у Mermaid — «силовая» с этой же сеткой как ограничением);
-  - treeView-beta: дерево файлов по отступам или псевдографике, значки папок и файлов,
-    описания, подсвеченные строки;
-  - ishikawa-beta: «рыбья кость» — следствие головой, причины костями вверх и вниз, подпричины;
-  - cynefin-beta: четыре домена и беспорядок, элементы плашками, переходы стрелками;
-  - venn-beta: множества кругами с площадями и пересечениями по размерам (раскладка как у
-    venn.js, на котором Mermaid её строит), подписи областей, текстовые узлы, стили;
-  - wardley-beta: карты Уордли — компоненты по видимости и эволюции, связи с потоками,
-    тренды эволюции, конвейеры, стратегии (build, buy, outsource, market), инерция, заметки,
-    аннотации, ускорители, этапы эволюции;
-  - railroad-beta, railroad-ebnf-beta, railroad-abnf-beta, railroad-peg-beta: синтаксические
-    диаграммы грамматик, записанных вызовами, EBNF, ABNF или PEG;
-  - eventmodeling: модели событий — кадры UI, команд, моделей чтения, событий и процессоров
-    по дорожкам, данные кадров, стрелки между ними;
-  - swimlane-beta: flowchart, где подграфы верхнего уровня — дорожки (столбцы или строки)
-    с заголовками, связи под прямыми углами (раскладка упрощённая: у Mermaid своя, дорожечная);
-  - info: версия Mermaid, которой следуют эти диаграммы.
-  Диаграммы масштабируются и открываются на всё окно, как картинки; копирование даёт исходный
-  текст, поиск подсвечивает подписи. Неподдержанный тип или ошибка — блок кода с пометкой о причине.
-  Темы Mermaid (`%%{init: {theme: ...}}%%`, `themeVariables`) не применяются: цвета всегда
-  из темы GitHub, светлой или тёмной, как у документа. Пределы — как у Mermaid: 50 000 символов
-  и 500 связей в flowchart. У остальных типов Mermaid связи не ограничивает, а mdview — 2000
-  связей; очень плотный граф может не уложиться в раскладку и раньше («Диаграмма слишком
-  большая»). Слишком широкая диаграмма уменьшается по ширине колонки не больше чем вдвое,
-  дальше прокручивается вбок.
-- Эмодзи-коды `:rocket:` → 🚀 (полная база GitHub gemoji, 1900+ кодов), цветные эмодзи.
-- Флаги стран 🇷🇺 🇺🇸 🇯🇵 и 🏴󠁧󠁢󠁥󠁮󠁧󠁿 🏴󠁧󠁢󠁳󠁣󠁴󠁿 🏴󠁧󠁢󠁷󠁬󠁳󠁿: в шрифте эмодзи Windows их нет (видны две буквы), поэтому mdview рисует
-  их из встроенного набора Twemoji (262 флага, +190 КБ к DLL) размером с соседние эмодзи.
-  Копирование и поиск видят исходные символы.
-- Якоря заголовков как на GitHub (`#установка`, дубликаты `-1`, `-2`), переходы по ним.
-- Подсветка синтаксиса в блоках кода: ~70 языков (250+ названий и расширений: C/C++, C#, Java,
-  Kotlin, Swift, Go, Rust, JS/TS, Python, Ruby, PHP, Lua, SQL, Pascal/Delphi, Bash, PowerShell,
-  bat, HTML/XML, CSS, JSON, YAML, TOML, INI, diff, Dockerfile, Makefile, CMake, ассемблер, LaTeX
-  и другие), цвета как на GitHub.
-- Изображения только для тёмной/светлой темы: `#gh-dark-mode-only`, `<picture><source media>`.
-- YAML front matter в начале файла (Jekyll, Hugo, Docusaurus) показывается таблицей «ключ — значение»
-  (GitHub выстраивает ключи в строку, из-за чего таблицу приходится прокручивать).
-
-**HTML, который используют README**: `<div align="center">`, `<p align>`, `<h1 align>`,
-`<img width height align>`, `<picture>`, `<details>`/`<summary>` (раскрываются кликом),
-`<kbd>`, `<sup>`, `<sub>`, `<mark>`, `<ins>`, `<del>`, `<br>`, `<hr>`, `<a name>`, HTML-таблицы
-(`colspan`), `<dl>`, комментарии. `<script>`, `<style>`, `<iframe>` и подобное не выполняется и не
-показывается.
-
-**Изображения**: PNG, JPEG, GIF, BMP, ICO, TIFF, WebP (через WIC), SVG (включая текст и логотипы —
-бейджи shields.io и GitHub Actions выглядят как на GitHub), `data:`-URI, относительные и абсолютные
-пути, пробелы и кириллица в именах файлов. Анимированные GIF проигрываются (только пока видны на
-экране; кадры декодируются по одному, без хранения всей анимации в памяти). Картинки из интернета
-загружаются в фоне и кешируются (отключаемо). Память под картинки ограничена (192 МБ, в 32-битной
-версии 96 МБ): в документах с сотнями скриншотов давно не показанные картинки выгружаются и
-декодируются заново, когда снова попадают на экран.
-
-**Просмотр**
-- Тема следует Total Commander (включая тёмный режим TC 10+), можно задать светлую/тёмную явно.
-- Плавная прокрутка, собственная полоса прокрутки с отметками найденного текста.
-- Выделение мышью (двойной щелчок — слово, тройной — абзац), копирование (Ctrl+C, меню TC).
-- Поиск через стандартный диалог Lister (F7, F3 / Shift+F3): регистр, целые слова, назад;
-  все совпадения подсвечиваются, свёрнутые `<details>` раскрываются.
-- Ссылки: веб-ссылки открываются в браузере, `#якоря` прокручивают документ, ссылки на другие
-  `.md` открываются в этом же окне (назад — Backspace или Alt+←), остальные файлы — связанным
-  приложением. Адрес ссылки показывается во всплывающей подсказке внизу окна.
-- Широкие таблицы и (при выключенном переносе) длинный код прокручиваются по горизонтали
-  (Shift+колесо), у блоков кода есть кнопка «Копировать».
-- Номера строк в блоках кода (отключаются в контекстном меню); при копировании кода их нет.
-- Автообновление: когда файл сохраняют в редакторе, открытый просмотр перечитывает его сам и
-  остаётся на том же месте документа (отключается в контекстном меню).
-- Масштаб Ctrl+колесо / Ctrl+`+` / Ctrl+`-` / Ctrl+0 (сохраняется).
-- Процент прокрутки в заголовке Lister, переход к проценту из меню TC.
-- Печать (меню Lister «Файл → Печать»): разбивка на страницы без разрыва строк и строк таблиц.
-- Эскизы для режима просмотра эскизов Total Commander.
-- Контекстное меню: оглавление документа (переход к любому заголовку), копирование, адрес
-  ссылки/картинки, копирование блока кода, тема, перенос кода, номера строк в коде, ширина текста,
-  загрузка картинок из сети, перезагрузка (F5), автообновление, открыть в редакторе, настройки.
-- Окно настроек (контекстное меню → «Настройки…»): тема, шрифты, размер, масштаб, ширина
-  текста, перенос и номера строк в коде, подсветка, формулы, эмодзи-коды, загрузка картинок,
-  автообновление, плавная прокрутка, GPU. Изменения сразу видны во всех открытых окнах просмотра;
-  «ОК» сохраняет их, «Отмена» возвращает прежние. Окно тёмное, когда тёмный просмотр.
-- Щелчок по картинке (не ссылке) открывает изображение в программе просмотра, как на GitHub.
-- Масштаб картинок и диаграмм прямо в документе: Ctrl+колесо над картинкой увеличивает её вокруг указателя
-  внутри её рамки (текст вокруг не сдвигается), перетаскивание сдвигает, двойной щелчок
-  возвращает. Кнопки в углу картинки (при наведении): уменьшить, увеличить, сбросить, показать
-  на всё окно. На всё окно колесо масштабирует без Ctrl; Esc, Backspace, × или щелчок мимо
-  картинки возвращают к документу. SVG остаются чёткими при любом увеличении, GIF продолжают
-  проигрываться; масштаб не запоминается, печать и эскизы всегда без него.
-- Кодировки: UTF-8 (с BOM и без), UTF-16 LE/BE (с BOM и без), ANSI (например, Windows-1251).
-- Документы любого размера: многомегабайтный файл открывается за доли секунды — точная
-  разметка строится только для видимой части, остальное уточняется в фоне.
-
-## Установка
-
-1. Скачайте `mdview.zip` (в нём `mdview.wlx64` для 64-битного и `mdview.wlx` для 32-битного TC).
-2. Откройте архив в Total Commander (Enter на файле) — TC предложит установить плагин.
-3. Готово: F3 или Ctrl+Q на `.md` файле.
-
-Вручную: распакуйте в любую папку и добавьте `mdview.wlx64` в
-*Конфигурация → Настройка → Плагины → Плагины просмотра (WLX)*.
-
-Требования: Windows 10 версии 1703 и новее или Windows 11. Внешних зависимостей нет — только
-системные библиотеки.
-
-## Управление
-
-| Клавиша / действие | Что делает |
+| | |
 |---|---|
-| ↑ ↓, PgUp PgDn, Пробел / Shift+Пробел, Home End | Прокрутка |
-| Колесо / Shift+колесо | Прокрутка / горизонтальная прокрутка широкой таблицы или кода |
-| Ctrl+колесо, Ctrl+`+`, Ctrl+`-`, Ctrl+0 | Масштаб |
-| Ctrl+колесо над картинкой, перетаскивание, двойной щелчок | Масштаб картинки в её рамке, сдвиг, сброс |
-| Кнопка ⛶ на картинке или диаграмме / «Показать … на всё окно» | На всё окно: колесо — масштаб, `+` `-` `0`, стрелки; Esc — назад |
-| Ctrl+A, Ctrl+C | Выделить всё, копировать |
-| Щелчок по ссылке | Открыть ссылку / перейти к якорю / открыть `.md` |
-| Backspace, Alt+← | Назад после перехода по ссылке |
-| Щелчок по `<summary>` | Раскрыть / свернуть `<details>` |
-| F5 | Перечитать файл |
-| F7, F3, Shift+F3 | Поиск (диалог Lister) |
-| N, P, Esc, 1–7 … | Стандартные клавиши Lister (обрабатывает Total Commander) |
+| What it is | Lister plugin (WLX) for Total Commander that views Markdown files |
+| Opens | `.md`, `.markdown`, `.mdown`, `.mkd`, `.mkdn`, `.mdwn`, `.mdtxt`, `.mdtext`, `.rmd` |
+| Where | Lister (F3), Quick View panel (Ctrl+Q), thumbnail view, printing |
+| Renders | GitHub Flavored Markdown (GFM 0.29) and GitHub's extensions: alerts, footnotes, math, Mermaid, emoji, the HTML READMEs use |
+| Total Commander | 64-bit (`blitzmd.wlx64`) and 32-bit (`blitzmd.wlx`), both in one package |
+| Windows | Windows 10 version 1703 or later, Windows 11 |
+| Engine | Native C++: [md4c](https://github.com/mity/md4c) parser, Direct2D + DirectWrite rendering |
+| Dependencies | None: only system libraries |
+| Interface | English and Russian (follows the Windows display language) |
+| License | MIT, free |
 
-## Настройки
+## Installation
 
-Меняются в окне «Настройки…» контекстного меню (часть — прямо пунктами меню). Хранятся в
-`mdview.ini` рядом с `wincmd.ini` (секция `[mdview]`); файл создаётся при первом изменении, все
-ключи необязательны.
+1. Download `blitzmd.zip` from the [latest release](../../releases/latest).
+2. Open the archive in Total Commander (Enter on it). Total Commander offers to install the plugin:
+   confirm.
+3. Press F3 or Ctrl+Q on any `.md` file.
 
-| Ключ | По умолчанию | Описание |
+Manual installation: unpack the archive to any folder and add `blitzmd.wlx64` (or `blitzmd.wlx`
+for 32-bit Total Commander) under *Configuration → Options → Plugins → Lister plugins (WLX)*.
+
+## Features
+
+### GitHub Flavored Markdown
+
+Everything in the GFM 0.29 specification: ATX and Setext headings, paragraphs, block quotes,
+lists (bulleted, numbered from any number, nested, tight and loose), task lists `- [x]`, fenced
+and indented code blocks, tables with column alignment, strikethrough, links of every kind
+(inline, reference, autolinks, extended `www.` / `https://` / e-mail autolinks), images, HTML
+entities, escapes and hard line breaks. Checked against the official specification tests (see
+[Testing](#testing)).
+
+### GitHub extensions
+
+- **Alerts**: `> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`, with their
+  Octicons icons.
+- **Footnotes** `[^1]`, including footnotes of several paragraphs with code and lists, with back
+  links ↩.
+- **Math**: `$…$`, `` $`…`$ ``, `$$…$$` and ```` ```math ```` blocks, typeset by TeX's rules with
+  Cambria Math (its OpenType MATH table), as MathJax does on GitHub: fractions, roots, sub- and
+  superscripts, limits on `\sum` / `\int` / `\lim`, growing delimiters `\left…\right`, matrices,
+  `cases` / `aligned`, accents, over- and underbraces, `\text`, `\mathbb` / `\mathcal` /
+  `\mathbf`, spacing, `\color`, `\boxed`. Unknown commands show as they are (in red, like
+  MathJax); copying and searching use the TeX source.
+- **Mermaid diagrams** (```` ```mermaid ```` blocks), laid out and drawn by the plugin itself,
+  without a browser or JavaScript, in the colors of GitHub's light and dark Mermaid themes:
+  - flowchart / graph: every node shape and link kind (ends, thickness, dotted, length, labels),
+    subgraphs (with their own direction when no link crosses them), `classDef` / `class` / `:::` /
+    `style` / `linkStyle`, Markdown and HTML in labels; layered (Sugiyama) layout;
+  - sequenceDiagram: participants and actors, every arrow, activations, notes, `autonumber`,
+    `loop` / `alt` / `opt` / `par` / `critical` / `break` / `rect`, `box`, `create` / `destroy`;
+  - classDiagram, stateDiagram, erDiagram, requirementDiagram, C4 (Context, Container,
+    Component, Dynamic, Deployment);
+  - pie, journey, gantt, timeline, mindmap, quadrantChart, xychart-beta, sankey-beta, radar-beta,
+    treemap-beta, packet-beta, gitGraph, kanban, block-beta, architecture-beta;
+  - treeView-beta, ishikawa-beta, cynefin-beta, venn-beta, wardley-beta, eventmodeling,
+    swimlane-beta, railroad-beta (and its EBNF, ABNF and PEG forms), info.
+
+  Diagrams zoom and open in the whole window like pictures; copying gives their source, and
+  search highlights text on their labels. A diagram type that isn't supported, or a diagram with
+  an error, stays a code block with a note saying why. Mermaid themes (`%%{init: {theme: ...}}%%`)
+  are not applied: the colors are always GitHub's, light or dark like the document. Limits are
+  Mermaid's: 50 000 characters and 500 links in a flowchart (2000 links in the other types).
+- **Emoji shortcodes** `:rocket:` → 🚀 (the whole GitHub gemoji set, 1900+ codes), color emoji.
+- **Country flags** 🇷🇺 🇺🇸 🇯🇵 and 🏴󠁧󠁢󠁥󠁮󠁧󠁿 🏴󠁧󠁢󠁳󠁣󠁴󠁿 🏴󠁧󠁢󠁷󠁬󠁳󠁿: Windows' emoji font has none (it shows two letters), so BlitzMD draws
+  them from an embedded Twemoji set (262 flags).
+- **Heading anchors** as on GitHub (`#installation`, duplicates `-1`, `-2`), and links to them.
+- **Syntax highlighting** in code blocks: about 70 languages (250+ names and extensions: C/C++,
+  C#, Java, Kotlin, Swift, Go, Rust, JavaScript/TypeScript, Python, Ruby, PHP, Lua, SQL,
+  Pascal/Delphi, Bash, PowerShell, batch files, HTML/XML, CSS, JSON, YAML, TOML, INI, diff,
+  Dockerfile, Makefile, CMake, assembly, LaTeX and more), in GitHub's colors.
+- **Theme-specific images**: `#gh-dark-mode-only`, `<picture><source media>`.
+- **YAML front matter** (Jekyll, Hugo, Docusaurus) shows as a key–value table.
+
+### HTML used in READMEs
+
+`<div align="center">`, `<p align>`, `<h1 align>`, `<img width height align>`, `<picture>`,
+`<details>` / `<summary>` (open on click), `<kbd>`, `<sup>`, `<sub>`, `<mark>`, `<ins>`, `<del>`,
+`<br>`, `<hr>`, `<a name>`, HTML tables (`colspan`), `<dl>`, comments. `<script>`, `<style>`,
+`<iframe>` and the like are neither run nor shown.
+
+### Images
+
+PNG, JPEG, GIF, BMP, ICO, TIFF, WebP (through Windows Imaging Component) and SVG, including text
+and logos, so shields.io and GitHub Actions badges look as on GitHub. `data:` URIs, relative and
+absolute paths, spaces and non-Latin letters in file names. Animated GIFs play while they are on
+screen. Pictures from the internet load in the background and are cached (can be turned off);
+for safety, they are never requested from this computer or the local network.
+
+### Viewing
+
+- The theme follows Total Commander's (including its dark mode, TC 10 and later), or is set to
+  light or dark.
+- Smooth scrolling, a scroll bar that marks search hits.
+- Mouse selection (double click: a word, triple click: a paragraph), copying (Ctrl+C, Total
+  Commander's menu).
+- Search with Lister's dialog (F7, F3 / Shift+F3): match case, whole words, backwards; every
+  match is highlighted, collapsed `<details>` open.
+- Links: web links open in the browser, `#anchors` scroll the document, links to other `.md`
+  files open in the same window (back: Backspace or Alt+←), other files open in their associated
+  program, after a confirmation for programs and scripts. The link's address shows at the bottom
+  of the window.
+- Wide tables and long code lines (with wrapping off) scroll sideways (Shift+wheel); code blocks
+  have a Copy button and line numbers (not copied).
+- Auto-reload: when an editor saves the file, the view reads it again and stays at the same place.
+- Zoom: Ctrl+wheel, Ctrl+`+`, Ctrl+`-`, Ctrl+0 (remembered).
+- Pictures and diagrams zoom inside their frame (Ctrl+wheel over them, drag, double click to
+  reset) or open in the whole window.
+- Percent scrolled in Lister's title; going to a percent from Total Commander's menu.
+- Printing (Lister's *File → Print*): page breaks never split lines or table rows.
+- Thumbnails for Total Commander's thumbnail view.
+- Context menu: table of contents (go to any heading), copy, link or picture address, copy code
+  block, theme, code wrapping, line numbers, text width, pictures from the internet, reload (F5),
+  auto-reload, open in editor, settings.
+- Settings window: theme, fonts, size, zoom, text width, code wrapping and line numbers,
+  highlighting, math, emoji codes, pictures from the internet, auto-reload, smooth scrolling,
+  GPU rendering. Changes show at once in every open viewer; OK keeps them, Cancel restores.
+- Text encodings: UTF-8 (with or without BOM), UTF-16 LE/BE (with or without BOM), ANSI code
+  pages (such as Windows-1251).
+
+## Performance
+
+BlitzMD lays out exactly only the part of the document on screen and estimates the rest, refining
+it in the background, so even a document of many megabytes opens in a fraction of a second.
+Pictures decode in background threads, and their memory is bounded (192 MB, 96 MB in the 32-bit
+version): pictures not shown for a while are dropped and decoded again when they come back.
+
+Measured on a laptop (AMD Ryzen 9 5900HX, Windows 11), from Total Commander's call to the first
+frame on screen:
+
+| Document | Opens in | Memory |
 |---|---|---|
-| `Theme` | `0` | `0` — как в Total Commander (или Windows), `1` — светлая, `2` — тёмная |
-| `Font` | `Segoe UI` | Шрифт текста |
-| `MonoFont` | *(авто)* | Моноширинный шрифт; по умолчанию Cascadia Mono, иначе Consolas |
-| `FontSize` | `16` | Базовый размер шрифта (как 16px на GitHub) |
-| `Zoom` | `100` | Масштаб в процентах (30–400) |
-| `MaxWidth` | `900` | Максимальная ширина текста; `0` — на всю ширину окна |
-| `WrapCode` | `-1` | Перенос длинных строк кода: `-1` — как «Перенос строк» в Lister, `0`/`1` — выкл/вкл |
-| `LineNumbers` | `1` | Номера строк в блоках кода (из двух и более строк) |
-| `AutoReload` | `1` | Перечитывать файл, когда он меняется на диске |
-| `RemoteImages` | `1` | Загружать картинки из интернета (http/https) |
-| `SmoothScroll` | `1` | Плавная прокрутка |
-| `EmojiShortcodes` | `1` | Заменять `:код:` на эмодзи |
-| `Math` | `1` | Формулы `$…$` |
-| `Mermaid` | `1` | Диаграммы Mermaid (`0` — показывать исходный текст) |
-| `SyntaxHighlight` | `1` | Подсветка синтаксиса |
-| `HardwareRendering` | `0` | `1` — рисовать через GPU (имеет смысл для очень больших окон, 4K); по умолчанию программный Direct2D: быстрее открывается и расходует меньше памяти |
+| A GitHub-style README with badges and pictures (`samples/gfm/02-github-readme.md`) | 40 ms | +22 MB |
+| 2.4 MB of Markdown, 18 000 paragraphs (`samples/gfm/09-large-document.md`) | 0.12 s | +51 MB |
 
-## Сборка
+## Keyboard and mouse
 
-Нужны Visual Studio 2022/2026 с компонентом C++ и CMake (идёт с VS). Всё остальное лежит в
-репозитории (md4c — в `third_party`), сеть при сборке не нужна.
+| Key / action | What it does |
+|---|---|
+| ↑ ↓, PgUp PgDn, Space / Shift+Space, Home End | Scroll |
+| Wheel / Shift+wheel | Scroll / scroll a wide table or code block sideways |
+| Ctrl+wheel, Ctrl+`+`, Ctrl+`-`, Ctrl+0 | Zoom |
+| Ctrl+wheel over a picture, drag, double click | Zoom the picture in its frame, move it, reset |
+| ⛶ button on a picture or diagram | Whole window: wheel zooms, `+` `-` `0`, arrows; Esc goes back |
+| Ctrl+A, Ctrl+C | Select all, copy |
+| Click a link | Open the link / go to the anchor / open the `.md` file |
+| Backspace, Alt+← | Back after following a link |
+| Click a `<summary>` | Open / close its `<details>` |
+| F5 | Read the file again |
+| F7, F3, Shift+F3 | Search (Lister's dialog) |
+| N, P, Esc, 1–7 … | Lister's own keys (handled by Total Commander) |
+
+## Settings
+
+Change them in the settings window (context menu → *Settings…*), some straight from the context
+menu. They are stored in `blitzmd.ini` next to `wincmd.ini` (section `[blitzmd]`); the file is
+created on the first change, and every key is optional.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `Theme` | `0` | `0`: as Total Commander (or Windows), `1`: light, `2`: dark |
+| `Font` | `Segoe UI` | Text font |
+| `MonoFont` | *(auto)* | Monospaced font; Cascadia Mono if installed, else Consolas |
+| `FontSize` | `16` | Base font size (as GitHub's 16 px) |
+| `Zoom` | `100` | Zoom in percent (30–400) |
+| `MaxWidth` | `900` | Maximum text width; `0`: the whole window |
+| `WrapCode` | `-1` | Wrap long code lines: `-1` as Lister's *Wrap text*, `0` / `1` off / on |
+| `LineNumbers` | `1` | Line numbers in code blocks of two lines or more |
+| `AutoReload` | `1` | Read the file again when it changes on disk |
+| `RemoteImages` | `1` | Load pictures from the internet (http/https) |
+| `SmoothScroll` | `1` | Smooth scrolling |
+| `EmojiShortcodes` | `1` | Replace `:code:` with emoji |
+| `Math` | `1` | Math formulas `$…$` |
+| `Mermaid` | `1` | Mermaid diagrams (`0`: show their source) |
+| `SyntaxHighlight` | `1` | Syntax highlighting |
+| `HardwareRendering` | `0` | `1`: draw with the GPU (for very large windows, 4K); software Direct2D opens faster and uses less memory |
+
+## FAQ
+
+**How do I view Markdown files in Total Commander?**
+Install BlitzMD (see [Installation](#installation)), then press F3 on a `.md` file, or Ctrl+Q to
+show it in the other panel.
+
+**Does BlitzMD need a browser, Internet Explorer, WebView2 or .NET?**
+No. It parses Markdown with md4c and draws the document with Windows' own Direct2D and
+DirectWrite. The plugin is a single DLL with nothing else to install.
+
+**Does it show Markdown like GitHub does?**
+Yes, that is its aim: GitHub's typography and colors (light and dark), GFM tables and task
+lists, alerts, footnotes, math, Mermaid diagrams, emoji, and the HTML that READMEs use.
+
+**Does it work with 32-bit Total Commander?**
+Yes. The package contains `blitzmd.wlx` (32-bit) and `blitzmd.wlx64` (64-bit); Total Commander
+installs the right one.
+
+**Does it support dark mode?**
+Yes. By default the theme follows Total Commander's dark mode (or Windows'); it can also be set to
+light or dark.
+
+**Can it render Mermaid diagrams and LaTeX math?**
+Yes, both are drawn by the plugin itself, without JavaScript: 30 Mermaid diagram types, and TeX
+math typeset with Cambria Math.
+
+**Is it safe to open untrusted Markdown files?**
+Scripts in HTML are never run. Links to programs or scripts, and links to other computers'
+shares, open only after a confirmation. Pictures from the internet are never requested from this
+computer or the local network, and their download can be turned off.
+
+**Does it edit Markdown?**
+No, BlitzMD is a viewer. *Open in editor* in its context menu opens the file in the program
+Windows uses to edit `.md` files, and F4 in Total Commander opens it in Total Commander's editor.
+
+**Is BlitzMD free?**
+Yes, it is open source under the MIT license.
+
+## Building from source
+
+Visual Studio 2022 or 2026 with the C++ workload, and CMake (comes with Visual Studio). Everything
+else is in the repository (md4c in `third_party`); no network access is needed to build.
 
 ```powershell
-# x64 Release -> out\build\x64-release\mdview.wlx64
+# x64 Release -> out\build\x64-release\blitzmd.wlx64
 powershell -File scripts\build.ps1
 
-# x64 + x86 и упаковка в dist\mdview.zip (для установки из TC)
+# x64 + x86, packaged as dist\blitzmd.zip (installs from Total Commander)
 powershell -File scripts\build.ps1 -Arch all -Package
 ```
 
-Можно также открыть папку проекта в Visual Studio (CMake-пресеты `x64-release`, `x86-release`).
+The project folder can also be opened in Visual Studio (CMake presets `x64-release`,
+`x86-release`).
 
-## Тестирование
+## Testing
 
-Весь набор тестов (его же запускает CI):
+The whole test suite (CI runs the same):
 
 ```powershell
 powershell -File scripts\test.ps1                                          # x64
-powershell -File scripts\test.ps1 -Build out\build\x86-release -Quick     # x86, без фаззинга
+powershell -File scripts\test.ps1 -Build out\build\x86-release -Quick     # x86, less fuzzing
 ```
 
-Отдельные проверки — инструмент `mdview_test.exe`, который собирается вместе с плагином:
+Single checks use `mdview_test.exe`, built with the plugin:
 
 ```powershell
 $t = "out\build\x64-release\mdview_test.exe"
-& $t spec tests\spec\gfm-spec.txt           # тесты спецификации GFM 0.29 (672 примера)
-& $t spec tests\spec\commonmark-spec.txt    # тесты CommonMark 0.31.2
+& $t spec tests\spec\gfm-spec.txt           # GFM 0.29 specification tests (672 examples)
+& $t spec tests\spec\commonmark-spec.txt    # CommonMark 0.31.2
 & $t render samples\gfm\02-github-readme.md out.png --width 900 [--dark] [--zoom 1.5]
-& $t pages  samples\gfm\05-tables.md page   # постраничная разбивка как при печати
-& $t details samples\gfm\08-edge-cases.md   # порядок блоков у свёрнутых <details>, summary в конце при прокрутке
+& $t pages  samples\gfm\05-tables.md page   # pages as printed
 & $t bench  samples\gfm\09-large-document.md
-& $t fuzz   2000                            # случайные документы: разбор + разметка + отрисовка
-& $t plugin out\build\x64-release\mdview.wlx64 README.md shot.png "поиск"   # сам DLL, как TC
-& $t plugin out\build\x64-release\mdview.wlx64 anim.md shot.png --idle      # + расход CPU в простое (GIF)
-& $t reload out\build\x64-release\mdview.wlx64 out\tmp\reload             # автообновление после сохранения
-& $t settings out\build\x64-release\mdview.wlx64 README.md out\tmp\set\s  # окно настроек: предпросмотр, Отмена, ОК
-& $t zoom out\build\x64-release\mdview.wlx64 tests\zoom.md out\tmp\zoom\z # масштаб картинки мышью, на всё окно, Esc
-& $t spec tests\spec\mdview-extensions.txt --strict                       # front matter и др. расширения
-out\build\x64-release\highlight_test.exe -q   # подсветка синтаксиса: 1.4 млн проверок, фаззинг
-out\build\x64-release\emoji_test.exe          # таблица эмодзи-кодов
-& $t flags samples\gfm\17-flags.md            # флаги: распознавание и встроенный набор
-& $t math samples\gfm\18-math.md              # формулы: разбор TeX, вёрстка, фаззинг
-& $t mermaid samples\gfm\20-mermaid-flowchart.md  # диаграммы: разбор, вёрстка, враждебный ввод, фаззинг
-& $t mermaid samples\gfm\21-mermaid-sequence.md   # то же для диаграмм последовательностей
-& $t mermaid samples\gfm\22-mermaid-class.md      # и для диаграмм классов
-& $t mermaid samples\gfm\23-mermaid-state.md      # и для диаграмм состояний
-& $t mermaid samples\gfm\24-mermaid-er.md         # и для ER-диаграмм
-& $t mermaid samples\gfm\25-mermaid-charts.md     # и для pie, journey, gantt
-& $t mermaid samples\gfm\26-mermaid-more.md       # и для timeline, mindmap, quadrantChart, xychart
-& $t mermaid samples\gfm\27-mermaid-git-kanban.md # и для gitGraph, kanban, packet, radar, treemap
-& $t mermaid samples\gfm\28-mermaid-c4-architecture.md # и для requirement, sankey, block, C4, architecture
-& $t mermaid samples\gfm\29-mermaid-beta.md     # и для treeView, ishikawa, cynefin, venn, wardley, railroad, eventmodeling, swimlane
-& $t mmd diagram.mmd out.png [--dark]          # одна диаграмма Mermaid в PNG
-& $t tex "\frac{a}{b}"                        # дерево разобранной формулы
+& $t fuzz   2000                            # random documents: parse + layout + drawing
+& $t plugin out\build\x64-release\blitzmd.wlx64 README.md shot.png "search text"  # the DLL, as TC drives it
+& $t settings out\build\x64-release\blitzmd.wlx64 README.md out\tmp\set\s        # settings window
+& $t zoom out\build\x64-release\blitzmd.wlx64 tests\zoom.md out\tmp\zoom\z       # zooming pictures
+& $t mermaid samples\gfm\20-mermaid-flowchart.md   # diagrams: parsing, layout, hostile input, fuzzing
+& $t math samples\gfm\18-math.md                   # math: TeX parsing, typesetting, fuzzing
+& $t mmd diagram.mmd out.png [--dark]              # one Mermaid diagram to PNG
+out\build\x64-release\highlight_test.exe -q   # syntax highlighting: 1.4 million checks, fuzzing
 ```
 
-Результат по спецификации GFM: все 604 примера, не связанных с «сырым» HTML, совпадают с
-эталоном (примеры с HTML намеренно интерпретируются, а не выводятся как есть). Прогон под
-AddressSanitizer (`-DMDVIEW_ASAN=ON`) и фаззинг чисты.
+GFM specification results: all 604 examples not about raw HTML match the reference output
+(examples with HTML are interpreted on purpose, not shown as source). Runs under AddressSanitizer
+(`-DMDVIEW_ASAN=ON`) and the fuzzers are clean.
 
-`samples/gfm/` — набор документов для визуальной проверки: обзор всей спецификации, README
-в стиле GitHub, alerts/сноски/формулы, 45+ языков кода, таблицы, списки, типографика
-на 15+ языках (включая RTL), пограничные случаи и документ на 2.5 МБ.
+`samples/gfm/` holds documents for checking by eye: a tour of the whole specification, a
+GitHub-style README, alerts, footnotes and math, 45+ programming languages, tables, lists,
+typography in 15+ languages (right-to-left included), edge cases and a 2.5 MB document.
 
-## Непрерывная сборка и выпуск версии
+## Continuous integration and releases
 
-GitHub Actions (`.github/workflows/ci.yml`) на каждый push и pull request собирает x64 и x86,
-запускает `scripts\test.ps1` и прикладывает к запуску готовый `mdview.zip`.
+GitHub Actions (`.github/workflows/ci.yml`) builds x64 and x86 on every push and pull request,
+runs `scripts\test.ps1` and attaches `blitzmd.zip` to the run.
 
-Выпуск версии:
+A release:
 
-1. Поменять номер в `CMakeLists.txt` (`project(mdview-wlx VERSION x.y.z ...)`) — он попадает и
-   в ресурс версии DLL, и в `pluginst.inf` при упаковке.
-2. Закоммитить, поставить тег и отправить его: `git tag vx.y.z` и `git push origin vx.y.z`.
-3. CI проверит, что тег совпадает с версией, соберёт, прогонит тесты и опубликует
-   GitHub Release с `mdview.zip`, который TC устанавливает сам.
+1. Set the version in `CMakeLists.txt` (`project(blitzmd VERSION x.y.z ...)`); it goes into the
+   DLL's version resource and into `pluginst.inf` when packaging.
+2. Commit, tag and push the tag: `git tag vx.y.z`, `git push origin vx.y.z`.
+3. CI checks that the tag matches the version, builds, runs the tests and publishes a GitHub
+   Release with `blitzmd.zip`, which Total Commander installs by itself.
 
-## Архитектура
+## Architecture
 
 ```
-src/plugin.cpp        экспорт WLX: ListLoad(W), ListLoadNext(W), ListSearchText(W),
+src/plugin.cpp        WLX exports: ListLoad(W), ListLoadNext(W), ListSearchText(W),
                       ListSendCommand, ListPrint(W), ListGetPreviewBitmap(W), ...
-src/core/parser.*     md4c → дерево блоков; HTML-подмножество GitHub, эмодзи, якоря, сноски
-src/core/html.*       токенизатор HTML
-src/core/texmath.*    разбор TeX-формул в дерево атомов
-src/core/mathlayout.* вёрстка формул по правилам TeX с таблицей OpenType MATH (Cambria Math)
-src/core/flags.*      флаги-эмодзи из встроенного набора Twemoji (src/twemoji-flags.bin,
-                      собирается scripts/gen_flags.py)
-src/core/highlight.*  подсветка синтаксиса
-src/core/layout.*     разметка: DirectWrite, точная у видимой части, оценка остального
-src/core/render.*     отрисовка Direct2D (темы GitHub Primer)
-src/core/images.*     WIC, SVG, фоновая загрузка по http(s) с кешем
-src/core/zoom.*       масштаб картинок и диаграмм в их рамке и на всё окно, кнопки масштаба
-src/core/mermaid*     диаграммы Mermaid: разбор (по файлу на тип: flowchart, sequence, class...), построение сцены
-src/core/graphlayout.* послойная раскладка графов (Sugiyama) с кластерами
-src/core/diagram.*    сцена диаграммы: фигуры, пути, текст DirectWrite; отрисовка по теме
-src/core/viewer.*     окно Lister: прокрутка, выделение, ссылки, поиск, меню
-src/core/settings*    настройки (mdview.ini) и окно настроек
-src/core/print.*      печать
-third_party/md4c      md4c 0.6.0 с несколькими правками совместимости с GitHub
+src/core/parser.*     md4c → block tree; GitHub's HTML subset, emoji, anchors, footnotes
+src/core/html.*       HTML tokenizer
+src/core/texmath.*    TeX formulas into atom trees
+src/core/mathlayout.* math typesetting by TeX's rules with the OpenType MATH table (Cambria Math)
+src/core/flags.*      flag emoji from the embedded Twemoji set (src/twemoji-flags.bin, made by
+                      scripts/gen_flags.py)
+src/core/highlight.*  syntax highlighting
+src/core/layout.*     layout: DirectWrite, exact near the view, estimated elsewhere
+src/core/render.*     Direct2D drawing (GitHub Primer themes)
+src/core/images.*     WIC, SVG, background http(s) downloads with a cache
+src/core/zoom.*       zooming pictures and diagrams in their frame and in the whole window
+src/core/mermaid*     Mermaid diagrams: parsers (a file per type), scene building
+src/core/graphlayout.* layered graph layout (Sugiyama) with clusters
+src/core/diagram.*    diagram scene: shapes, paths, DirectWrite text; drawing by theme
+src/core/viewer.*     the Lister window: scrolling, selection, links, search, menus
+src/core/settings*    settings (blitzmd.ini) and the settings window
+src/core/print.*      printing
+third_party/md4c      md4c 0.6.0 with a few GitHub compatibility changes
 ```
 
-## Лицензия
+## License
 
-MIT (см. `LICENSE`). Используются: [md4c](https://github.com/mity/md4c) (MIT),
-данные [gemoji](https://github.com/github/gemoji) (MIT), иконки
-[Octicons](https://github.com/primer/octicons) (MIT).
+MIT (see [LICENSE](LICENSE)). Uses [md4c](https://github.com/mity/md4c) (MIT),
+[gemoji](https://github.com/github/gemoji) data (MIT) and [Octicons](https://github.com/primer/octicons)
+icons (MIT).
 
-Изображения флагов — [Twemoji](https://github.com/jdecked/twemoji) © Twitter, Inc. и другие
-авторы, лицензия [CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/); во встроенном
-наборе координаты округлены до сотых.
+Flag images: [Twemoji](https://github.com/jdecked/twemoji) © Twitter, Inc. and other contributors,
+[CC-BY 4.0](https://creativecommons.org/licenses/by/4.0/); coordinates in the embedded set are
+rounded to hundredths.

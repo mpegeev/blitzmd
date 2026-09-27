@@ -1,4 +1,4 @@
-// mdview — GitHub Flavored Markdown viewer plugin (WLX) for Total Commander.
+// BlitzMD — fast Markdown viewer plugin (WLX) for Total Commander.
 //
 // This file only contains the Lister plugin entry points; everything else
 // lives in src/core. Every export catches all exceptions: nothing may unwind

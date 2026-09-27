@@ -649,7 +649,7 @@ void Builder::FinalizeCode(Block* b) {
     }
     if (!b->from_html && opt_.mermaid && EqualsNoCase(b->lang, L"mermaid")) {
         // A diagram drawn over its source (copy and search see the source);
-        // one mdview can't draw stays code with a note saying why.
+        // one BlitzMD can't draw stays code with a note saying why.
         std::wstring error;
         if (CheckMermaid(b->text, &error)) {
             std::wstring source = std::move(b->text);

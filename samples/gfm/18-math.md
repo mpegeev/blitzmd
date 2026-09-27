@@ -1,6 +1,6 @@
 # Math
 
-GitHub renders `$…$`, `$$…$$` and ` ```math ` blocks with MathJax. mdview typesets them itself with
+GitHub renders `$…$`, `$$…$$` and ` ```math ` blocks with MathJax. BlitzMD typesets them itself with
 the OpenType MATH table of Cambria Math: real fractions, roots, limits, stretchy delimiters,
 matrices and accents. Copying or searching still sees the TeX source.
 

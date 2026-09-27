@@ -36,10 +36,10 @@ from pathlib import Path
 from typing import Optional
 
 def find_plugin(tc_path: Path) -> Optional[Path]:
-    """Find mdview.wlx64 in TC plugins folder."""
+    """Find blitzmd.wlx64 in TC plugins folder."""
     candidates = [
-        tc_path / "plugins" / "wlx" / "mdview" / "mdview.wlx64",
-        tc_path / "wlx" / "mdview.wlx64",
+        tc_path / "plugins" / "wlx" / "blitzmd" / "blitzmd.wlx64",
+        tc_path / "wlx" / "blitzmd.wlx64",
     ]
     for c in candidates:
         if c.exists():
@@ -85,14 +85,14 @@ cmake -S . -B "${BUILD_DIR}" \
 
 cmake --build "${BUILD_DIR}" --parallel
 
-echo "Built: ${BUILD_DIR}/mdview.wlx64"
+echo "Built: ${BUILD_DIR}/blitzmd.wlx64"
 ```
 
 ## CMake
 
 ```cmake
 cmake_minimum_required(VERSION 3.28)
-project(mdview-wlx LANGUAGES C CXX)
+project(blitzmd LANGUAGES C CXX)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -102,8 +102,8 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(md4c)
 
-add_library(mdview SHARED src/plugin.cpp)
-target_link_libraries(mdview PRIVATE md4c)
+add_library(blitzmd SHARED src/plugin.cpp)
+target_link_libraries(blitzmd PRIVATE md4c)
 ```
 
 ## Без указания языка

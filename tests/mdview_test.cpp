@@ -1,6 +1,6 @@
 // mdview_test — developer tool for the mdview Lister plugin. Each command
 // prints what it checks and exits with a nonzero code if something fails
-// (details at each command below; <dll> is mdview.wlx64 or mdview.wlx).
+// (details at each command below; <dll> is blitzmd.wlx64 or blitzmd.wlx).
 //
 //   spec <spec.txt> [-v] [-n N] [--strict]   CommonMark/GFM spec examples
 //                                            (--strict: every mismatch fails)
@@ -390,7 +390,7 @@ int main(int argc, char** ansi_argv) {
         return 0;
     }
     if (cmd == "plugin" && argc >= 5) {
-        // plugin <mdview.wlx64> <file.md> <out.png> [search text] [--dark] [--hover X Y] [--idle]
+        // plugin <blitzmd.wlx64> <file.md> <out.png> [search text] [--dark] [--hover X Y] [--idle]
         // Drives the real plugin DLL like Total Commander: ListSetDefaultParams,
         // ListLoadW, ListSearchTextW, ListSendCommand, ListGetPreviewBitmapW.
         HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
@@ -440,7 +440,7 @@ int main(int argc, char** ansi_argv) {
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.lpszClassName = L"MdViewTestHost";
         RegisterClassW(&wc);
-        HWND host = CreateWindowExW(0, wc.lpszClassName, L"mdview test host", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        HWND host = CreateWindowExW(0, wc.lpszClassName, L"BlitzMD test host", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
                                     40, 40, 1000, 800, nullptr, nullptr, wc.hInstance, nullptr);
         auto pump = [](int ms) {
             const double end = NowMs() + ms;
@@ -661,7 +661,7 @@ int main(int argc, char** ansi_argv) {
         return ok ? 0 : 1;
     }
     if (cmd == "remote" && argc >= 4) {
-        // remote <mdview.wlx64> <out-dir>: a document with 60 pictures on a
+        // remote <blitzmd.wlx64> <out-dir>: a document with 60 pictures on a
         // server that doesn't answer (192.0.2.1, reserved for documentation):
         // the downloads queue up in a few threads instead of one thread each.
         // (Where that address fails at once instead, nothing piles up either
@@ -680,7 +680,7 @@ int main(int argc, char** ansi_argv) {
         }
         const std::wstring dir = FullPath(argv[3]) + L"\\";
         CreateDirectoryW(dir.c_str(), nullptr);
-        DeleteFileW((dir + L"mdview.ini").c_str());  // remote images on (the default)
+        DeleteFileW((dir + L"blitzmd.ini").c_str());  // remote images on (the default)
         struct {
             int size;
             DWORD lo, hi;
@@ -803,7 +803,7 @@ int main(int argc, char** ansi_argv) {
         return ok ? 0 : 1;
     }
     if (cmd == "search" && argc >= 4) {
-        // search <mdview.wlx64> <out-dir>: ListSearchTextW forward, backward
+        // search <blitzmd.wlx64> <out-dir>: ListSearchTextW forward, backward
         // (with and without a selection), and a text that isn't there.
         HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
         using SetParamsFn = void(__stdcall*)(void*);
@@ -820,7 +820,7 @@ int main(int argc, char** ansi_argv) {
         }
         const std::wstring dir = FullPath(argv[3]) + L"\\";
         CreateDirectoryW(dir.c_str(), nullptr);
-        DeleteFileW((dir + L"mdview.ini").c_str());
+        DeleteFileW((dir + L"blitzmd.ini").c_str());
         struct {
             int size;
             DWORD lo, hi;
@@ -890,7 +890,7 @@ int main(int argc, char** ansi_argv) {
         return failures ? 1 : 0;
     }
     if (cmd == "theme" && argc >= 4) {
-        // theme <mdview.wlx64> <out-dir>: under a Total Commander that doesn't
+        // theme <blitzmd.wlx64> <out-dir>: under a Total Commander that doesn't
         // report its dark mode (plugin interface before 2.12) the "Auto" theme
         // follows a change of the Windows one (#157), and no window of the
         // plugin outlives the last viewer. The Windows theme changed is this
@@ -908,7 +908,7 @@ int main(int argc, char** ansi_argv) {
         }
         const std::wstring dir = FullPath(argv[3]) + L"\\";
         CreateDirectoryW(dir.c_str(), nullptr);
-        DeleteFileW((dir + L"mdview.ini").c_str());
+        DeleteFileW((dir + L"blitzmd.ini").c_str());
         struct {
             int size;
             DWORD lo, hi;
@@ -1030,7 +1030,7 @@ int main(int argc, char** ansi_argv) {
         }
         const std::wstring dir = FullPath(argv[3]) + L"\\";
         CreateDirectoryW(dir.c_str(), nullptr);
-        DeleteFileW((dir + L"mdview.ini").c_str());
+        DeleteFileW((dir + L"blitzmd.ini").c_str());
         struct {
             int size;
             DWORD lo, hi;
@@ -1084,7 +1084,7 @@ int main(int argc, char** ansi_argv) {
         const std::wstring dll_path = FullPath(argv[2]);
         const std::wstring dir = FullPath(argv[3]) + L"\\";
         CreateDirectoryW(dir.c_str(), nullptr);
-        DeleteFileW((dir + L"mdview.ini").c_str());
+        DeleteFileW((dir + L"blitzmd.ini").c_str());
         {
             const std::string md =
                 "# Unload\n\n![a picture](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
@@ -1255,7 +1255,7 @@ int main(int argc, char** ansi_argv) {
         return failures ? 1 : 0;
     }
     if (cmd == "modal" && argc >= 4) {
-        // modal <mdview.wlx64> <out-dir>: Total Commander closes the viewer
+        // modal <blitzmd.wlx64> <out-dir>: Total Commander closes the viewer
         // while one of its modal loops runs: the context menu, and the "Run
         // it?" prompt of a link to a script. The plugin must not touch the
         // deleted viewer afterwards. A release build notices when the script
@@ -1273,7 +1273,7 @@ int main(int argc, char** ansi_argv) {
         }
         const std::wstring dir = FullPath(argv[3]) + L"\\";
         CreateDirectoryW(dir.c_str(), nullptr);
-        DeleteFileW((dir + L"mdview.ini").c_str());
+        DeleteFileW((dir + L"blitzmd.ini").c_str());
         struct {
             int size;
             DWORD lo, hi;
@@ -1420,7 +1420,7 @@ int main(int argc, char** ansi_argv) {
         return failures ? 1 : 0;
     }
     if (cmd == "zoom" && argc >= 5) {
-        // zoom <mdview.wlx64> <file.md> <out-prefix>: zooms the first image of
+        // zoom <blitzmd.wlx64> <file.md> <out-prefix>: zooms the first image of
         // the document the way the mouse does (Ctrl+wheel, drag, double click,
         // its buttons, the full-window view) and checks what is on screen.
         HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
@@ -1437,7 +1437,7 @@ int main(int argc, char** ansi_argv) {
         const std::string prefix = argv[4];
         const std::wstring dir = DirectoryOf(FullPath(argv[4]));
         CreateDirectoryW(dir.c_str(), nullptr);
-        DeleteFileW((dir + L"mdview.ini").c_str());
+        DeleteFileW((dir + L"blitzmd.ini").c_str());
         struct {
             int size;
             DWORD lo, hi;
@@ -1670,7 +1670,7 @@ int main(int argc, char** ansi_argv) {
         return failures ? 1 : 0;
     }
     if (cmd == "settings" && argc >= 5) {
-        // settings <mdview.wlx64> <file.md> <out-prefix>: opens the settings
+        // settings <blitzmd.wlx64> <file.md> <out-prefix>: opens the settings
         // dialog the way the context menu does, captures it, changes options
         // (live preview in the viewer), cancels, then changes and saves them.
         HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
@@ -1693,7 +1693,7 @@ int main(int argc, char** ansi_argv) {
         const std::wstring tc_dir = dir + L"\x7528\x6237\\";
         CreateDirectoryW(tc_dir.c_str(), nullptr);
         SetEnvironmentVariableW(L"COMMANDER_INI", (tc_dir + L"wincmd.ini").c_str());
-        const std::wstring ini = tc_dir + L"mdview.ini";
+        const std::wstring ini = tc_dir + L"blitzmd.ini";
         DeleteFileW(ini.c_str());
         struct {
             int size;
@@ -1719,7 +1719,7 @@ int main(int argc, char** ansi_argv) {
             std::fprintf(stderr, "ListLoadW failed\n");
             return 1;
         }
-        const UINT open_settings = RegisterWindowMessageW(L"MdViewWlxOpenSettings");
+        const UINT open_settings = RegisterWindowMessageW(L"BlitzMDOpenSettings");
         const DWORD ui_thread = GetCurrentThreadId();
         std::atomic<bool> done{false};
         int failures = 0;
@@ -1770,7 +1770,7 @@ int main(int argc, char** ansi_argv) {
                 return !IsWindow(dlg);
             };
             auto ini_value = [&](const wchar_t* key) {
-                return static_cast<int>(GetPrivateProfileIntW(L"mdview", key, -999, ini.c_str()));
+                return static_cast<int>(GetPrivateProfileIntW(L"blitzmd", key, -999, ini.c_str()));
             };
             PostMessageW(viewer, open_settings, 0, 0);
             HWND dlg = find_dialog();
@@ -1868,7 +1868,7 @@ int main(int argc, char** ansi_argv) {
         return failures ? 1 : 0;
     }
     if (cmd == "reload" && argc >= 4) {
-        // reload <mdview.wlx64> <dir>: auto-reload check. Opens <dir>\reload-test.md,
+        // reload <blitzmd.wlx64> <dir>: auto-reload check. Opens <dir>\reload-test.md,
         // saves it the way editors do (temp file + rename), then searches for
         // the new text; also checks that AutoReload=0 turns it off.
         HMODULE dll = LoadLibraryW(Utf8ToWide(argv[2]).c_str());
@@ -1887,7 +1887,7 @@ int main(int argc, char** ansi_argv) {
         const std::wstring dir = FullPath(argv[3]);
         CreateDirectoryW(dir.c_str(), nullptr);
         const std::wstring file = dir + L"\\reload-test.md";
-        const std::wstring ini = dir + L"\\mdview.ini";
+        const std::wstring ini = dir + L"\\blitzmd.ini";
         struct {
             int size;
             DWORD lo, hi;
@@ -1923,7 +1923,7 @@ int main(int argc, char** ansi_argv) {
                                     800, 600, nullptr, nullptr, wc.hInstance, nullptr);
         int failures = 0;
         for (int enabled = 1; enabled >= 0; --enabled) {
-            write(ini, enabled ? "[mdview]\r\nAutoReload=1\r\n" : "[mdview]\r\nAutoReload=0\r\n");
+            write(ini, enabled ? "[blitzmd]\r\nAutoReload=1\r\n" : "[blitzmd]\r\nAutoReload=0\r\n");
             set_params(&dp);  // settings load once per process: first round only
             write(file, "# Reload test\n\nfirst version\n");
             HWND v = load(host, file.c_str(), 0);
@@ -1962,7 +1962,7 @@ int main(int argc, char** ansi_argv) {
             if (unc.empty() || GetFileAttributesW(unc.c_str()) == INVALID_FILE_ATTRIBUTES) {
                 std::printf("network path: skipped (no administrative share)\n");
             } else {
-                write(ini, "[mdview]\r\nAutoReload=1\r\n");
+                write(ini, "[blitzmd]\r\nAutoReload=1\r\n");
                 set_params(&dp);
                 HWND v = load(host, unc.c_str(), 0);
                 pump(300);

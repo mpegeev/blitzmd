@@ -29,8 +29,8 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 namespace mdv {
 namespace {
 
-constexpr wchar_t kClassName[] = L"MdViewWlxWindow";
-constexpr wchar_t kWatcherClassName[] = L"MdViewWlxThemeWatcher";
+constexpr wchar_t kClassName[] = L"BlitzMDWindow";
+constexpr wchar_t kWatcherClassName[] = L"BlitzMDThemeWatcher";
 constexpr UINT_PTR kTimerRefine = 1;
 constexpr UINT_PTR kTimerCopied = 2;
 constexpr UINT_PTR kTimerAutoScroll = 3;
@@ -154,14 +154,14 @@ bool OpenShellItem(HWND owner, const std::wstring& path) {
 
 // Posted by the file watch (a thread-pool wait) to the viewer window.
 UINT FileChangedMessage() {
-    static const UINT msg = RegisterWindowMessageW(L"MdViewWlxFileChanged");
+    static const UINT msg = RegisterWindowMessageW(L"BlitzMDFileChanged");
     return msg;
 }
 
 // A poll of the file's stamp is done: wParam 1 if it changed, lParam the
 // watch it belongs to (Viewer::watch_gen_).
 UINT PollDoneMessage() {
-    static const UINT msg = RegisterWindowMessageW(L"MdViewWlxPollDone");
+    static const UINT msg = RegisterWindowMessageW(L"BlitzMDPollDone");
     return msg;
 }
 
@@ -1887,7 +1887,7 @@ void Viewer::NavigateTo(const std::wstring& path, const std::wstring& fragment) 
                                                  L"Ссылка ведёт на сетевой ресурс:\n\n")) +
                                  path + Tr(L"\n\nOpen it?", L"\n\nОткрыть?");
         const HWND self = hwnd_;
-        if (MessageBoxW(self, msg.c_str(), L"mdview", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+        if (MessageBoxW(self, msg.c_str(), L"BlitzMD", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
         if (!Survived(self, this)) return;
     }
     const DWORD attrs = GetFileAttributesW(ExtendedPath(path).c_str());  // (long paths too)
@@ -1910,7 +1910,7 @@ void Viewer::NavigateTo(const std::wstring& path, const std::wstring& fragment) 
                                                  L"Ссылка указывает на программу или скрипт:\n\n")) +
                                  path + Tr(L"\n\nRun it?", L"\n\nЗапустить?");
         const HWND self = hwnd_;
-        if (MessageBoxW(self, msg.c_str(), L"mdview", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+        if (MessageBoxW(self, msg.c_str(), L"BlitzMD", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
         if (!Survived(self, this)) return;
     }
     if (!OpenShellItem(hwnd_, path)) MessageBeep(MB_ICONWARNING);
@@ -2646,7 +2646,7 @@ void Viewer::OnContextMenu(int sx, int sy) {
                                      L"Просмотр GitHub Flavored Markdown для Total Commander.") +
                                   L"\nDirect2D + DirectWrite, md4c.\n\n" + Tr(L"Settings: ", L"Настройки: ") +
                                   SettingsPath();
-        MessageBoxW(hwnd_, text.c_str(), L"mdview", MB_OK | MB_ICONINFORMATION);
+        MessageBoxW(hwnd_, text.c_str(), L"BlitzMD", MB_OK | MB_ICONINFORMATION);
         break;
     }
     default: break;
@@ -3071,7 +3071,7 @@ void ApplySettingsToViewers(const Settings& old) {
 }
 
 UINT OpenSettingsMessage() {
-    static const UINT msg = RegisterWindowMessageW(L"MdViewWlxOpenSettings");
+    static const UINT msg = RegisterWindowMessageW(L"BlitzMDOpenSettings");
     return msg;
 }
 

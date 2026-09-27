@@ -1,6 +1,6 @@
 # Zooming images
 
-mdview-only: GitHub has no way to zoom a picture inside the page. Images of at least 40×40 px zoom where they are, without moving the text around them:
+BlitzMD-only: GitHub has no way to zoom a picture inside the page. Images of at least 40×40 px zoom where they are, without moving the text around them:
 
 - **Ctrl + mouse wheel** over an image zooms it around the mouse pointer (up to 10×). Anywhere else Ctrl + wheel zooms the whole page, as before. A touchpad pinch does the same.
 - **Drag** a zoomed image to look around it; **double-click** it to go back.

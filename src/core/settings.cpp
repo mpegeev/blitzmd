@@ -12,7 +12,7 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 namespace mdv {
 namespace {
 
-constexpr const wchar_t* kSection = L"mdview";
+constexpr const wchar_t* kSection = L"blitzmd";
 
 std::wstring& PathStorage() {
     static std::wstring path;
@@ -55,7 +55,7 @@ void PublishSettings() { g_thumbnail_theme.store(GlobalSettings().theme, std::me
 
 void SetSettingsPath(const std::wstring& ini_path) {
     // Store our settings in our own file next to the ini TC suggests.
-    PathStorage() = DirectoryOf(ini_path) + L"mdview.ini";
+    PathStorage() = DirectoryOf(ini_path) + L"blitzmd.ini";
 }
 
 const std::wstring& SettingsPath() {
@@ -63,7 +63,7 @@ const std::wstring& SettingsPath() {
     if (p.empty()) {
         wchar_t module[MAX_PATH * 2] = {};
         GetModuleFileNameW(reinterpret_cast<HMODULE>(&__ImageBase), module, static_cast<DWORD>(std::size(module)));
-        p = DirectoryOf(module) + L"mdview.ini";
+        p = DirectoryOf(module) + L"blitzmd.ini";
     }
     return p;
 }

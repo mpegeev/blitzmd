@@ -1,17 +1,17 @@
 ---
-title: mdview extensions
+title: BlitzMD extensions
 ...
 
-# mdview extensions
+# BlitzMD extensions
 
 Examples for behaviour beyond the GFM spec (GitHub rendering details that
-mdview reproduces). Run with `mdview_test spec tests/spec/mdview-extensions.txt --strict`.
+BlitzMD reproduces). Run with `mdview_test spec tests/spec/mdview-extensions.txt --strict`.
 
 ## Front matter
 
 YAML front matter at the very top of a file is shown as a two-column table,
 one row per top-level key (key in bold, then its value). GitHub puts the keys
-side by side as columns instead; mdview reads top to bottom and never needs
+side by side as columns instead; BlitzMD reads top to bottom and never needs
 horizontal scrolling for it.
 
 ```````````````````````````````` example

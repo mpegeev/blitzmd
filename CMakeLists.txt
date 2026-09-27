@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.25)
 # Static CRT: the plugin must not depend on any VC++ redistributable.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-project(mdview-wlx VERSION 1.0.0 LANGUAGES C CXX RC)
+project(blitzmd VERSION 1.0.0 LANGUAGES C CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,7 +11,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 if(NOT MSVC)
-    message(FATAL_ERROR "mdview is a Windows plugin and is built with MSVC.")
+    message(FATAL_ERROR "BlitzMD is a Windows plugin and is built with MSVC.")
 endif()
 
 # CMake adds /W3 by default; we set warning levels per target.
@@ -121,15 +121,15 @@ target_compile_definitions(mdview_core PUBLIC ${MDVIEW_DEFINITIONS})
 # Resource scripts are not scanned for the files they embed.
 set_source_files_properties(src/plugin.rc tests/mdview_test.rc PROPERTIES OBJECT_DEPENDS
     "${CMAKE_SOURCE_DIR}/src/twemoji-flags.bin;${CMAKE_SOURCE_DIR}/src/mdview.manifest")
-add_library(mdview SHARED src/plugin.cpp src/plugin.def src/plugin.rc)
-target_link_libraries(mdview PRIVATE mdview_core delayimp)
+add_library(blitzmd SHARED src/plugin.cpp src/plugin.def src/plugin.rc)
+target_link_libraries(blitzmd PRIVATE mdview_core delayimp)
 # Load rarely needed system DLLs only when used (remote images, printing).
-target_link_options(mdview PRIVATE /DELAYLOAD:winhttp.dll /DELAYLOAD:ws2_32.dll /DELAYLOAD:comdlg32.dll /DELAYLOAD:dwmapi.dll)
-target_compile_options(mdview PRIVATE ${MDVIEW_CXX_OPTIONS})
+target_link_options(blitzmd PRIVATE /DELAYLOAD:winhttp.dll /DELAYLOAD:ws2_32.dll /DELAYLOAD:comdlg32.dll /DELAYLOAD:dwmapi.dll)
+target_compile_options(blitzmd PRIVATE ${MDVIEW_CXX_OPTIONS})
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-    set_target_properties(mdview PROPERTIES PREFIX "" SUFFIX ".wlx64")
+    set_target_properties(blitzmd PROPERTIES PREFIX "" SUFFIX ".wlx64")
 else()
-    set_target_properties(mdview PROPERTIES PREFIX "" SUFFIX ".wlx")
+    set_target_properties(blitzmd PROPERTIES PREFIX "" SUFFIX ".wlx")
 endif()
 
 # ---- test tool: spec conformance, PNG rendering, benchmarks -----------------
