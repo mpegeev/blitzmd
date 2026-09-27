@@ -352,16 +352,33 @@ private:
         }
     }
 
+    // A total order (ties go by index): sorted the same whichever way. A list
+    // is sorted again each time one node moves, so it is nearly sorted and
+    // insertion takes linear time; a full sort each time made a source with
+    // 2000 targets take 0.7 s. (Too far from sorted: a full sort.)
+    template <class Less>
+    static void SortNearlySorted(std::vector<size_t>& v, Less less) {
+        size_t moves = 0;
+        for (size_t i = 1; i < v.size(); ++i) {
+            const size_t x = v[i];
+            size_t j = i;
+            for (; j > 0 && less(x, v[j - 1]); --j) v[j] = v[j - 1];
+            v[j] = x;
+            moves += i - j;
+            if (moves > 8 * v.size() + 64) {
+                std::sort(v.begin(), v.end(), less);
+                return;
+            }
+        }
+    }
     void SortOut(size_t n) {
-        std::vector<size_t>& v = nodes_[n].out;
-        std::stable_sort(v.begin(), v.end(), [&](size_t a, size_t b) {
+        SortNearlySorted(nodes_[n].out, [&](size_t a, size_t b) {
             const double d = nodes_[links_[a].target].y0 - nodes_[links_[b].target].y0;
             return d != 0 ? d < 0 : links_[a].index < links_[b].index;
         });
     }
     void SortIn(size_t n) {
-        std::vector<size_t>& v = nodes_[n].in;
-        std::stable_sort(v.begin(), v.end(), [&](size_t a, size_t b) {
+        SortNearlySorted(nodes_[n].in, [&](size_t a, size_t b) {
             const double d = nodes_[links_[a].source].y0 - nodes_[links_[b].source].y0;
             return d != 0 ? d < 0 : links_[a].index < links_[b].index;
         });

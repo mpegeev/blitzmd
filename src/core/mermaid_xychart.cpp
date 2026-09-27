@@ -166,12 +166,21 @@ private:
     // A title of words, up to '[' or a number.
     Text Word() {
         const size_t start = c_.pos();
-        while (!c_.AtStatementEnd() && c_.Peek() != L'[' && !(IsSpace(c_.Peek()) && IsNumberAhead())) c_.Advance();
+        while (!c_.AtStatementEnd() && c_.Peek() != L'[') {
+            size_t blanks = 1;
+            if (IsSpace(c_.Peek()) && IsNumberAhead(&blanks)) break;
+            // (Past a run of blanks at once: looked at from each of them, a
+            // long one took quadratic time.)
+            for (size_t i = 0; i < blanks; ++i) c_.Advance();
+        }
         return Here(Trim(src_.text.substr(start, c_.pos() - start)));
     }
-    bool IsNumberAhead() const {
+    // Whether a number follows the blank at the cursor and those after it
+    // (`blanks`: how many).
+    bool IsNumberAhead(size_t* blanks = nullptr) const {
         size_t k = 1;
         while (c_.Peek(k) == L' ' || c_.Peek(k) == L'\t') ++k;
+        if (blanks) *blanks = k;
         const wchar_t ch = c_.Peek(k);
         return (ch >= L'0' && ch <= L'9') || ch == L'-';
     }

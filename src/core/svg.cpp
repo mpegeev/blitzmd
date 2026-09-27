@@ -152,6 +152,9 @@ D2D1_MATRIX_3X2_F ParseTransform(std::wstring_view s) {
 
 constexpr int kMaxSvgNesting = 2;         // SVG in <image> in SVG...
 constexpr size_t kMaxSvgImages = 32;      // <image> elements per document
+// <text> elements drawn per document: each is laid out again every time the
+// image is drawn (200 000 took a second a paint).
+constexpr size_t kMaxSvgTexts = 4000;
 constexpr UINT kMaxEmbeddedRaster = 1024; // width/height of embedded bitmaps
 // Decoded embedded bitmaps of one SVG, those of nested SVGs included: the
 // limits above allow some 1000 of 4 MB each, and a 1024 x 1024 PNG of one
@@ -429,11 +432,14 @@ void SvgImage::ParseStructure() {
                 t.weight = in.weight;
                 if (texts_[static_cast<size_t>(text_index)].text.empty()) {
                     texts_[static_cast<size_t>(text_index)] = std::move(t);
-                } else {
+                } else if (texts_.size() < kMaxSvgTexts) {
                     texts_.push_back(std::move(t));
                     text_index = static_cast<int>(texts_.size() - 1);
+                } else {
+                    text_index = -1;  // (the rest of this text isn't drawn)
                 }
-            } else if (n == L"text" && !in.hidden && !in.no_fill && !tok.Attr(L"filter")) {
+            } else if (n == L"text" && !in.hidden && !in.no_fill && !tok.Attr(L"filter") &&
+                       texts_.size() < kMaxSvgTexts) {
                 // (Filtered text is a blurred shadow: drawn crisp it would look
                 // like a dark duplicate, so it is left out.)
                 Text t;

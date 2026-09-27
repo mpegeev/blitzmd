@@ -3275,6 +3275,8 @@ int main(int argc, char** ansi_argv) {
             L"wardley-beta\n" + repeat(L"annotation 1, [0.5, 0.5] \"" + std::wstring(20, L'a') + L"\"\n", 800) + L"annotations [0.5, 0.5]\n",
             L"wardley-beta\ncomponent p [0.5, 0.5]\n" + repeat(L"pipeline p {\n" + repeat(L"component q [0.3]\n", 50) + L"}\n", 30),
             L"wardley-beta\nevolution " + repeat(L"s@9999.9 -> ", 40) + L"s\n",
+            // A label offset of 400 digits: infinite, the label drawn at inf (#172).
+            L"wardley-beta\ncomponent A [0.5, 0.5] label [" + std::wstring(400, L'9') + L", 5]\n",
             L"railroad-beta\na = " + repeat(L"optional(", 60) + L"terminal(\"x\")" + repeat(L")", 60) + L";",
             L"railroad-ebnf-beta\na = b" + repeat(L"?", 3000) + L" ;",
             L"railroad-ebnf-beta\na = b" + repeat(L" - c", 3000) + L" ;",
@@ -3615,6 +3617,77 @@ int main(int argc, char** ansi_argv) {
             std::printf("  architecture star of 600: %s in %.0f ms\n", scene ? "drawn" : WideToUtf8(error).c_str(), ms);
             if (!scene || ms > 3000) {
                 std::printf("FAIL: architecture: a star of 600 services not drawn\n");
+                ++failures;
+            }
+        }
+        {  // Long runs of blanks, and one line of many blocks: time grows with the
+           // input, not its square (each blank or block looked to the end of
+           // its run or the text again: #169, #173, #174).
+            struct ScaleCase {
+                const char* name;
+                std::function<std::wstring(size_t)> make;
+            };
+            const ScaleCase scale_cases[] = {
+                {"xychart axis title and blanks",
+                 [](size_t n) { return L"xychart-beta\nx-axis a" + std::wstring(n, L' ') + L"[c]\nbar [1]\n"; }},
+                {"treeView name and blanks", [](size_t n) { return L"treeView-beta\na" + std::wstring(n, L' ') + L"b\n"; }},
+                {"block-beta blocks on a line", [&](size_t n) { return L"block-beta\n" + repeat(L"a[/x] ", static_cast<int>(n / 6)) + L"\n"; }},
+            };
+            for (const ScaleCase& c : scale_cases) {
+                auto ms = [&](size_t n) {
+                    const std::wstring src = c.make(n);
+                    std::wstring error;
+                    const double t0 = NowMs();
+                    layout(src, &error);
+                    return NowMs() - t0;
+                };
+                const double t_small = ms(4900), t_big = ms(49000);
+                std::printf("  %s: %.0f ms for 4900 characters, %.0f ms for 49 000\n", c.name, t_small, t_big);
+                if (t_big > 20 * t_small + 50) {
+                    std::printf("FAIL: %s: quadratic\n", c.name);
+                    ++failures;
+                }
+            }
+        }
+        {  // sankey: a source with 1999 targets (its flows were sorted again in
+           // full for each target: 0.7 s, #171)
+            std::wstring src = L"sankey-beta\n";
+            for (int i = 0; i < 1999; ++i) src += L"s,t" + std::to_wstring(i) + L",1\n";
+            std::wstring error;
+            const double t0 = NowMs();
+            const auto scene = layout(src, &error);
+            const double ms = NowMs() - t0;
+            std::printf("  sankey star of 1999: %s in %.0f ms\n", scene ? "drawn" : WideToUtf8(error).c_str(), ms);
+            if (!scene || ms > 350) {
+                std::printf("FAIL: sankey: a star of 1999 flows is slow\n");
+                ++failures;
+            }
+        }
+        {  // ER: a subgraph opened again inside another nests its new ones
+           // deeper than the limit, which counted the open ones only (#175)
+            std::wstring src = L"erDiagram\n";
+            for (int i = 0; i < 40; ++i) {
+                src += L"subgraph s" + std::to_wstring(i) + L"\nsubgraph s" + std::to_wstring(i + 1) + L"\nend\nend\n";
+            }
+            std::wstring error;
+            const bool ok = CheckMermaid(src, &error);
+            std::printf("  ER subgraphs 40 deep, reopened: %s\n", ok ? "accepted" : WideToUtf8(error).c_str());
+            if (ok) {
+                std::printf("FAIL: ER: subgraphs nest past the limit\n");
+                ++failures;
+            }
+        }
+        {  // pie: two values near 1e308 are drawn like two of 1 (their sum was
+           // infinite: no slice, #170)
+            std::wstring error;
+            const std::wstring e308 = L"1" + std::wstring(308, L'0');
+            const auto huge = layout(L"pie\n\"a\" : " + e308 + L"\n\"b\" : " + e308 + L"\n", &error);
+            const auto ones = layout(L"pie\n\"a\" : 1\n\"b\" : 1\n", &error);
+            const bool same = huge && ones && huge->shapes.size() == ones->shapes.size() && huge->texts.size() == ones->texts.size();
+            std::printf("  pie of 1e308 and 1e308: %zu shapes, of 1 and 1: %zu\n", huge ? huge->shapes.size() : 0,
+                        ones ? ones->shapes.size() : 0);
+            if (!same) {
+                std::printf("FAIL: pie: huge values draw no slices\n");
                 ++failures;
             }
         }
@@ -4731,6 +4804,41 @@ int main(int argc, char** ansi_argv) {
                     std::printf("FAIL: SVG parsing too slow (%.0f ms)\n", ms);
                     ++failures;
                 }
+            }
+        }
+        {
+            // SVG: 50 000 <text>s. Each is laid out whenever the picture is
+            // drawn: a paint took 0.3 s (#167).
+            std::string svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"800\" height=\"600\">";
+            for (int i = 0; i < 50000; ++i) {
+                svg += "<text x=\"" + std::to_string(i % 800) + "\" y=\"" + std::to_string(i % 600) + "\">t" + std::to_string(i) + "</text>";
+            }
+            svg += "</svg>";
+            auto image = SvgImage::Parse(std::move(svg));
+            ComPtr<IWICImagingFactory> wic;
+            ComPtr<IWICBitmap> target;
+            ComPtr<ID2D1Factory> d2d;
+            ComPtr<ID2D1RenderTarget> rt;
+            ComPtr<IDWriteFactory> dw;
+            double ms = -1;
+            if (image && SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
+                SUCCEEDED(wic->CreateBitmap(800, 600, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &target)) &&
+                SUCCEEDED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2d.GetAddressOf())) &&
+                SUCCEEDED(d2d->CreateWicBitmapRenderTarget(target.Get(), D2D1::RenderTargetProperties(), &rt)) &&
+                SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                              reinterpret_cast<IUnknown**>(dw.GetAddressOf())))) {
+                for (int pass = 0; pass < 2; ++pass) {  // (the first makes Direct2D's document)
+                    const double t0 = NowMs();
+                    rt->BeginDraw();
+                    image->Draw(rt.Get(), D2D1::RectF(0, 0, 800, 600), dw.Get());
+                    rt->EndDraw();
+                    ms = NowMs() - t0;
+                }
+            }
+            std::printf("  an SVG of 50 000 texts drawn again: %.0f ms\n", ms);
+            if (ms < 0 || ms > 150) {
+                std::printf("FAIL: an SVG's texts are all laid out at each paint (%.0f ms)\n", ms);
+                ++failures;
             }
         }
         for (const auto& c : cases) {

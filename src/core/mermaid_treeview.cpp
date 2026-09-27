@@ -163,7 +163,15 @@ private:
             k = q + 1;
         } else {
             size_t e = k;
-            while (e < line.size() && !Annotation(line, e)) ++e;
+            while (e < line.size() && !Annotation(line, e)) {
+                if (line[e] == L' ' || line[e] == L'\t') {
+                    // (Its blanks all lead to what follows them: past the run
+                    // at once, looked at from each a long one was quadratic.)
+                    while (e < line.size() && (line[e] == L' ' || line[e] == L'\t')) ++e;
+                } else {
+                    ++e;
+                }
+            }
             name = line.substr(k, e - k);
             while (!name.empty() && (name.back() == L' ' || name.back() == L'\t')) name.remove_suffix(1);
             k = e;

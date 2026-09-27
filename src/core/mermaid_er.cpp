@@ -253,6 +253,11 @@ private:
         int index = SubgraphIndex(id);
         if (index < 0) {
             if (subgraphs.size() >= kMaxNodes) c_.Fail(Tr(L"Too many subgraphs", L"Слишком много подграфов"));
+            // Its depth is its parents' (the one open may have been opened
+            // again inside another: open_ doesn't tell).
+            int depth = 1;
+            for (int p = Current(); p >= 0; p = subgraphs[static_cast<size_t>(p)].parent) ++depth;
+            if (depth > kMaxNesting) c_.Fail(Tr(L"Subgraphs nested too deep", L"Слишком глубокая вложенность подграфов"));
             Subgraph sg;
             sg.id = id;
             sg.title = std::move(title);
