@@ -154,8 +154,10 @@ Measured on AMD Ryzen 9 5900HX, Windows 11, from Total Commander's call to the f
 
 | Document | Opens in | Memory |
 |---|---|---|
-| A GitHub-style README with badges and pictures (`samples/gfm/02-github-readme.md`) | 40 ms | +22 MB |
-| 2.4 MB of Markdown, 18 000 paragraphs (`samples/gfm/09-large-document.md`) | 0.12 s | +51 MB |
+| A GitHub-style README with badges and pictures (`samples/gfm/02-github-readme.md`) | 40–45 ms | +22 MB |
+| 2.4 MB of Markdown, 18 000 paragraphs (`samples/gfm/09-large-document.md`) | 0.12–0.15 s | +51 MB |
+
+The time varies from run to run with the processor's state; the table gives the usual range.
 
 ## Keyboard and mouse
 
@@ -262,33 +264,66 @@ powershell -File scripts\test.ps1                                          # x64
 powershell -File scripts\test.ps1 -Build out\build\x86-release -Quick     # x86, less fuzzing
 ```
 
+What `test.ps1` checks:
+
+- **Specifications:** GFM 0.29, CommonMark 0.31.2, the GFM tables, strikethrough and autolinks
+  extensions, and BlitzMD's own cases (`tests/spec/mdview-extensions.txt`: front matter, HTML
+  lists, footnotes and more).
+- **Parts of the renderer:** syntax highlighting (1.4 million checks and fuzzing), the emoji
+  table, flag emoji, collapsed `<details>`, math, every Mermaid diagram of the samples (with
+  hostile input and fuzzing), paragraphs of tens of thousands of formatted pieces.
+- **Every sample** of `samples/gfm/` rendered at 320 and 900 pixels wide.
+- **The plugin DLL, driven the way Total Commander drives it:** three samples with thumbnails,
+  auto-reload, the settings window, zooming pictures, pictures from a server that doesn't answer,
+  search, a change of the Windows theme, the printer chosen in Total Commander, freeing the DLL,
+  the first paint, closing inside a modal loop, data: URIs, text encodings, paths longer than
+  260 characters.
+- **Fuzzing:** 400 random documents (100 with `-Quick`) through parsing, layout and drawing.
+
+Specification results: 614 of the 672 GFM 0.29 examples match the reference output. Of the other
+58, 53 are about raw HTML, which BlitzMD interprets on purpose instead of showing it as text,
+3 are cases where the md4c parser differs from the specification, and 2 are disabled in the
+specification itself. CommonMark 0.31.2: 596 of 652 match, with the same 53 raw HTML and
+3 md4c cases. No example fails.
+
+Before a merge, `scripts\verify.ps1` builds and tests the working tree the way CI does, plus an
+AddressSanitizer build (`-DMDVIEW_ASAN=ON`): x64 with the full `test.ps1`, x86 with `-Quick`, and
+the fuzzer and the modal loop test under ASan. `-Skip asan` leaves the ASan build out,
+`-Asan { … }` runs more commands under it; the logs go to `out\verify\`.
+
 Single checks use `mdview_test.exe`, built with the plugin:
 
 ```powershell
 $t = "out\build\x64-release\mdview_test.exe"
-& $t spec tests\spec\gfm-spec.txt           # GFM 0.29 specification tests (672 examples)
-& $t spec tests\spec\commonmark-spec.txt    # CommonMark 0.31.2
-& $t render samples\gfm\02-github-readme.md out.png --width 900 [--dark] [--zoom 1.5]
-& $t pages  samples\gfm\05-tables.md page   # pages as printed
-& $t bench  samples\gfm\09-large-document.md
-& $t fuzz   2000                            # random documents: parse + layout + drawing
-& $t plugin out\build\x64-release\blitzmd.wlx64 README.md shot.png "search text"  # the DLL, as TC drives it
-& $t settings out\build\x64-release\blitzmd.wlx64 README.md out\tmp\set\s        # settings window
-& $t zoom out\build\x64-release\blitzmd.wlx64 tests\zoom.md out\tmp\zoom\z       # zooming pictures
-& $t mermaid samples\gfm\20-mermaid-flowchart.md   # diagrams: parsing, layout, hostile input, fuzzing
-& $t math samples\gfm\18-math.md                   # math: TeX parsing, typesetting, fuzzing
-& $t mmd diagram.mmd out.png [--dark]              # one Mermaid diagram to PNG
-out\build\x64-release\highlight_test.exe -q   # syntax highlighting: 1.4 million checks, fuzzing
+$dll = "out\build\x64-release\blitzmd.wlx64"
+& $t spec tests\spec\gfm-spec.txt [-v] [-n 42]      # a specification file, or one example of it
+& $t render samples\gfm\02-github-readme.md out.png --width 900 [--dark] [--zoom 1.5] [--lines]
+& $t pages  samples\gfm\05-tables.md page           # pages as printed
+& $t bench  samples\gfm\09-large-document.md        # parsing and layout times
+& $t dump   README.md                               # the parsed document as HTML
+& $t text   README.md                               # the text Ctrl+A, Ctrl+C copies
+& $t fuzz   2000                                    # random documents: parse + layout + drawing
+& $t mermaid samples\gfm\20-mermaid-flowchart.md    # diagrams: parsing, layout, fuzzing
+& $t mmd diagram.mmd out.png [--dark]               # one Mermaid diagram to PNG
+& $t math samples\gfm\18-math.md                    # math: TeX parsing, typesetting, fuzzing
+& $t tex "\frac{a}{b}"                              # one formula's parsed tree
+& $t plugin $dll README.md shot.png "search text" [--dark]   # the DLL, as TC drives it
+& $t settings $dll README.md out\tmp\set\s          # settings window
+& $t zoom $dll tests\zoom.md out\tmp\zoom\z         # zooming pictures
+# <dll> <out-dir>: reload, search, remote, theme, unload, firstpaint, modal
+& $t reload $dll out\tmp\reload                     # auto-reload
+& $t inputs all                                     # data: URIs, text encodings, SVG
+& $t longpath out\tmp\longpath                      # a picture at a path over 260 characters
+& $t printer dialog                                 # the printer chosen in Total Commander
+& $t heavy 5000                                     # huge paragraphs: first screen within 5 s
+out\build\x64-release\highlight_test.exe -q         # syntax highlighting
+out\build\x64-release\emoji_test.exe                # emoji table
 ```
-
-GFM specification results: all 604 examples not about raw HTML match the reference output
-(examples with HTML are interpreted on purpose, not shown as source). Runs under AddressSanitizer
-(`-DMDVIEW_ASAN=ON`) and the fuzzers are clean.
 
 `scripts\screenshots.ps1` takes the README screenshots again from the documents in
 `docs/screenshots/`. `samples/gfm/` holds documents for checking by eye: a tour of the whole specification, a
 GitHub-style README, alerts, footnotes and math, 45+ programming languages, tables, lists,
-typography in 15+ languages (right-to-left included), edge cases and a 2.5 MB document.
+typography in 15+ languages (right-to-left included), edge cases and a 2.4 MB document.
 
 ## Continuous integration and releases
 
