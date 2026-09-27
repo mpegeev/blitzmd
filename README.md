@@ -11,9 +11,9 @@ else to install.
 
 | Light theme | Dark theme |
 |---|---|
-| ![BlitzMD showing a GitHub-style README in Total Commander, light theme](docs/screenshot-light.png) | ![BlitzMD showing GitHub alerts in Total Commander, dark theme](docs/screenshot-dark.png) |
+| ![BlitzMD's overview in BlitzMD, light theme: logo, badges, a table, a task list and a tip](docs/screenshot-light.png) | ![A Mermaid flowchart, a formula and GitHub alerts in BlitzMD, dark theme](docs/screenshot-dark.png) |
 
-![BlitzMD showing syntax-highlighted code blocks](docs/screenshot-code.png)
+![Syntax-highlighted code blocks with line numbers in BlitzMD](docs/screenshot-code.png)
 
 ## At a glance
 
@@ -282,7 +282,8 @@ GFM specification results: all 604 examples not about raw HTML match the referen
 (examples with HTML are interpreted on purpose, not shown as source). Runs under AddressSanitizer
 (`-DMDVIEW_ASAN=ON`) and the fuzzers are clean.
 
-`samples/gfm/` holds documents for checking by eye: a tour of the whole specification, a
+`scripts\screenshots.ps1` takes the README screenshots again from the documents in
+`docs/screenshots/`. `samples/gfm/` holds documents for checking by eye: a tour of the whole specification, a
 GitHub-style README, alerts, footnotes and math, 45+ programming languages, tables, lists,
 typography in 15+ languages (right-to-left included), edge cases and a 2.5 MB document.
 
