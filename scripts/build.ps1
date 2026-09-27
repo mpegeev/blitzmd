@@ -55,6 +55,7 @@ if ($Package) {
     }) -join "`r`n"
     [System.IO.File]::WriteAllText((Join-Path $stage 'pluginst.inf'), $inf + "`r`n", [System.Text.Encoding]::ASCII)
     Copy-Item (Join-Path $root 'README.md') $stage
+    Copy-Item (Join-Path $root 'README_RU.md') $stage
     Copy-Item (Join-Path $root 'LICENSE') $stage
     $zip = Join-Path $dist 'blitzmd.zip'
     if (Test-Path $zip) { Remove-Item -Force $zip }
