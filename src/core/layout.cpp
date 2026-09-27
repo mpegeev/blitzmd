@@ -489,11 +489,14 @@ std::shared_ptr<const MathBox> LayoutEngine::MathFormula(int32_t index, bool cre
     return box;
 }
 
-std::shared_ptr<const DiagramScene> LayoutEngine::Diagram(int32_t index) {
+std::shared_ptr<const DiagramScene> LayoutEngine::Diagram(int32_t index, bool create) {
     if (!doc_ || !dw_ || index < 0 || static_cast<size_t>(index) >= doc_->diagrams.size()) return nullptr;
     auto it = diagrams_.find(index);
     if (it != diagrams_.end()) return it->second;
-    if (diagrams_.size() >= 2000) diagrams_.clear();
+    if (!create) return nullptr;
+    // Full: one goes, not all (then laid out again as each was needed). Those
+    // in text layouts are kept by them.
+    if (diagrams_.size() >= 2000) diagrams_.erase(diagrams_.begin());
     std::wstring error;
     std::shared_ptr<const DiagramScene> scene =
         LayoutMermaid(doc_->diagrams[static_cast<size_t>(index)].source, dw_.Get(), cfg_.font_family, kDiagramRefSize, &error);
@@ -885,21 +888,34 @@ float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width
     // Formulas count with their typeset size where known: display ones are
     // typeset for it (they change the height most) while this pass's time
     // allows, others not yet typeset are guessed from their source.
-    // Diagrams fill lines of their own.
-    float formulas_w = 0, extra_h = 0, units = 0, breaks = 0, diagrams = 0;
+    // Diagrams fill lines of their own, laid out for it (or guessed) the
+    // same way: all of a document's were laid out before its first screen.
+    // Pictures count with their sizes.
+    float formulas_w = 0, images_w = 0, extra_h = 0, units = 0, breaks = 0, diagrams = 0;
     size_t next = 0;
     for (size_t i = 0; i < t.size(); ++i) {
         const wchar_t c = t[i];
         if (next < b->objects.size() && b->objects[next].pos == i) {
             const InlineObject& o = b->objects[next++];
-            if (o.diagram >= 0) {
-                if (const auto scene = Diagram(o.diagram)) {
+            if (o.diagram >= 0 && doc_ && static_cast<size_t>(o.diagram) < doc_->diagrams.size()) {
+                diagrams += 1.f;
+                if (const auto scene = Diagram(o.diagram, NowMs() < estimate_math_until_)) {
                     const float k = DiagramFit(st.size / kDiagramRefSize, scene->width, width);
-                    diagrams += 1.f;
                     extra_h += std::max(0.f, scene->height * k - line_h);
-                    i += o.length - 1;
-                    continue;
+                } else {
+                    // Some 20 units a line of its source.
+                    const std::wstring& src = doc_->diagrams[static_cast<size_t>(o.diagram)].source;
+                    const float lines = static_cast<float>(std::count(src.begin(), src.end(), L'\n') + 1);
+                    extra_h += std::max(0.f, std::clamp(lines * 20.f, 100.f, 800.f) * st.size / kDiagramRefSize - line_h);
                 }
+                i += o.length - 1;
+                continue;
+            }
+            if (o.image >= 0 && o.length == 1 && c == kObjectChar && images_) {
+                const D2D1_SIZE_F sz = images_->LayoutSize(o.image, width >= kHugeWidth ? 0.f : width, line_h, Zoom());
+                images_w += sz.width;
+                extra_h += std::max(0.f, sz.height - line_h);
+                continue;
             }
             if (o.math >= 0) {
                 const bool display = doc_->maths[static_cast<size_t>(o.math)].display;
@@ -918,7 +934,7 @@ float LayoutEngine::EstimateLeaf(const Block* b, const LeafState& s, float width
         units += (c >= 0x1100) ? 1.f : 0.52f;
     }
     // (A measured one-line width counts the diagrams too: not with them.)
-    const float total = s.nowrap_w > 0 && diagrams == 0 ? s.nowrap_w : units * st.size + formulas_w;
+    const float total = s.nowrap_w > 0 && diagrams == 0 ? s.nowrap_w : units * st.size + formulas_w + images_w;
     const float text_lines = total > 0 || diagrams == 0 ? std::max(1.f, std::ceil(total / std::max(width, 1.f) * 1.04f)) : 0.f;
     const float lines = text_lines + diagrams + breaks;
     return lines * line_h + extra_h;
@@ -1285,10 +1301,9 @@ float LayoutEngine::LayoutLeaf(Block* b, float x, float y, float w, const Ctx& c
         // and every layout of the document passes every leaf).
         const float est = !s.exact && s.width == tw ? s.text_h : EstimateLeaf(b, s, tw);
         const bool is_near = y < exact_y1_ && y + est + pad_t + pad_b > exact_y0_;
-        // Images can't be estimated (their sizes vary too much): measured right away.
-        const bool images = std::any_of(b->objects.begin(), b->objects.end(),
-                                        [](const InlineObject& o) { return o.image >= 0 && o.length == 1; });
-        if (is_near || images || s.layout != nullptr) {
+        // (Leaves with pictures are estimated with the pictures' sizes: all
+        // were measured, 50 000 took 0.9 s.)
+        if (is_near || s.layout != nullptr) {
             th = MeasureLeaf(b, tw, true);
         } else {
             s.exact = false;

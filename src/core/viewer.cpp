@@ -767,7 +767,10 @@ bool Viewer::Load(const std::wstring& path, int flags, bool keep_history) {
     last_percent_ = -1;
 
     dark_ = DarkTheme();
+    // The render target before the first layout: text layouts made without
+    // it were all made again at the first paint (a 2 MB code block: 1.3 s).
     if (rt_) palette_.Apply(GetTheme(dark_));
+    else EnsureRenderTarget();
     images_.Attach(doc_.get(), hwnd_, dark_, s.remote_images);
     images_.LoadAll();
     layout_.SetConfig(MakeLayoutConfig());

@@ -183,8 +183,9 @@ public:
     DrawContext& draw_context() { return draw_ctx_; }
     ImageStore* images() const { return images_; }
     // Diagram `index` of the document laid out at kDiagramRefSize DIPs per
-    // em (it scales linearly); nullptr if it can't be drawn.
-    std::shared_ptr<const DiagramScene> Diagram(int32_t index);
+    // em (it scales linearly); nullptr if it can't be drawn, or if not laid
+    // out yet and `create` is false.
+    std::shared_ptr<const DiagramScene> Diagram(int32_t index, bool create = true);
     // DIPs per diagram unit at the document's text size.
     float DiagramScale() const { return m_.em / kDiagramRefSize; }
     // Formula typesetter (created on first use; nullptr without a math font).
@@ -269,8 +270,9 @@ private:
     std::unique_ptr<MathTypesetter> math_;
     bool math_failed_ = false;
     std::unordered_map<int32_t, std::shared_ptr<const MathBox>> math_boxes_;
-    // Estimates typeset display formulas until then (NowMs(), set by each
-    // Layout): past it, those not typeset yet are guessed from their source.
+    // Estimates typeset display formulas and lay out diagrams until then
+    // (NowMs(), set by each Layout): past it, those not done yet are guessed
+    // from their source.
     double estimate_math_until_ = 0;
     std::unordered_map<int32_t, std::shared_ptr<const DiagramScene>> diagrams_;
     float viewport_w_ = 0.f;
