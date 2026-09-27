@@ -53,14 +53,14 @@ This folder is a corpus of Markdown documents for checking the native (Direct2D/
 | `palette.bmp` | BMP 24-bit | BMP support |
 | `картинка с пробелами.png` | PNG | a file name with Cyrillic letters and spaces (referenced raw, `%20`-encoded and fully percent-encoded) |
 
-The files also reference `../logo.png`, `../avatar.png` and `../diagram.png` from the parent `samples/` folder, plus a few remote images (shields.io, GitHub assets) that only load with network access.
+The files also reference `../logo.png` (BlitzMD's logo, made by `gen_images.py` too), `../avatar.png` and `../diagram.png` from the parent `samples/` folder, plus a few remote images (shields.io, GitHub assets) that only load with network access.
 
 ## Regenerating
 
-The generated files are deterministic. The generators need only the Python 3 standard library:
+The generated files are deterministic. `gen_images.py` needs [Pillow](https://pypi.org/project/pillow/) (`pip install pillow`) and draws its text with the Inter font in `tools/fonts/` ([SIL Open Font License](tools/fonts/OFL.txt)); another Pillow version may antialias a few pixels differently. The other generators need only the Python 3 standard library:
 
 ```console
-$ python samples/gfm/tools/gen_images.py       # img/*
+$ python samples/gfm/tools/gen_images.py       # img/* and ../logo.png
 $ python samples/gfm/tools/gen_edge_cases.py   # 08-edge-cases.md (CRLF)
 $ python samples/gfm/tools/gen_large.py        # 09-large-document.md (use --size-mb N to scale)
 $ python samples/gfm/tools/gen_encodings.py    # 10..15 encoding variants
