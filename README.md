@@ -2,8 +2,12 @@
 
 **English** | [Русский](README_RU.md)
 
+---
+
 **BlitzMD** is a free, open-source **Markdown viewer plugin for [Total Commander](https://www.ghisler.com)**
-(a Lister plugin, WLX). Press **F3** on a `.md` file, or open Quick View with **Ctrl+Q**, and the
+(a Lister plugin, WLX).
+
+Press **F3** on a `.md` file, or open Quick View with **Ctrl+Q**, and the
 file shows instantly, rendered the way GitHub renders it: tables, task lists, footnotes, alerts,
 math formulas, Mermaid diagrams, syntax-highlighted code, emoji and dark mode. BlitzMD draws the
 document itself with Direct2D and DirectWrite: no web browser engine, no WebView2, no .NET, nothing
@@ -27,7 +31,7 @@ else to install.
 | Windows | Windows 10 version 1703 or later, Windows 11 |
 | Engine | Native C++: [md4c](https://github.com/mity/md4c) parser, Direct2D + DirectWrite rendering |
 | Dependencies | None: only system libraries |
-| Interface | English and Russian (follows the Windows display language) |
+| Interface | English and Russian |
 | License | MIT, free |
 
 ## Installation
@@ -146,8 +150,7 @@ it in the background, so even a document of many megabytes opens in a fraction o
 Pictures decode in background threads, and their memory is bounded (192 MB, 96 MB in the 32-bit
 version): pictures not shown for a while are dropped and decoded again when they come back.
 
-Measured on a laptop (AMD Ryzen 9 5900HX, Windows 11), from Total Commander's call to the first
-frame on screen:
+Measured on AMD Ryzen 9 5900HX, Windows 11, from Total Commander's call to the first frame on screen:
 
 | Document | Opens in | Memory |
 |---|---|---|
