@@ -1080,6 +1080,7 @@ private:
     Prev prev_ = Prev::None;
     K pending_ = K::Plain;
     size_t noRegexUntil_ = 0;
+    size_t hashFrom_ = 1, hashTo_ = 0;  // Swift: the last run of '#' (none yet)
     LineFinder lf_;
     Frame frames_[kMaxFrames] = {};
     int nf_ = 0;
@@ -1863,8 +1864,14 @@ size_t CScanner::Special(size_t i, bool bol) {
     case L'#': {
         if (Has(F_RUST | F_PHP) && (c1 == L'[' || (c1 == L'!' && c2 == L'['))) return Attribute(i);
         if (Has(F_SWIFT_RAW)) {
-            size_t j = i;
-            while (j < n_ && s_[j] == L'#' && j - i < 200) ++j;
+            // The run of '#' is found once (looked through from each of its
+            // '#', "###..." took 30 times plain text's time), then as before:
+            // at most 200 of them before the '"'.
+            if (!(hashFrom_ <= i && i < hashTo_)) {
+                hashFrom_ = hashTo_ = i;
+                while (hashTo_ < n_ && s_[hashTo_] == L'#') ++hashTo_;
+            }
+            const size_t j = std::min(hashTo_, i + 200);
             if (j < n_ && s_[j] == L'"') {
                 StrSpec sp;
                 sp.esc = false;
@@ -3630,11 +3637,17 @@ public:
                 const size_t j = SkipBlanks(s_, n_, i + 1);
                 if (j < n_ && IsIdStart(s_[j])) {
                     size_t k = j, depth = 1;
-                    while (k < n_ && depth > 0 && k - j < 256) {  // bounded: type names are short
+                    // Bounded: type names are short and nest little (from each
+                    // '[' of "[a[a[a..." the whole 256 was looked through).
+                    while (k < n_ && depth > 0 && k - j < 256) {
                         const wchar_t d = s_[k];
-                        if (d == L'[') ++depth;
-                        else if (d == L']') --depth;
-                        else if (!(IsIdChar(d) || d == L'.' || d == L',' || d == L'`' || d == L' ')) break;
+                        if (d == L'[') {
+                            if (++depth > 8) break;
+                        } else if (d == L']') {
+                            --depth;
+                        } else if (!(IsIdChar(d) || d == L'.' || d == L',' || d == L'`' || d == L' ')) {
+                            break;
+                        }
                         if (depth > 0) ++k;
                     }
                     if (k < n_ && depth == 0) {
