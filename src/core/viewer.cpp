@@ -56,6 +56,29 @@ bool IsWordChar(wchar_t c) {
     return c == L'_' || IsCharAlphaNumericW(c) || (c >= 0x0300 && c <= 0x036F);
 }
 
+// The same for a code point: past the BMP (a surrogate pair) letters and
+// ideographs are, emoji, tags and variation selectors not.
+bool IsWordCodepoint(uint32_t cp) {
+    if (cp < 0x10000) return IsWordChar(static_cast<wchar_t>(cp));
+    return !(cp >= 0x1F000 && cp <= 0x1FAFF) && !(cp >= 0xE0000 && cp <= 0xE0FFF);
+}
+
+// Whether the character starting at `i` / ending at `i` is part of a word.
+bool WordAt(const std::wstring& s, size_t i) {
+    if (i >= s.size()) return false;
+    const wchar_t c = s[i];
+    if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.size() && s[i + 1] >= 0xDC00 && s[i + 1] <= 0xDFFF) {
+        return IsWordCodepoint(0x10000 + ((static_cast<uint32_t>(c) - 0xD800) << 10) + (s[i + 1] - 0xDC00));
+    }
+    return IsWordChar(c);
+}
+bool WordBefore(const std::wstring& s, size_t i) {
+    if (i == 0 || i > s.size()) return false;
+    const wchar_t c = s[i - 1];
+    if (c >= 0xDC00 && c <= 0xDFFF && i >= 2 && s[i - 2] >= 0xD800 && s[i - 2] <= 0xDBFF) return WordAt(s, i - 2);
+    return IsWordChar(c);
+}
+
 bool IsMarkdownPath(std::wstring_view p) {
     const size_t dot = p.find_last_of(L'.');
     if (dot == std::wstring_view::npos) return false;
@@ -465,7 +488,9 @@ private:
     std::vector<TextRange> hits_;
     int current_hit_ = -1;
     std::wstring global_text_;        // document text for searching (lazy)
-    std::wstring folded_text_;        // lowercase version of it
+    std::wstring plain_text_;         // it without soft hyphens, if it has any
+    std::vector<uint32_t> plain_pos_; // plain_text_ index -> global_text_ index (empty: no soft hyphens)
+    std::wstring folded_text_;        // lowercase version of it (of plain_text_ if any)
     bool folded_valid_ = false;
 };
 
@@ -676,6 +701,10 @@ bool Viewer::Load(const std::wstring& path, int flags, bool keep_history) {
     folded_valid_ = false;
     global_text_.clear();
     global_text_.shrink_to_fit();
+    plain_text_.clear();
+    plain_text_.shrink_to_fit();
+    plain_pos_.clear();
+    plain_pos_.shrink_to_fit();
     folded_text_.clear();
     folded_text_.shrink_to_fit();
     hover_link_ = -1;
@@ -2139,29 +2168,48 @@ bool Viewer::Search(const std::wstring& text, int flags) {
     const bool backwards = (flags & lcs_backwards) != 0;
     if (!folded_valid_) {
         global_text_ = doc_->GlobalText();
-        folded_text_ = ToLower(global_text_);
-        if (folded_text_.size() != global_text_.size()) folded_text_ = global_text_;  // length-changing folds
+        // Soft hyphens (U+00AD) only show where a line wraps: a word is found
+        // across them, as browsers do. They are left out of the text searched,
+        // plain_pos_ maps back.
+        plain_text_.clear();
+        plain_pos_.clear();
+        if (global_text_.find(L'­') != std::wstring::npos) {
+            for (size_t i = 0; i < global_text_.size(); ++i) {
+                if (global_text_[i] == L'­') continue;
+                plain_text_.push_back(global_text_[i]);
+                plain_pos_.push_back(static_cast<uint32_t>(i));
+            }
+            plain_pos_.push_back(static_cast<uint32_t>(global_text_.size()));
+        }
+        const std::wstring& plain = plain_pos_.empty() ? global_text_ : plain_text_;
+        folded_text_ = ToLower(plain);
+        if (folded_text_.size() != plain.size()) folded_text_ = plain;  // length-changing folds
         folded_valid_ = true;
     }
     const std::wstring& global = global_text_;
-    const std::wstring& hay = match_case ? global : folded_text_;
-    const std::wstring needle = match_case ? text : ToLower(text);
+    const std::wstring& plain = plain_pos_.empty() ? global_text_ : plain_text_;
+    auto to_global = [&](size_t p) { return plain_pos_.empty() ? p : static_cast<size_t>(plain_pos_[p]); };
+    std::wstring bare = text;
+    bare.erase(std::remove(bare.begin(), bare.end(), L'­'), bare.end());
+    if (bare.empty()) return false;
+    const std::wstring& hay = match_case ? plain : folded_text_;
+    const std::wstring needle = match_case ? bare : ToLower(bare);
     if (needle.size() > hay.size()) return false;
 
+    // A match at `pos` of the text searched, in the document's text: [g0, g1).
+    auto span = [&](size_t pos) { return std::make_pair(to_global(pos), to_global(pos + needle.size() - 1) + 1); };
     auto is_match = [&](size_t pos) {
         if (hay.compare(pos, needle.size(), needle) != 0) return false;
         if (!whole) return true;
-        const bool left_ok = pos == 0 || !IsWordChar(global[pos - 1]);
-        const size_t end = pos + needle.size();
-        const bool right_ok = end >= global.size() || !IsWordChar(global[end]);
-        return left_ok && right_ok;
+        const auto [g0, g1] = span(pos);
+        return !WordBefore(global, g0) && !WordAt(global, g1);
     };
     // Of a diagram only the labels show: a match elsewhere in its source
     // (the type, node ids, arrows, styles) would be found but never seen.
-    auto shown = [&](size_t pos) {
-        Block* leaf = doc_->LeafAt(static_cast<uint32_t>(pos));
+    auto shown = [&](size_t g0, size_t g1) {
+        Block* leaf = doc_->LeafAt(static_cast<uint32_t>(g0));
         if (!leaf || leaf->objects.empty()) return true;
-        const uint32_t h0 = static_cast<uint32_t>(pos) - leaf->text_start, h1 = h0 + static_cast<uint32_t>(needle.size());
+        const uint32_t h0 = static_cast<uint32_t>(g0) - leaf->text_start, h1 = static_cast<uint32_t>(g1) - leaf->text_start;
         for (const InlineObject& o : leaf->objects) {
             if (o.diagram < 0 || h1 <= o.pos || h0 >= o.pos + o.length) continue;
             if (!layout_.Diagram(o.diagram)) return true;  // its source shows
@@ -2177,7 +2225,9 @@ bool Viewer::Search(const std::wstring& text, int flags) {
         hits_.clear();
         for (size_t pos = hay.find(needle); pos != std::wstring::npos && hits_.size() < 20000;
              pos = hay.find(needle, pos + 1)) {
-            if (is_match(pos) && shown(pos)) hits_.push_back(TextRange{static_cast<uint32_t>(pos), static_cast<uint32_t>(pos + needle.size())});
+            if (!is_match(pos)) continue;
+            const auto [g0, g1] = span(pos);
+            if (shown(g0, g1)) hits_.push_back(TextRange{static_cast<uint32_t>(g0), static_cast<uint32_t>(g1)});
         }
         search_text_ = text;
     }

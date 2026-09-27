@@ -859,6 +859,23 @@ int main(int argc, char** ansi_argv) {
         expect(search(viewer, L"foo", 0), 0, "find next");
         expect(search(viewer, L"bar", kFirst), 1, "a text that isn't there");
         close(viewer);
+        // A word is found across a soft hyphen, and a whole word ends at a
+        // letter past the BMP as at any other (#154).
+        {
+            const std::string md2 = "Слово пере\xC2\xADнос в тексте. \xF0\x9D\x92\xB6" "abc.\n";  // (U+1D4B6: 𝒶)
+            HANDLE f = CreateFileW((dir + L"search2.md").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD n = 0;
+            if (f != INVALID_HANDLE_VALUE) {
+                WriteFile(f, md2.data(), static_cast<DWORD>(md2.size()), &n, nullptr);
+                CloseHandle(f);
+            }
+            constexpr int kWhole = 4;
+            HWND v2 = load(host, (dir + L"search2.md").c_str(), 0);
+            expect(v2 ? search(v2, L"перенос", kFirst) : -1, 0, "a word across a soft hyphen");
+            expect(v2 ? search(v2, L"abc", kFirst) : -1, 0, "a word after a letter past the BMP");
+            expect(v2 ? search(v2, L"abc", kFirst | kWhole) : -1, 1, "... is not a whole word");
+            if (v2) close(v2);
+        }
         DestroyWindow(host);
         FreeLibrary(dll);
         std::printf(failures ? "search: %d FAILED\n" : "search OK\n", failures);
