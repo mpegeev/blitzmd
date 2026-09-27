@@ -30,6 +30,7 @@ namespace mdv {
 namespace {
 
 constexpr wchar_t kClassName[] = L"MdViewWlxWindow";
+constexpr wchar_t kWatcherClassName[] = L"MdViewWlxThemeWatcher";
 constexpr UINT_PTR kTimerRefine = 1;
 constexpr UINT_PTR kTimerCopied = 2;
 constexpr UINT_PTR kTimerAutoScroll = 3;
@@ -46,6 +47,7 @@ struct Shared {
     ComPtr<ID2D1Factory> d2d;
     ComPtr<IDWriteFactory> dw;
     std::vector<Viewer*> viewers;
+    HWND watcher = nullptr;  // while there are viewers (see WatcherProc)
 };
 Shared& G() {
     static Shared g;
@@ -508,25 +510,57 @@ Viewer::~Viewer() {
     const auto it = std::find(list.begin(), list.end(), this);
     if (it != list.end()) {
         list.erase(it);
-        if (list.empty()) G().d2d.Reset();
+        if (list.empty()) {
+            G().d2d.Reset();
+            if (G().watcher) DestroyWindow(G().watcher);  // (the DLL may be unloaded next)
+            G().watcher = nullptr;
+        }
     }
 }
 
+namespace {
+
+bool RegisterWindowClass(const WNDCLASSEXW& wc) {
+    if (RegisterClassExW(&wc)) return true;
+    // Left behind by an earlier load of a module at this address: its
+    // window procedure may be gone, so register ours instead.
+    if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+    UnregisterClassW(wc.lpszClassName, wc.hInstance);
+    return RegisterClassExW(&wc) != 0;
+}
+
+// WM_SETTINGCHANGE is broadcast to top-level windows only, and a viewer is a
+// child of Lister's: a hidden top-level window (not a message-only one, those
+// get no broadcasts) passes a change of the Windows theme on to the viewers.
+LRESULT CALLBACK WatcherProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_SETTINGCHANGE && lp &&
+        CompareStringOrdinal(reinterpret_cast<const wchar_t*>(lp), -1, L"ImmersiveColorSet", -1, TRUE) == CSTR_EQUAL) {
+        try {
+            const std::vector<Viewer*> viewers = G().viewers;
+            for (Viewer* v : viewers) {
+                if (std::find(G().viewers.begin(), G().viewers.end(), v) != G().viewers.end()) {
+                    SendMessageW(v->hwnd(), msg, wp, lp);
+                }
+            }
+        } catch (...) {
+        }
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+}  // namespace
+
 bool Viewer::Create(HWND parent, int flags) {
-    static const bool registered = [] {
+    const HINSTANCE module = reinterpret_cast<HINSTANCE>(&__ImageBase);
+    static const bool registered = [module] {
         WNDCLASSEXW wc{};
         wc.cbSize = sizeof wc;
         wc.style = CS_DBLCLKS;
         wc.lpfnWndProc = &Viewer::StaticProc;
-        wc.hInstance = reinterpret_cast<HINSTANCE>(&__ImageBase);
+        wc.hInstance = module;
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         wc.lpszClassName = kClassName;
-        if (RegisterClassExW(&wc)) return true;
-        // Left behind by an earlier load of a module at this address: its
-        // window procedure may be gone, so register ours instead.
-        if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
-        UnregisterClassW(kClassName, wc.hInstance);
-        return RegisterClassExW(&wc) != 0;
+        return RegisterWindowClass(wc);
     }();
     if (!registered) return false;
 
@@ -537,6 +571,19 @@ bool Viewer::Create(HWND parent, int flags) {
         return false;
     }
     g.viewers.push_back(this);
+    // The "Auto" theme follows Windows' unless Total Commander reports its own.
+    static const bool watcher_registered = [module] {
+        WNDCLASSEXW wc{};
+        wc.cbSize = sizeof wc;
+        wc.lpfnWndProc = &WatcherProc;
+        wc.hInstance = module;
+        wc.lpszClassName = kWatcherClassName;
+        return RegisterWindowClass(wc);
+    }();
+    if (!g.watcher && watcher_registered && !Host().tc_reports_dark_mode()) {
+        g.watcher = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kWatcherClassName, L"", WS_POPUP, 0, 0, 0, 0,
+                                    nullptr, nullptr, module, nullptr);
+    }
 
     flags_ = flags;
     parent_ = parent;
@@ -3021,7 +3068,10 @@ UINT OpenSettingsMessage() {
     return msg;
 }
 
-void UnregisterViewerClass() { UnregisterClassW(kClassName, reinterpret_cast<HINSTANCE>(&__ImageBase)); }
+void UnregisterViewerClass() {
+    UnregisterClassW(kClassName, reinterpret_cast<HINSTANCE>(&__ImageBase));
+    UnregisterClassW(kWatcherClassName, reinterpret_cast<HINSTANCE>(&__ImageBase));
+}
 
 Viewer* ViewerFromHwnd(HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd)) return nullptr;
