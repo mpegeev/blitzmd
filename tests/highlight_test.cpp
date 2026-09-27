@@ -1445,6 +1445,33 @@ void TestPathological() {
         run(s, "CRLF heredoc of ${");
     }
     std::printf("pathological: total %.2f s, worst %.3f s (%s)\n", total, worst, worstWhat.c_str());
+    {  // A look ahead that fails, from each character of a run: `[a[a…` (a
+       // PowerShell type?) and `###…` (a Swift raw string?) took 8 to 20
+       // times the time of as many other tokens (#177).
+        const struct {
+            const wchar_t* lang;
+            const wchar_t* unit;
+            const wchar_t* like;  // as many tokens, no look ahead
+        } kRuns[] = {{L"powershell", L"[a", L"(a"}, {L"swift", L"#", L"+"}};
+        auto time = [&](const wchar_t* lang, const wchar_t* unit) {
+            std::wstring s;
+            while (s.size() < 2000000) s += unit;
+            double best = 1e9;
+            for (int rep = 0; rep < 3; ++rep) {
+                out.clear();
+                const auto t0 = std::chrono::steady_clock::now();
+                HighlightCode(s, lang, out);
+                best = std::min(best, std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+            }
+            return best;
+        };
+        for (const auto& r : kRuns) {
+            const double ahead = time(r.lang, r.unit), plain = time(r.lang, r.like);
+            std::printf("  %s \"%s\" x %zu: %.0f ms, \"%s\": %.0f ms\n", Printable(r.lang).c_str(), Printable(r.unit).c_str(),
+                        2000000 / std::wcslen(r.unit), ahead * 1000, Printable(r.like).c_str(), plain * 1000);
+            if (ahead > plain * 3 + 0.02) Fail("a failed look ahead repeats (%s): %s", Printable(r.lang), std::to_string(ahead) + " s");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
