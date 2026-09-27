@@ -4733,6 +4733,41 @@ int main(int argc, char** ansi_argv) {
                 }
             }
         }
+        {
+            // SVG: 50 000 <text>s. Each is laid out whenever the picture is
+            // drawn: a paint took 0.3 s (#167).
+            std::string svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"800\" height=\"600\">";
+            for (int i = 0; i < 50000; ++i) {
+                svg += "<text x=\"" + std::to_string(i % 800) + "\" y=\"" + std::to_string(i % 600) + "\">t" + std::to_string(i) + "</text>";
+            }
+            svg += "</svg>";
+            auto image = SvgImage::Parse(std::move(svg));
+            ComPtr<IWICImagingFactory> wic;
+            ComPtr<IWICBitmap> target;
+            ComPtr<ID2D1Factory> d2d;
+            ComPtr<ID2D1RenderTarget> rt;
+            ComPtr<IDWriteFactory> dw;
+            double ms = -1;
+            if (image && SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
+                SUCCEEDED(wic->CreateBitmap(800, 600, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &target)) &&
+                SUCCEEDED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2d.GetAddressOf())) &&
+                SUCCEEDED(d2d->CreateWicBitmapRenderTarget(target.Get(), D2D1::RenderTargetProperties(), &rt)) &&
+                SUCCEEDED(DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED, __uuidof(IDWriteFactory),
+                                              reinterpret_cast<IUnknown**>(dw.GetAddressOf())))) {
+                for (int pass = 0; pass < 2; ++pass) {  // (the first makes Direct2D's document)
+                    const double t0 = NowMs();
+                    rt->BeginDraw();
+                    image->Draw(rt.Get(), D2D1::RectF(0, 0, 800, 600), dw.Get());
+                    rt->EndDraw();
+                    ms = NowMs() - t0;
+                }
+            }
+            std::printf("  an SVG of 50 000 texts drawn again: %.0f ms\n", ms);
+            if (ms < 0 || ms > 150) {
+                std::printf("FAIL: an SVG's texts are all laid out at each paint (%.0f ms)\n", ms);
+                ++failures;
+            }
+        }
         for (const auto& c : cases) {
             const double t0 = NowMs();  // (the parse is part of it)
             auto doc = ParseMarkdown(c.md, L"C:\\heavy.md");
