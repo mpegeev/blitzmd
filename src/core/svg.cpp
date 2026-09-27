@@ -4,7 +4,10 @@
 #include <wincodec.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cwchar>
 
 #include "core/html.h"
@@ -210,6 +213,89 @@ void UnwrapLinks(std::string& svg) {
     svg.swap(out);
 }
 
+// Direct2D takes rgb() colors but not rgba(): it draws them black (a
+// transparent box over a social badge's count hid the count). An rgba()
+// value of fill, stroke or stop-color becomes #rrggbb and an opacity next to
+// it: an attribute, or a declaration in a style.
+void RgbaColors(std::string& svg) {
+    auto is_space = [](char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
+    auto word_before = [&](size_t end) {  // the name ending at `end` (exclusive), spaces skipped
+        while (end > 0 && is_space(svg[end - 1])) --end;
+        size_t start = end;
+        while (start > 0 && (std::isalnum(static_cast<unsigned char>(svg[start - 1])) || svg[start - 1] == '-')) --start;
+        return svg.substr(start, end - start);
+    };
+    std::string out;
+    out.reserve(svg.size() + 64);
+    size_t i = 0;
+    for (size_t at; (at = svg.find("rgba(", i)) != std::string::npos;) {
+        const size_t close = svg.find(')', at);
+        if (close == std::string::npos) break;
+        // r, g, b (0-255 or percent) and alpha (0-1 or percent), by commas,
+        // spaces or a slash.
+        double v[4];
+        int n = 0;
+        const std::string args = svg.substr(at + 5, close - at - 5);
+        for (size_t k = 0; k < args.size() && n < 4;) {
+            if (is_space(args[k]) || args[k] == ',' || args[k] == '/') {
+                ++k;
+                continue;
+            }
+            char* end = nullptr;
+            const double x = std::strtod(args.c_str() + k, &end);
+            if (end == args.c_str() + k) break;
+            k = static_cast<size_t>(end - args.c_str());
+            const bool percent = k < args.size() && args[k] == '%';
+            if (percent) ++k;
+            v[n] = percent ? (n < 3 ? x * 2.55 : x / 100) : x;
+            ++n;
+        }
+        const char before = at > 0 ? svg[at - 1] : '\0';
+        const bool in_attr = before == '"' || before == '\'';
+        size_t name_end = at - (in_attr ? 1 : 0);
+        while (name_end > 0 && is_space(svg[name_end - 1])) --name_end;
+        const bool attr = in_attr && name_end > 0 && svg[name_end - 1] == '=';
+        const bool css = !in_attr && name_end > 0 && svg[name_end - 1] == ':';
+        const std::string name = attr || css ? word_before(name_end - 1) : std::string();
+        const char* opacity = name == "fill" ? "fill-opacity" : name == "stroke" ? "stroke-opacity"
+                            : name == "stop-color" ? "stop-opacity" : nullptr;
+        if (n != 4 || !opacity) {  // (left as it is)
+            out.append(svg, i, close + 1 - i);
+            i = close + 1;
+            continue;
+        }
+        char color[8];
+        snprintf(color, sizeof color, "#%02x%02x%02x", static_cast<int>(std::clamp(v[0], 0.0, 255.0) + 0.5),
+                 static_cast<int>(std::clamp(v[1], 0.0, 255.0) + 0.5), static_cast<int>(std::clamp(v[2], 0.0, 255.0) + 0.5));
+        char alpha[16];
+        snprintf(alpha, sizeof alpha, "%.3g", std::clamp(v[3], 0.0, 1.0));
+        out.append(svg, i, at - i);
+        out += color;
+        if (attr) {
+            // After the value; not if the element has that opacity already
+            // (an attribute twice makes the whole document invalid).
+            const size_t quote = svg.find(before, close);
+            const size_t tag_start = svg.rfind('<', at), tag_end = svg.find('>', close);
+            if (quote == std::string::npos || tag_start == std::string::npos || tag_end == std::string::npos) break;
+            const std::string tag = svg.substr(tag_start, tag_end - tag_start);
+            out.append(svg, close + 1, quote + 1 - (close + 1));
+            if (tag.find(std::string(" ") + opacity + "=") == std::string::npos) {
+                out += std::string(" ") + opacity + "=\"" + alpha + "\"";
+            }
+            i = quote + 1;
+        } else {
+            // After the declaration (a later one wins in CSS).
+            size_t end = close + 1;
+            while (end < svg.size() && svg[end] != ';' && svg[end] != '"' && svg[end] != '\'' && svg[end] != '}') ++end;
+            out.append(svg, close + 1, end - (close + 1));
+            out += std::string(";") + opacity + ":" + alpha;
+            i = end;
+        }
+    }
+    out.append(svg, i, std::string::npos);
+    svg.swap(out);
+}
+
 std::wstring PickFamily(IDWriteFactory* dw, std::wstring_view list) {
     size_t i = 0;
     while (i < list.size()) {
@@ -243,6 +329,7 @@ std::shared_ptr<SvgImage> SvgImage::Parse(std::string bytes, int depth, size_t* 
     img->ParseStructure();
     img->raster_left_ = nullptr;
     if (img->source_.find("<a") != std::string::npos) UnwrapLinks(img->source_);
+    if (img->source_.find("rgba(") != std::string::npos) RgbaColors(img->source_);
     return img;
 }
 

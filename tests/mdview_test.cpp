@@ -48,6 +48,7 @@
 #include <winspool.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -616,6 +617,42 @@ int main(int argc, char** ansi_argv) {
         expect(SvgImage::Parse("<!-- " + std::string(5000, 'l') +
                                " -->\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"/>") != nullptr,
                "SVG after a 5 KB comment");
+        {  // rgba() colors in SVG: Direct2D drew them black (a social badge's
+           // transparent box hid its count). On white: transparent stays
+           // white, half transparent blends; as an attribute or in a style.
+            auto svg = SvgImage::Parse(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"40\" height=\"10\">"
+                "<rect width=\"40\" height=\"10\" fill=\"#ffffff\"/>"
+                "<rect width=\"10\" height=\"10\" fill=\"rgba(0,0,0,0)\"/>"
+                "<rect x=\"10\" width=\"10\" height=\"10\" fill=\"rgba(0, 0, 255, 0.5)\"/>"
+                "<rect x=\"20\" width=\"10\" height=\"10\" style=\"fill: rgba(255 0 0 / 50%)\"/>"
+                "<rect x=\"30\" width=\"10\" height=\"10\" fill=\"rgba(0,128,0,.5)\" fill-opacity=\"1\"/></svg>");
+            ComPtr<IWICImagingFactory> wic;
+            ComPtr<IWICBitmap> target;
+            ComPtr<ID2D1Factory> d2d;
+            ComPtr<ID2D1RenderTarget> rt;
+            std::vector<uint8_t> px(40 * 10 * 4);
+            const bool drawn =
+                svg && SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))) &&
+                SUCCEEDED(wic->CreateBitmap(40, 10, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &target)) &&
+                SUCCEEDED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2d.GetAddressOf())) &&
+                SUCCEEDED(d2d->CreateWicBitmapRenderTarget(target.Get(), D2D1::RenderTargetProperties(), &rt)) && [&] {
+                    rt->BeginDraw();
+                    svg->Draw(rt.Get(), D2D1::RectF(0, 0, 40, 10), nullptr);
+                    return SUCCEEDED(rt->EndDraw()) && SUCCEEDED(target->CopyPixels(nullptr, 40 * 4, static_cast<UINT>(px.size()), px.data()));
+                }();
+            auto at = [&](int x) {  // (R, G, B) in the middle of a square
+                const size_t i = (5u * 40 + static_cast<size_t>(x)) * 4;
+                return std::array<int, 3>{px[i + 2], px[i + 1], px[i]};
+            };
+            auto close_to = [](std::array<int, 3> c, int r, int g, int b) {
+                return std::abs(c[0] - r) < 12 && std::abs(c[1] - g) < 12 && std::abs(c[2] - b) < 12;
+            };
+            expect(drawn && close_to(at(5), 255, 255, 255) && close_to(at(15), 128, 128, 255) && close_to(at(25), 255, 128, 128),
+                   "SVG rgba() colors, attribute and style");
+            // (An opacity of its own is kept: the attribute isn't doubled, the document stays valid.)
+            expect(drawn && close_to(at(35), 0, 128, 0), "SVG rgba() next to its own opacity");
+        }
         {  // Heading ids: "Dup", "Dup", "Dup-1" -> dup, dup-1, dup-1-1 (as GitHub)
             auto doc = ParseMarkdown("# Dup\n\n# Dup\n\n# Dup-1\n", L"C:\\x.md");
             const Anchor* a = doc->FindAnchor(L"dup-1");
