@@ -72,10 +72,11 @@ HBITMAP PreviewBitmap(const std::wstring& path, int width, int height, const cha
     o.layout.max_content_width = 0;
     o.layout.dark = ThumbnailTheme() == ThemeMode::Dark;  // (on TC's thumbnail thread)
     o.allow_remote_images = false;
-    const float aspect = static_cast<float>(height) / static_cast<float>(width);
-    o.max_height = o.width * std::max(aspect, 0.5f);
     const float scale = std::min(1.f, static_cast<float>(width) / o.width);
     o.scale = scale;
+    // No taller than asked (the SDK wants a bitmap within width x height:
+    // TC centers a smaller one); a hair less for the rounding up in pixels.
+    o.max_height = (static_cast<float>(height) - 0.01f) / scale;
     ComPtr<IWICBitmap> bmp = RenderToBitmap(*doc, o);
     return bmp ? BitmapToHBitmap(bmp.Get()) : nullptr;
 }
