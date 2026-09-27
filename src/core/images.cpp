@@ -299,6 +299,7 @@ HINTERNET HttpSession() {
     static std::once_flag once;
     static HINTERNET session = nullptr;
     std::call_once(once, [] {
+        if (!SystemDllLoads(L"winhttp.dll")) return;
         session = WinHttpOpen(L"mdview/" MDVIEW_VERSION " (Total Commander Lister plugin)",
                               WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
                               WINHTTP_NO_PROXY_BYPASS, 0);
@@ -357,7 +358,7 @@ bool IsLocalNetworkHost(std::wstring_view host) {
     // Where the name leads (an address is its own). Unresolved here (behind
     // a proxy, say): left to the proxy and the network.
     WSADATA wsa{};
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
+    if (!SystemDllLoads(L"ws2_32.dll") || WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
     bool local = false;
     ADDRINFOW hints{};
     hints.ai_family = AF_UNSPEC;
@@ -522,6 +523,8 @@ private:
 // The image jobs' own thread pool: a document with hundreds of pictures
 // queues its jobs here instead of making the process pool start a thread
 // for each (they mostly wait for a download slot).
+std::atomic<PTP_POOL> g_image_pool{nullptr};  // once made (see ReleaseImagePool)
+
 PTP_POOL ImagePool() {
     static const PTP_POOL pool = [] {
         const PTP_POOL p = CreateThreadpool(nullptr);
@@ -532,6 +535,7 @@ PTP_POOL ImagePool() {
                 return PTP_POOL{};
             }
         }
+        g_image_pool = p;
         return p;
     }();
     return pool;
@@ -559,6 +563,12 @@ private:
 UINT ImageLoadedMessage() {
     static const UINT msg = RegisterWindowMessageW(L"mdview.ImageLoaded.v1");
     return msg;
+}
+
+void ReleaseImagePool() {
+    // (Callbacks keep the DLL loaded: none runs now. The pool goes with its
+    // threads once they are idle; nothing waits for that.)
+    if (const PTP_POOL pool = g_image_pool.exchange(nullptr)) CloseThreadpool(pool);
 }
 
 std::wstring ResolveResourceUrl(const std::wstring& base_dir, std::wstring_view url, bool* remote) {
@@ -651,6 +661,7 @@ struct ImageStore::Impl {
     std::unordered_map<std::wstring, std::shared_ptr<SvgImage>> svg_by_url;
     std::unordered_map<std::wstring, std::vector<size_t>> svg_waiting;
     uint64_t sync_svg_bytes = 0;  // parsed by LoadAll, on the caller's thread
+    IconCache icons;              // the placeholders' (it holds their Direct2D factory)
 
     static void SetSvg(ImageEntry& e, const std::shared_ptr<SvgImage>& svg) {
         e.svg_image = svg;
@@ -1243,8 +1254,7 @@ void ImageStore::Draw(ID2D1RenderTarget* rt, int index, const D2D1_RECT_F& r, Pa
     if (isz < 6) return;
     const float ix = r.left + std::min(em * 0.4f, (w - isz) * 0.5f);
     const float iy = r.top + (h - isz) * 0.5f;
-    static thread_local IconCache icons;
-    DrawIcon(rt, icons, Icon::Image, D2D1::RectF(ix, iy, ix + isz, iy + isz), palette->Brush(kColorMuted));
+    DrawIcon(rt, impl_->icons, Icon::Image, D2D1::RectF(ix, iy, ix + isz, iy + isz), palette->Brush(kColorMuted));
     const ImageRef& ref = impl_->doc->images[i];
     const float tx = ix + isz + em * 0.35f;
     if (!ref.alt.empty() && tx < r.right - em && dw) {

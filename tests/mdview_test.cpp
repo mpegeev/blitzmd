@@ -23,6 +23,7 @@
 //   modal <dll> <out-dir>                    closed while a modal loop runs
 //   search <dll> <out-dir>                   ListSearchTextW both ways
 //   theme <dll> <out-dir>                    "Auto" follows the Windows theme
+//   unload <dll> <out-dir>                   loaded and freed again, nothing left
 //   printer dialog                           the print dialog starts with TC's printer
 //   remote <dll> <out-dir>                   pictures on a server that never answers
 //   longpath <out-dir>                       a picture in a path past MAX_PATH
@@ -91,7 +92,7 @@ int Usage() {
                  "  post <class> <msg> <wparam> [lparam] [--async]\n"
                  "  plugin <dll> <file.md> <out.png> [search text] [--dark] [--hover X Y] [--idle]\n"
                  "  settings|zoom <dll> <file.md> <out-prefix>  reload <dll> <dir>\n"
-                 "  modal|search|remote|theme <dll> <out-dir>   longpath <out-dir>    inputs all\n"
+                 "  modal|search|remote|theme|unload <dll> <out-dir>  longpath <out-dir>  inputs all\n"
                  "  printer dialog\n"
                  "  heavy <limit-ms>    details <file.md>...    flags <file.md>\n"
                  "  math <file.md> [iterations]                 tex \"<TeX source>\"\n"
@@ -1008,6 +1009,111 @@ int main(int argc, char** ansi_argv) {
         DestroyWindow(host);
         FreeLibrary(dll);
         std::printf(failures ? "theme FAILED\n" : "theme OK\n");
+        return failures ? 1 : 0;
+    }
+    if (cmd == "unload" && argc >= 4) {
+        // unload <dll> <out-dir>: Total Commander loads the plugin for a
+        // Lister and frees it after; nothing of it may be left running then
+        // (#162: the pictures' thread pool kept a thread for each load).
+        const std::wstring dll_path = FullPath(argv[2]);
+        const std::wstring dir = FullPath(argv[3]) + L"\\";
+        CreateDirectoryW(dir.c_str(), nullptr);
+        DeleteFileW((dir + L"mdview.ini").c_str());
+        {
+            const std::string md =
+                "# Unload\n\n![a picture](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
+                "+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==)\n";
+            HANDLE f = CreateFileW((dir + L"unload.md").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+            DWORD n = 0;
+            if (f != INVALID_HANDLE_VALUE) {
+                WriteFile(f, md.data(), static_cast<DWORD>(md.size()), &n, nullptr);
+                CloseHandle(f);
+            }
+        }
+        auto threads = [] {
+            int count = 0;
+            HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            THREADENTRY32 te{sizeof te};
+            for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+                if (te.th32OwnerProcessID == GetCurrentProcessId()) ++count;
+            }
+            CloseHandle(snap);
+            return count;
+        };
+        auto pump = [](int ms) {
+            const double end = NowMs() + ms;
+            MSG msg;
+            while (NowMs() < end) {
+                while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                Sleep(5);
+            }
+        };
+        WNDCLASSW wc{};
+        wc.lpfnWndProc = DefWindowProcW;
+        wc.hInstance = GetModuleHandleW(nullptr);
+        wc.lpszClassName = L"MdViewUnloadHost";
+        RegisterClassW(&wc);
+        HWND host = CreateWindowExW(0, wc.lpszClassName, L"unload test", WS_OVERLAPPEDWINDOW | WS_VISIBLE, 40, 40, 800,
+                                    600, nullptr, nullptr, wc.hInstance, nullptr);
+        int failures = 0;
+        int first = 0, last = 0;
+        constexpr int kLoads = 6;
+        for (int i = 0; i < kLoads; ++i) {
+            HMODULE dll = LoadLibraryW(dll_path.c_str());
+            using SetParamsFn = void(__stdcall*)(void*);
+            using LoadFn = HWND(__stdcall*)(HWND, const wchar_t*, int);
+            using CloseFn = void(__stdcall*)(HWND);
+            auto set_params = dll ? reinterpret_cast<SetParamsFn>(GetProcAddress(dll, "ListSetDefaultParams")) : nullptr;
+            auto load = dll ? reinterpret_cast<LoadFn>(GetProcAddress(dll, "ListLoadW")) : nullptr;
+            auto close = dll ? reinterpret_cast<CloseFn>(GetProcAddress(dll, "ListCloseWindow")) : nullptr;
+            if (!set_params || !load || !close) {
+                std::fprintf(stderr, "cannot load plugin\n");
+                return 1;
+            }
+            struct {
+                int size;
+                DWORD lo, hi;
+                char ini[MAX_PATH];
+            } dp{static_cast<int>(sizeof(dp)), 13, 2, {}};
+            strncpy_s(dp.ini, AnsiPath(dir + L"lsplugin.ini").c_str(), _TRUNCATE);
+            set_params(&dp);
+            HWND viewer = load(host, (dir + L"unload.md").c_str(), 0);
+            if (!viewer) {
+                std::printf("FAIL: ListLoadW failed\n");
+                ++failures;
+            }
+            pump(300);  // the picture decodes on the pool
+            if (viewer) close(viewer);
+            pump(50);
+            FreeLibrary(dll);
+            // (A pool closed goes with its thread a moment later.)
+            for (int wait = 0; wait < 40 && GetModuleHandleW(dll_path.c_str()); ++wait) pump(25);
+            pump(200);
+            const int n = threads();
+            if (i == 0) first = n;
+            last = n;
+            if (GetModuleHandleW(dll_path.c_str())) {
+                std::printf("FAIL: load %d: the DLL is still loaded after FreeLibrary\n", i + 1);
+                ++failures;
+            }
+        }
+        std::printf("threads after the first load: %d, after %d loads: %d\n", first, kLoads, last);
+        // (The process's own pool may start or end a thread meanwhile.)
+        if (last > first + 3) {
+            std::printf("FAIL: each load of the plugin leaves threads behind\n");
+            ++failures;
+        }
+        // A system DLL that doesn't load is found out before a delay-loaded
+        // call would raise an exception (#163).
+        if (!SystemDllLoads(L"winhttp.dll") || SystemDllLoads(L"mdview-no-such-library.dll")) {
+            std::printf("FAIL: SystemDllLoads\n");
+            ++failures;
+        }
+        DestroyWindow(host);
+        std::printf(failures ? "unload FAILED\n" : "unload OK\n");
         return failures ? 1 : 0;
     }
     if (cmd == "printer") {

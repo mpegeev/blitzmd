@@ -11,9 +11,11 @@
 #include <mutex>
 #include <string>
 
+#include "core/images.h"
 #include "core/offscreen.h"
 #include "core/parser.h"
 #include "core/settings.h"
+#include "core/settings_dialog.h"
 #include "core/util.h"
 #include "core/viewer.h"
 
@@ -103,8 +105,14 @@ HBITMAP PreviewBitmap(const std::wstring& path, int width, int height, const cha
 BOOL APIENTRY DllMain(HMODULE /*module*/, DWORD reason, LPVOID reserved) {
     // (No DisableThreadLibraryCalls: not with the static CRT, and it would
     // fail anyway, the DLL has thread_local data.)
-    // Window classes of a DLL outlive FreeLibrary unless unregistered.
-    if (reason == DLL_PROCESS_DETACH && !reserved) mdv::UnregisterViewerClass();
+    // FreeLibrary (not the process ending: nothing needs releasing then).
+    // Window classes of a DLL, a thread pool and an activation context
+    // outlive it unless released. (Nothing here waits for another thread.)
+    if (reason == DLL_PROCESS_DETACH && !reserved) {
+        mdv::UnregisterViewerClass();
+        mdv::ReleaseImagePool();
+        mdv::ReleaseDialogContext();
+    }
     return TRUE;
 }
 

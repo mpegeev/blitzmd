@@ -61,6 +61,11 @@ std::wstring ExtendedPath(std::wstring_view path);
 // with the user's account.
 std::wstring ShareServer(std::wstring_view path);
 
+// Whether a DLL of System32 loads. The plugin delay-loads some (winhttp,
+// ws2_32, comdlg32, dwmapi): if one didn't load, its first call would raise
+// an SEH exception, which no catch (...) stops. (Loaded here, it stays.)
+bool SystemDllLoads(const wchar_t* name);
+
 // Reads a whole file (up to max_bytes). Returns false on failure/too large.
 bool ReadFileBytes(const wchar_t* path, std::string& out, uint64_t max_bytes);
 

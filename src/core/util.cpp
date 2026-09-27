@@ -223,6 +223,11 @@ std::wstring ShareServer(std::wstring_view p) {
     return ToLower(p.substr(0, std::min(p.find(L'\\'), p.size())));
 }
 
+bool SystemDllLoads(const wchar_t* name) {
+    // (The delay-load helper then finds it loaded.)
+    return GetModuleHandleW(name) || LoadLibraryExW(name, nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+}
+
 // Paths of MAX_PATH characters or more need the "\\?\" prefix.
 std::wstring ExtendedPath(std::wstring_view path) {
     std::wstring p(path);

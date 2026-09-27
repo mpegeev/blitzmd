@@ -126,6 +126,8 @@ private:
 
 // Activation context with Common Controls 6 (manifest resource 3 in the DLL):
 // themed controls whatever the host process uses.
+HANDLE g_controls_context = INVALID_HANDLE_VALUE;  // once made (see ReleaseDialogContext)
+
 HANDLE ControlsContext() {
     static const HANDLE ctx = [] {
         wchar_t module[MAX_PATH * 2] = {};
@@ -136,7 +138,8 @@ HANDLE ControlsContext() {
         ac.lpSource = module;
         ac.hModule = reinterpret_cast<HMODULE>(&__ImageBase);
         ac.lpResourceName = MAKEINTRESOURCEW(3);
-        return CreateActCtxW(&ac);
+        g_controls_context = CreateActCtxW(&ac);
+        return g_controls_context;
     }();
     return ctx;
 }
@@ -596,7 +599,9 @@ void SettingsDialog::SetDark(bool dark) {
     dark_ = dark;
     // DWMWA_USE_IMMERSIVE_DARK_MODE: 20 since Windows 10 20H1, 19 before.
     const BOOL value = dark;
-    if (FAILED(DwmSetWindowAttribute(dlg_, 20, &value, sizeof value))) DwmSetWindowAttribute(dlg_, 19, &value, sizeof value);
+    if (SystemDllLoads(L"dwmapi.dll") && FAILED(DwmSetWindowAttribute(dlg_, 20, &value, sizeof value))) {
+        DwmSetWindowAttribute(dlg_, 19, &value, sizeof value);
+    }
     for (HWND child = GetWindow(dlg_, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) {
         wchar_t cls[32] = {};
         GetClassNameW(child, cls, static_cast<int>(std::size(cls)));
@@ -717,6 +722,11 @@ void SaveSettingChange(const std::function<void(Settings&)>& edit) {
     } else {
         SaveSettings();
     }
+}
+
+void ReleaseDialogContext() {
+    if (g_controls_context != INVALID_HANDLE_VALUE) ReleaseActCtx(g_controls_context);
+    g_controls_context = INVALID_HANDLE_VALUE;
 }
 
 }  // namespace mdv
