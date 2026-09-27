@@ -84,7 +84,14 @@ bool IsExecutablePath(std::wstring_view p) {
                              L"ocx", L"sys", L"scf", L"shs", L"chm", L"hlp", L"gadget", L"xbap", L"xll",
                              L"settingcontent-ms", L"diagcab", L"library-ms", L"search-ms", L"appx",
                              L"appxbundle", L"msix", L"msixbundle", L"py", L"pyw", L"pyz", L"pl", L"rb", L"sh",
-                             L"ahk", L"au3"}) {
+                             L"ahk", L"au3",
+                             // Opening these acts too (AssocIsDangerous misses them): a remote
+                             // desktop connection, an app install, a theme (fetches its files),
+                             // Java Web Start, archived web pages, Excel web queries, OneNote
+                             // packages, VS extensions, Office add-ins, contacts.
+                             L"rdp", L"appinstaller", L"theme", L"themepack", L"deskthemepack", L"jnlp", L"mht",
+                             L"mhtml", L"iqy", L"slk", L"one", L"onepkg", L"vsix", L"xla", L"xlam", L"ppa", L"ppam",
+                             L"contact", L"wsb", L"msu", L"iso", L"img", L"vhd", L"vhdx"}) {
         if (EqualsNoCase(ext, e)) return true;
     }
     return AssocIsDangerous((L"." + std::wstring(ext)).c_str()) != FALSE;
@@ -1800,7 +1807,7 @@ void Viewer::NavigateTo(const std::wstring& path, const std::wstring& fragment) 
         if (MessageBoxW(self, msg.c_str(), L"mdview", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
         if (!Survived(self, this)) return;
     }
-    const DWORD attrs = GetFileAttributesW(path.c_str());
+    const DWORD attrs = GetFileAttributesW(ExtendedPath(path).c_str());  // (long paths too)
     if (attrs == INVALID_FILE_ATTRIBUTES) {
         MessageBeep(MB_ICONWARNING);
         SetStatus(std::wstring(Tr(L"File not found: ", L"Файл не найден: ")) + path);
@@ -2914,7 +2921,19 @@ bool Viewer::Print(const wchar_t* /*printer*/, const RECT* margins) {
 
 HWND CreateViewer(HWND parent, const wchar_t* path, int show_flags) {
     auto viewer = std::make_unique<Viewer>();
-    if (!viewer->Create(parent, show_flags)) {
+    bool created = false;
+    try {
+        created = viewer->Create(parent, show_flags);
+    } catch (...) {
+        // Out of memory after the window was made: it owns the viewer (its
+        // WM_NCDESTROY deletes it), which must not be deleted here too.
+        if (HWND h = viewer->hwnd()) {
+            DestroyWindow(h);
+            viewer.release();
+        }
+        throw;
+    }
+    if (!created) {
         if (HWND h = viewer->hwnd()) {
             DestroyWindow(h);  // WM_NCDESTROY deletes the viewer
             viewer.release();

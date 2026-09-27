@@ -566,6 +566,17 @@ int main(int argc, char** ansi_argv) {
             }
             DeleteObject(thumb);
         }
+        // Wider than tall: no taller than asked either (it was up to half the
+        // width: #158).
+        if (HBITMAP wide = preview(FullPath(argv[3]).c_str(), 256, 64, nullptr, 0)) {
+            BITMAP bm{};
+            GetObjectW(wide, sizeof bm, &bm);
+            if (bm.bmWidth > 256 || bm.bmHeight > 64) {
+                std::printf("FAIL: a 256 x 64 thumbnail is %ldx%ld\n", bm.bmWidth, bm.bmHeight);
+                thumb_ok = false;
+            }
+            DeleteObject(wide);
+        }
         FreeLibrary(dll);
         if (!thumb_ok) {
             std::printf("FAIL: ListGetPreviewBitmapW: %s\n", thumb ? "not the size asked for" : "no bitmap");
