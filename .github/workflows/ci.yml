@@ -86,13 +86,25 @@ jobs:
         with:
           name: blitzmd
 
+      # Short notes about the program (not the list of every PR) and the SHA-256
+      # of the attached zip, since the plugin isn't code-signed. What's new in a
+      # version is added by hand: gh release edit.
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
-        run: >
-          gh release create "$TAG" blitzmd.zip
-          --repo "$REPO"
-          --title "BlitzMD $TAG"
-          --generate-notes
+        run: |
+          sha=$(sha256sum blitzmd.zip | cut -d' ' -f1)
+          cat > notes.md <<EOF
+          **BlitzMD** is a fast Markdown viewer plugin (Lister, WLX) for Total Commander, x64 and x86. It renders Markdown the way GitHub does (tables, task lists, footnotes, alerts, math, Mermaid diagrams, syntax-highlighted code, emoji, dark mode) with Direct2D and DirectWrite: no browser engine, nothing else to install.
+
+          **Install:** open \`blitzmd.zip\` in Total Commander and confirm the installation.
+
+          **BlitzMD** — быстрый плагин просмотра Markdown (Lister, WLX) для Total Commander, x64 и x86. Показывает Markdown так же, как GitHub (таблицы, списки задач, сноски, алерты, формулы, диаграммы Mermaid, подсветка кода, эмодзи, тёмная тема), рисуя его через Direct2D и DirectWrite: без браузерного движка, ничего не нужно доустанавливать.
+
+          **Установка:** откройте \`blitzmd.zip\` в Total Commander и подтвердите установку.
+
+          SHA-256 (\`blitzmd.zip\`): \`$sha\`
+          EOF
+          gh release create "$TAG" blitzmd.zip --repo "$REPO" --title "BlitzMD $TAG" --notes-file notes.md
