@@ -101,7 +101,7 @@ jobs:
 
           **Install:** open \`blitzmd.zip\` in Total Commander and confirm the installation.
 
-          **BlitzMD** — быстрый плагин просмотра Markdown (Lister, WLX) для Total Commander, x64 и x86. Показывает Markdown так же, как GitHub (таблицы, списки задач, сноски, алерты, формулы, диаграммы Mermaid, подсветка кода, эмодзи, тёмная тема), рисуя его через Direct2D и DirectWrite: без браузерного движка, ничего не нужно доустанавливать.
+          **BlitzMD** — легковесный плагин просмотра Markdown (Lister, WLX) для Total Commander, x64 и x86. Показывает Markdown файлы по стандарту GitHub Flavored Markdown, рисуя их при помощи Direct2D и DirectWrite без браузерного движка. Поддерживаются таблицы, списки задач, сноски, алерты, формулы, диаграммы Mermaid, подсветка кода, эмодзи, тёмная тема.
 
           **Установка:** откройте \`blitzmd.zip\` в Total Commander и подтвердите установку.
 
