@@ -97,7 +97,7 @@ jobs:
         run: |
           sha=$(sha256sum blitzmd.zip | cut -d' ' -f1)
           cat > notes.md <<EOF
-          **BlitzMD** is a fast Markdown viewer plugin (Lister, WLX) for Total Commander, x64 and x86. It renders Markdown the way GitHub does (tables, task lists, footnotes, alerts, math, Mermaid diagrams, syntax-highlighted code, emoji, dark mode) with Direct2D and DirectWrite: no browser engine, nothing else to install.
+          **BlitzMD** is a lightweight Markdown viewer plugin (Lister, WLX) for Total Commander, x64 and x86. It shows Markdown files according to GitHub Flavored Markdown, drawing them with Direct2D and DirectWrite without a browser engine. Supported: tables, task lists, footnotes, alerts, math, Mermaid diagrams, syntax-highlighted code, emoji, dark mode.
 
           **Install:** open \`blitzmd.zip\` in Total Commander and confirm the installation.
 
